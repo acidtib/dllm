@@ -1,32 +1,35 @@
 # Phase 4: Discovery and controlled community networks
 
-Phase 4 replaces the temporary SSH relay path before adding community discovery.
-Discovery publishes reachability. Owner-signed DLLM state continues to decide
-membership and authorization.
+Phase 4 replaces the temporary SSH relay path with a peer network embedded in
+`dllmd` before adding community discovery. Discovery publishes reachability.
+Owner-signed DLLM state continues to decide membership and authorization.
 
 ## Acceptance criteria
 
-1. Two fresh nodes behind ordinary NAT can join, discover each other,
-   authenticate with DLLM node identities, establish a direct or relayed
-   encrypted connection, and serve inference without SSH configuration or a
-   publicly exposed runtime.
+1. A user can install only `dllmd`, join a network, discover peers,
+   authenticate with DLLM node identities, and serve inference without
+   deploying a separate communication service, configuring SSH, or exposing a
+   runtime publicly.
 2. Discovery records provide signed reachability information only. They cannot
    grant membership or override owner-signed DLLM state.
-3. Operators can self-host all required bootstrap, discovery, and relay
-   infrastructure. Normal operation does not require a specific third-party
-   service.
-4. Status and diagnostics report the discovered endpoint, direct or relayed
-   path, relay provider, connection failures, and path changes.
+3. Bootstrap, discovery, NAT traversal, and encrypted forwarding are
+   capabilities of ordinary participating `dllmd` nodes. Normal operation does
+   not require dedicated or third-party infrastructure.
+4. Nodes connect directly where possible. When forwarding is necessary, DLLM
+   automatically selects an eligible member according to signed policy and
+   resource limits.
+5. Status and diagnostics report the discovered endpoint, direct or forwarded
+   path, forwarding member, connection failures, and path changes.
 
 ## Milestones
 
-- [ ] P4.0: select the embedded peer transport after local, self-hosted relay,
-  separate-NAT, recovery, resource, and dependency validation.
+- [ ] P4.0: select the embedded peer transport after local, separate-NAT,
+  node-integrated forwarding, recovery, resource, and dependency validation.
 - [ ] P4.1: add owner-signed bindings between DLLM node identities and rotating
   iroh endpoint identities, including revocation and replay protection.
-- [ ] P4.2: operate self-hosted discovery and relay infrastructure, prove direct
-  NAT traversal and encrypted relay fallback, and remove SSH from the supported
-  peer path.
+- [ ] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
+  `dllmd`, prove automatic selection of an eligible participating node, and
+  remove SSH and separately deployed relays from the supported peer path.
 - [ ] P4.3: carry authenticated health, inference streaming, cancellation, and
   deadlines over the embedded transport with bounded concurrent streams and
   automatic path recovery.
@@ -37,15 +40,15 @@ membership and authorization.
 - [ ] P4.6: add discovery hosting controls, rate limits, moderation, abuse
   reporting, and operator-visible audit records.
 - [ ] P4.7: expose onboarding, discovery visibility, approval, transport path,
-  relay, policy, and failure diagnostics through the CLI and UI, then complete
+  forwarding member, policy, and failure diagnostics through the CLI and UI, then complete
   the physical acceptance matrix.
 
 Milestones are complete only when their implementation, automated coverage,
 physical evidence, diagnostics, and cleanup checks pass. The New York and
-Kansas VPS hosts may provide self-hosted relay and discovery infrastructure.
+Kansas VPS hosts may run ordinary `dllmd` nodes with forwarding eligibility.
 The laptop and primary development machine provide distinct edge-network nodes
-for direct, relay-only, and path-migration tests. SSH may be used to administer
-test hosts, but it must not carry DLLM peer traffic or be required by a node.
+for direct, forwarded, and path-migration tests. SSH may administer test hosts,
+but it must not carry DLLM peer traffic or be required by a node.
 
 ## P4.0 embedded transport evaluation
 
@@ -62,10 +65,11 @@ unknown endpoint. The transport identity remains separate from the DLLM
 authorization identity to avoid cross-protocol private-key reuse and allow
 transport-key rotation.
 
-Iroh exposes custom relay maps, a self-hostable `iroh-relay` server, endpoint
-address lookup, and remote path information. These APIs cover the required
-relay ownership and direct-versus-relayed diagnostics in principle. They are
-not yet validated in DLLM across real NAT boundaries.
+Iroh exposes endpoint address lookup, direct-path information, and a separate
+relay-server implementation. Its direct QUIC transport remains a candidate.
+Its standard relay deployment shape does not satisfy DLLM's operational model;
+any forwarding role must be embedded in an ordinary `dllmd` node and selected
+through the peer network.
 
 The dependency cost is material. Adding the minimal client configuration added
 227 packages to the workspace lock resolution on the evaluation machine, and
@@ -73,31 +77,34 @@ iroh currently brings a release-candidate Ed25519 dependency alongside DLLM's
 stable Ed25519 dependency. Binary size, compile time, dependency duplication,
 and upstream API stability must be measured before adoption.
 
-P4.0 remains incomplete until the spike proves:
+P4.0 remains incomplete until the evaluation proves:
 
-- a self-hosted relay with no n0-operated service dependency;
-- relay-only connectivity between nodes behind separate NATs;
-- migration from relay to a direct path when hole punching succeeds;
-- observable and reliable direct-versus-relayed path reporting;
+- discovery and forwarding using only ordinary participating `dllmd` nodes;
+- forwarded connectivity between nodes behind separate NATs without a
+  separately deployed service;
+- migration from a forwarded path to a direct path when hole punching succeeds;
+- observable and reliable direct-versus-forwarded path reporting;
 - streaming inference framing, cancellation, deadlines, and concurrent streams;
 - rejection and live revocation of unauthorized DLLM identities;
-- recovery after relay loss, address changes, and daemon restart;
+- recovery after forwarding-node loss, address changes, and daemon restart;
 - transport-key rotation through an owner-signed endpoint binding; and
 - acceptable release binary size, startup time, memory, and compile cost.
 
-If iroh fails those checks, the next candidate is rust-libp2p with QUIC,
-Identify, AutoNAT, Circuit Relay v2, DCUtR, Rendezvous, and Kademlia enabled only
-as required. Quinn alone is not a complete alternative because DLLM would need
-to build discovery, NAT traversal, and relay behavior itself.
+Iroh remains selected only if its components can support that embedded-node
+shape without relying on managed infrastructure. Otherwise, rust-libp2p is the
+next candidate because Hivemind and Petals demonstrate the relevant pattern:
+each process runs the DHT and P2P stack, reachable full peers participate in
+routing, and NATed peers discover eligible forwarding peers automatically.
+Quinn alone is not a complete alternative because DLLM would need to build
+discovery and NAT traversal itself.
 
-### First physical result
+### Rejected dedicated-relay experiment
 
-The 2026-07-16 physical slice used a self-hosted iroh 1.0.2 relay in Kansas, a
-peer in New York, and the Colorado development machine behind residential NAT.
-No n0-operated service or SSH data tunnel carried peer traffic. A relay-only
-request connected in 89 ms and completed in 190 ms. An unknown transport
-identity reached the authenticated QUIC endpoint but was rejected with DLLM
-application code 403.
+The 2026-07-16 physical slice used the separate `iroh-relay` binary in Kansas,
+a peer in New York, and the Colorado development machine behind residential
+NAT. It proved encrypted forwarding mechanics and authenticated endpoint
+rejection, but its deployment shape is rejected: DLLM users must not deploy a
+separate communication service.
 
 Opening the New York QUIC endpoint as an explicit direct candidate reduced
 connection setup to 49 ms and reported the IP path active while retaining the
@@ -112,11 +119,9 @@ New York server. The optimized relay is 12,883,600 bytes and used 3,645,440
 bytes peak RSS in the short validation. These are acceptable initial figures,
 but sustained-load measurements remain open.
 
-This result validates self-hosting, relay-only traffic, authenticated endpoint
-authorization, direct selection, direct-loss fallback, path reporting, and
-relay-process recovery. P4.0 remains incomplete because the available laptop
-did not accept the configured SSH key, so two independently NATed edge nodes
-were not tested. The relay also used iroh's development HTTP listener; peer
-payloads remained end-to-end encrypted, but production relay TLS is still
-required. Detailed evidence is in
+The result remains useful as transport evidence, but it does not advance the
+node-integrated forwarding acceptance criterion. P4.0 remains incomplete. The
+next comparison must test an embedded `dllmd` forwarding role against
+rust-libp2p's DHT, AutoNAT, and Circuit Relay v2 composition. Detailed evidence
+from the rejected experiment remains in
 `results/phase4-results/p40-iroh-evaluation/summary.json`.

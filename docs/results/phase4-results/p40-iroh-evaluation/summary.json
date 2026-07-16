@@ -1,7 +1,8 @@
 {
   "schema_version": 1,
   "date": "2026-07-16",
-  "status": "partial",
+  "status": "rejected_deployment_shape",
+  "decision": "The separate relay binary proved forwarding mechanics but does not satisfy DLLM's requirement that ordinary dllmd nodes provide every network role.",
   "candidate": {
     "name": "iroh",
     "version": "1.0.2",

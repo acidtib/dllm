@@ -123,9 +123,13 @@ Leader transfer, replicated ownership, quorum decisions, and owner-key recovery 
 ### 7.2 Data plane
 
 - Encrypted, mutually authenticated node connections, using QUIC-based transport where practical.
-- Direct connections attempted first; explicitly configured relay fallback may be used when direct connectivity fails.
+- Direct connections are attempted first. When direct connectivity fails, an
+  eligible participating `dllmd` node may forward encrypted traffic for other
+  members. Running a separate relay service is not a user requirement.
 - A node identity is an Ed25519 public key. It authenticates the node but is not itself a routable address; signed endpoint records and discovery are still required.
-- Relay encryption prevents the relay from reading transport plaintext, but participating inference workers necessarily process model state and intermediate tensors.
+- Forwarded connections remain end-to-end encrypted, so a forwarding node
+  cannot read transport plaintext. Participating inference workers necessarily
+  process model state and intermediate tensors.
 
 ### 7.3 Local management plane
 
@@ -183,7 +187,7 @@ Node capability includes:
 - runtime and accelerator compatibility;
 - total and currently available VRAM/RAM;
 - measured prefill and decode throughput for the relevant model architecture;
-- pairwise latency, bandwidth, and relay status;
+- pairwise latency, bandwidth, and forwarding status;
 - current queue depth and KV-cache capacity;
 - recent reliability and disconnect history; and
 - model weights already cached locally.
@@ -205,7 +209,7 @@ The scheduler predicts:
 - time to first token;
 - inter-token latency;
 - bottleneck-stage throughput;
-- activation transfer, serialization, and relay cost;
+- activation transfer, serialization, and forwarding cost;
 - memory headroom for weights and KV cache;
 - model-loading or migration cost; and
 - expected placement stability.
@@ -329,7 +333,7 @@ The first UI includes:
 - **Models** — supported variants, memory estimates, assignment, download, and load status.
 - **Placement detail** — whole-model or stage placement, memory, topology, measured latency, queue depth, and placement generation.
 - **API access** — keys, scopes, quotas, revocation, and endpoint examples.
-- **Diagnostics** — connectivity, direct versus relayed paths, runtime compatibility, and structured error information.
+- **Diagnostics** — connectivity, direct versus forwarded paths, runtime compatibility, and structured error information.
 
 The bundled UI can be a static application served by `dllmd`. A server-rendered framework is not required merely to call remote APIs. If a future central management service needs server-side sessions, proxying, or multi-user features, that deployment can introduce an authenticated server component separately.
 
@@ -376,7 +380,7 @@ The CLI, UI, structured logs, and optional Prometheus endpoint expose:
 - time to first token and inter-token latency;
 - tokens per second and requests per second;
 - activation bytes transferred per token and request;
-- direct or relayed connection paths;
+- direct or forwarded connection paths;
 - queue depth, admission rejection, and KV-cache use;
 - model download and load progress; and
 - node disconnects and placement-generation changes.
@@ -385,7 +389,7 @@ Published benchmarks must include:
 
 - exact model and quantization;
 - hardware, runtime version, and available memory;
-- topology, latency, bandwidth, and relay use;
+- topology, latency, bandwidth, and forwarding use;
 - prompt length, output length, and concurrency;
 - time to first token, decode rate, throughput, and failure rate; and
 - comparison with the best practical single-node alternative, such as a smaller quantization or CPU offload.
@@ -460,8 +464,8 @@ Published benchmarks must include:
 
 - Separate listed and unlisted discovery.
 - Replace the SSH reverse-tunnel fallback with an embedded, identity-authenticated
-  peer transport that attempts direct NAT traversal before using an end-to-end
-  encrypted relay.
+  peer transport. Every forwarding and discovery role runs inside `dllmd` on a
+  participating node.
 - Owner-approval membership workflow.
 - Discovery-service hosting, governance, rate limits, moderation, and abuse controls.
 - Explicit resource budgets and request-access policy independent of compute membership.
@@ -469,15 +473,18 @@ Published benchmarks must include:
 
 **Exit criteria:**
 
-- Two fresh nodes behind ordinary NAT can join, discover each other, authenticate
-  with DLLM node identities, establish a direct or relayed encrypted connection,
-  and serve inference without SSH configuration or publicly exposing the runtime.
+- A user can install only `dllmd`, join a network, discover peers, authenticate
+  with DLLM node identities, and serve inference without deploying a separate
+  communication service, configuring SSH, or publicly exposing the runtime.
+- Nodes attempt direct connectivity first. If forwarding is necessary, DLLM
+  automatically selects an eligible participating node according to signed
+  network policy and resource limits.
 - Discovery records provide signed reachability information only. Owner-signed
   DLLM state remains authoritative for network membership and authorization.
-- Operators can use self-hosted bootstrap, discovery, and relay infrastructure;
-  normal operation does not require a specific third-party service.
-- Status and diagnostics report the discovered endpoint, direct or relayed path,
-  relay provider, connection failures, and path changes.
+- Bootstrap, discovery, and forwarding are capabilities of ordinary `dllmd`
+  nodes. Normal operation does not require a dedicated or third-party service.
+- Status and diagnostics report the discovered endpoint, direct or forwarded
+  path, forwarding node, connection failures, and path changes.
 
 ### Phase 5 — MoE research
 
@@ -507,7 +514,8 @@ Published benchmarks must include:
 - **Worker trust:** participating nodes can inspect intermediate state, retain assigned weights, misreport capability, or corrupt results.
 - **Backend fragmentation:** different runtimes may not share compatible stage, cache, batching, or quantization semantics.
 - **Control-plane availability:** an owner-led design is simple but temporarily prevents mutations when the owner is offline.
-- **Discovery abuse:** listed networks require centralized operational services even if inference remains peer-to-peer.
+- **Discovery abuse:** listed networks require network-wide rate limits,
+  moderation, and governance even when discovery remains peer-to-peer.
 
 ### Decisions to resolve during Phase 0
 
