@@ -1,0 +1,59 @@
+Starting RPC server v4.0.2
+  endpoint       : 127.0.0.1:50053
+  local cache    : /home/acidito/.cache/llama.cpp/rpc/
+Devices:
+  CPU: Intel(R) Core(TM) i7-8550U CPU @ 1.80GHz (15684 MiB, 15684 MiB free)
+  transport      : TCP
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/3b111a3946707c65'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/deda076d64897b89'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/ed05d89a52416523'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/89b1a4bd60277c2c'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/61117922bc10784c'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/524269190cc9f0dd'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/32d545c7d6987f4c'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/3dd7bec41a211330'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/6d17515874c66134'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/a743b2a3592688c9'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/33d01264d434e58a'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/7c407bf710119fa8'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/bb588e01f0bee402'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/4d76700bc5db17a9'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/a532b0c4f4c1cd09'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/def80299f110977f'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/cd233443e2f16965'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/3c9fca11c93b6c74'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/96c642874c86c4c3'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/9e9bcd20a1b3073c'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/0486022b1fe9ba4c'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/e1a6700421f7b842'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/664ca38de6e080ab'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/c44e954ae5929465'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/51a503d1635c6a8e'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/7f62612ec713f795'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/78fc244669f70bc2'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/098d732a44d916f6'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/00ff9e751e556c88'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/f0bf8adfc28195ab'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/0ca86b983ace1e16'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/fcb49d105366d9ff'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/9af4853e234c7d9f'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/67121bff76c98988'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/0f4d1064910146b0'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/c5b9d2556e0fb9f7'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/d4c4bcc49c506adf'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/25bd04a7be0d353b'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/a2bf3b957d54a677'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/ed55768397f4e270'
+[set_tensor] saved to '/home/acidito/.cache/llama.cpp/rpc/712cc31f8668e7ef'
+Client connection closed

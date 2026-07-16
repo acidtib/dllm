@@ -1,0 +1,35 @@
+{
+  "phase_0_status": "complete",
+  "outcome": 2,
+  "recommendation": "do_not_use_stock_llama_cpp_rpc_as_the_production_distributed_runtime",
+  "product_direction": "proceed_with_whole_model_orchestration_and_routing_only",
+  "benchmarks": {
+    "direct_two_gpu": {"median_generation_tokens_per_second": 20.4, "generation_range": [20.3, 20.4], "median_decode_interval_ms": 52.332},
+    "two_local_rpc_gpu_workers": {"median_generation_tokens_per_second": 18.8, "generation_range": [18.7, 18.8], "median_decode_interval_ms": 56.875, "relative_to_direct_percent": 92.2},
+    "two_machine_gpu_cpu_ssh": {"median_generation_tokens_per_second": 3.3, "generation_range": [3.0, 3.4], "median_decode_interval_ms": 316.693, "relative_to_direct_percent": 16.2},
+    "single_gpu_cpu_offload": {
+      "gpu_layers": 38,
+      "warmup_runs": 1,
+      "measured_runs": 5,
+      "median_generation_tokens_per_second": 1.9,
+      "generation_range": [1.7, 1.9],
+      "decode_interval_samples": 75,
+      "median_decode_interval_ms": 589.645,
+      "mean_decode_interval_ms": 589.128,
+      "decode_interval_range_ms": [404.861, 875.527],
+      "median_total_process_seconds": 18.253,
+      "all_token_sequences_match": true,
+      "relative_to_direct_percent": 9.3
+    }
+  },
+  "assumptions": {
+    "A1": "proven", "A2": "proven", "A3": "proven_for_llama_cpp_coordinator_rpc",
+    "A4": "proven", "A5": "proven", "A6": "proven",
+    "A7": "proven_on_loopback_but_not_isolated_on_two_cuda_lan", "A8": "disproven"
+  },
+  "unvalidated": [
+    "two_machine_cuda_execution", "isolated_cuda_lan_performance",
+    "smaller_single_gpu_model_benchmark", "production_rpc_security", "production_failure_semantics"
+  ],
+  "diagnostic_fork_delta": {"files": 2, "insertions": 55, "deletions": 4, "production_patch": false}
+}

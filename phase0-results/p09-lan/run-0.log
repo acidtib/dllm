@@ -1,0 +1,65 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.9.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.006.636 E ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected
+phase0_sample sequence=0 token=785 timestamp_us=17750664143
+
+
+Loading model... 
+
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
+
+build      : b1-505b1ed
+model      : /model/qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf
+ftype      : Q4_K - Medium
+modalities : text
+
+available commands:
+  /exit or Ctrl+C     stop or exit
+  /regen              regenerate the last response
+  /clear              clear the chat history
+  /read <file>        add a text file
+  /glob <pattern>     add text files using globbing pattern
+
+
+
+> The three primary colors are
+phase0_sample sequence=1 token=2326 timestamp_us=17751072084
+phase0_sample sequence=2 token=6028 timestamp_us=17751428237
+phase0_sample sequence=3 token=7987 timestamp_us=17751747801
+phase0_sample sequence=4 token=304 timestamp_us=17752097206
+phase0_sample sequence=5 token=279 timestamp_us=17752428180
+phase0_sample sequence=6 token=2266 timestamp_us=17752735894
+phase0_sample sequence=7 token=315 timestamp_us=17753045573
+phase0_sample sequence=8 token=63238 timestamp_us=17753370293
+phase0_sample sequence=9 token=1894 timestamp_us=17753668078
+phase0_sample sequence=10 token=26792 timestamp_us=17753985163
+phase0_sample sequence=11 token=320 timestamp_us=17754296690
+phase0_sample sequence=12 token=20805 timestamp_us=17754590506
+phase0_sample sequence=13 token=438 timestamp_us=17754907268
+phase0_sample sequence=14 token=304 timestamp_us=17755262146
+phase0_sample sequence=15 token=3100 timestamp_us=17755580484
+The three primary colors in the context of additive color mixing (such as in light
+
+[ Prompt: 21.2 t/s | Generation: 3.3 t/s ]
+
+
+Exiting...

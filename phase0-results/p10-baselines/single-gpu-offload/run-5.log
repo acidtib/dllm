@@ -1,0 +1,17 @@
+phase0_sample sequence=0 token=785 timestamp_us=19151699087
+phase0_sample sequence=1 token=2326 timestamp_us=19152288732
+phase0_sample sequence=2 token=6028 timestamp_us=19152925027
+phase0_sample sequence=3 token=7987 timestamp_us=19153537400
+phase0_sample sequence=4 token=304 timestamp_us=19154021839
+phase0_sample sequence=5 token=279 timestamp_us=19154723056
+phase0_sample sequence=6 token=2266 timestamp_us=19155228495
+phase0_sample sequence=7 token=315 timestamp_us=19155770382
+phase0_sample sequence=8 token=63238 timestamp_us=19156377736
+phase0_sample sequence=9 token=1894 timestamp_us=19157104371
+phase0_sample sequence=10 token=26792 timestamp_us=19157528927
+phase0_sample sequence=11 token=320 timestamp_us=19157998095
+phase0_sample sequence=12 token=20805 timestamp_us=19158573223
+phase0_sample sequence=13 token=438 timestamp_us=19159082069
+phase0_sample sequence=14 token=304 timestamp_us=19159512982
+phase0_sample sequence=15 token=3100 timestamp_us=19160206456
+[ Prompt: 35.4 t/s | Generation: 1.9 t/s ]

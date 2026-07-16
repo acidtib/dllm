@@ -1,0 +1,800 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.9.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 8098 MiB):
+  Device 0: NVIDIA GeForce GTX 1080, compute capability 6.1, VMM: yes, VRAM: 8098 MiB
+Starting RPC server v4.0.2
+  endpoint       : 127.0.0.1:50052
+  local cache    : n/a
+Devices:
+  CUDA0: NVIDIA GeForce GTX 1080 (8098 MiB, 7335 MiB free)
+  transport      : TCP
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+Client connection closed
+Accepted client connection
+rpc_trace event=set_tensor name=blk.0.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=93
+rpc_trace event=set_tensor name=blk.0.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3323
+rpc_trace event=set_tensor name=blk.0.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=620
+rpc_trace event=set_tensor name=blk.0.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=766
+rpc_trace event=set_tensor name=blk.0.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.0.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.0.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.0.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2737
+rpc_trace event=set_tensor name=blk.0.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=54
+rpc_trace event=set_tensor name=blk.0.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7228
+rpc_trace event=set_tensor name=blk.0.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10780
+rpc_trace event=set_tensor name=blk.0.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7776
+rpc_trace event=set_tensor name=blk.1.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=52
+rpc_trace event=set_tensor name=blk.1.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3383
+rpc_trace event=set_tensor name=blk.1.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=570
+rpc_trace event=set_tensor name=blk.1.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=903
+rpc_trace event=set_tensor name=blk.1.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=54
+rpc_trace event=set_tensor name=blk.1.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.1.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.1.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2746
+rpc_trace event=set_tensor name=blk.1.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.1.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7676
+rpc_trace event=set_tensor name=blk.1.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=11589
+rpc_trace event=set_tensor name=blk.1.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7372
+rpc_trace event=set_tensor name=blk.2.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.2.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3444
+rpc_trace event=set_tensor name=blk.2.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=632
+rpc_trace event=set_tensor name=blk.2.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=868
+rpc_trace event=set_tensor name=blk.2.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.2.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=6
+rpc_trace event=set_tensor name=blk.2.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.2.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3164
+rpc_trace event=set_tensor name=blk.2.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.2.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7163
+rpc_trace event=set_tensor name=blk.2.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10775
+rpc_trace event=set_tensor name=blk.2.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7391
+rpc_trace event=set_tensor name=blk.3.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.3.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2935
+rpc_trace event=set_tensor name=blk.3.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=672
+rpc_trace event=set_tensor name=blk.3.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=789
+rpc_trace event=set_tensor name=blk.3.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.3.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.3.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.3.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2807
+rpc_trace event=set_tensor name=blk.3.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=112
+rpc_trace event=set_tensor name=blk.3.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7191
+rpc_trace event=set_tensor name=blk.3.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10679
+rpc_trace event=set_tensor name=blk.3.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7184
+rpc_trace event=set_tensor name=blk.4.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.4.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3313
+rpc_trace event=set_tensor name=blk.4.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=599
+rpc_trace event=set_tensor name=blk.4.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=765
+rpc_trace event=set_tensor name=blk.4.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=46
+rpc_trace event=set_tensor name=blk.4.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.4.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.4.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2982
+rpc_trace event=set_tensor name=blk.4.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.4.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7090
+rpc_trace event=set_tensor name=blk.4.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10526
+rpc_trace event=set_tensor name=blk.4.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7248
+rpc_trace event=set_tensor name=blk.5.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=55
+rpc_trace event=set_tensor name=blk.5.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3088
+rpc_trace event=set_tensor name=blk.5.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=615
+rpc_trace event=set_tensor name=blk.5.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=539
+rpc_trace event=set_tensor name=blk.5.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.5.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=146
+rpc_trace event=set_tensor name=blk.5.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.5.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2634
+rpc_trace event=set_tensor name=blk.5.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.5.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7379
+rpc_trace event=set_tensor name=blk.5.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7192
+rpc_trace event=set_tensor name=blk.5.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=8767
+rpc_trace event=set_tensor name=blk.6.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=88
+rpc_trace event=set_tensor name=blk.6.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3536
+rpc_trace event=set_tensor name=blk.6.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=817
+rpc_trace event=set_tensor name=blk.6.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=835
+rpc_trace event=set_tensor name=blk.6.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.6.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.6.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.6.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2699
+rpc_trace event=set_tensor name=blk.6.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.6.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7319
+rpc_trace event=set_tensor name=blk.6.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7204
+rpc_trace event=set_tensor name=blk.6.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7273
+rpc_trace event=set_tensor name=blk.7.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=52
+rpc_trace event=set_tensor name=blk.7.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3303
+rpc_trace event=set_tensor name=blk.7.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=559
+rpc_trace event=set_tensor name=blk.7.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=530
+rpc_trace event=set_tensor name=blk.7.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=47
+rpc_trace event=set_tensor name=blk.7.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.7.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.7.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2655
+rpc_trace event=set_tensor name=blk.7.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.7.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7232
+rpc_trace event=set_tensor name=blk.7.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10554
+rpc_trace event=set_tensor name=blk.7.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7523
+rpc_trace event=set_tensor name=blk.8.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=63
+rpc_trace event=set_tensor name=blk.8.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3370
+rpc_trace event=set_tensor name=blk.8.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=552
+rpc_trace event=set_tensor name=blk.8.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=533
+rpc_trace event=set_tensor name=blk.8.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=45
+rpc_trace event=set_tensor name=blk.8.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.8.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.8.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3172
+rpc_trace event=set_tensor name=blk.8.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=57
+rpc_trace event=set_tensor name=blk.8.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7430
+rpc_trace event=set_tensor name=blk.8.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7352
+rpc_trace event=set_tensor name=blk.8.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7573
+rpc_trace event=set_tensor name=blk.9.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=60
+rpc_trace event=set_tensor name=blk.9.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3442
+rpc_trace event=set_tensor name=blk.9.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=570
+rpc_trace event=set_tensor name=blk.9.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=913
+rpc_trace event=set_tensor name=blk.9.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.9.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.9.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=6
+rpc_trace event=set_tensor name=blk.9.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3102
+rpc_trace event=set_tensor name=blk.9.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.9.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7370
+rpc_trace event=set_tensor name=blk.9.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7496
+rpc_trace event=set_tensor name=blk.9.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7560
+rpc_trace event=set_tensor name=blk.10.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=199
+rpc_trace event=set_tensor name=blk.10.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3069
+rpc_trace event=set_tensor name=blk.10.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=738
+rpc_trace event=set_tensor name=blk.10.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=900
+rpc_trace event=set_tensor name=blk.10.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=47
+rpc_trace event=set_tensor name=blk.10.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.10.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.10.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2956
+rpc_trace event=set_tensor name=blk.10.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.10.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7241
+rpc_trace event=set_tensor name=blk.10.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10479
+rpc_trace event=set_tensor name=blk.10.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7902
+rpc_trace event=set_tensor name=blk.11.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=65
+rpc_trace event=set_tensor name=blk.11.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2896
+rpc_trace event=set_tensor name=blk.11.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=571
+rpc_trace event=set_tensor name=blk.11.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=580
+rpc_trace event=set_tensor name=blk.11.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.11.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=72
+rpc_trace event=set_tensor name=blk.11.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.11.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3086
+rpc_trace event=set_tensor name=blk.11.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.11.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7577
+rpc_trace event=set_tensor name=blk.11.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10873
+rpc_trace event=set_tensor name=blk.11.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7473
+rpc_trace event=set_tensor name=blk.12.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.12.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3157
+rpc_trace event=set_tensor name=blk.12.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=547
+rpc_trace event=set_tensor name=blk.12.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=533
+rpc_trace event=set_tensor name=blk.12.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=47
+rpc_trace event=set_tensor name=blk.12.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.12.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.12.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3025
+rpc_trace event=set_tensor name=blk.12.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.12.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7480
+rpc_trace event=set_tensor name=blk.12.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7345
+rpc_trace event=set_tensor name=blk.12.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7413
+rpc_trace event=set_tensor name=blk.13.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=64
+rpc_trace event=set_tensor name=blk.13.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3603
+rpc_trace event=set_tensor name=blk.13.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=619
+rpc_trace event=set_tensor name=blk.13.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=576
+rpc_trace event=set_tensor name=blk.13.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.13.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=8
+rpc_trace event=set_tensor name=blk.13.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.13.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3068
+rpc_trace event=set_tensor name=blk.13.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.13.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7443
+rpc_trace event=set_tensor name=blk.13.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7457
+rpc_trace event=set_tensor name=blk.13.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7356
+rpc_trace event=set_tensor name=blk.14.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.14.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3282
+rpc_trace event=set_tensor name=blk.14.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=563
+rpc_trace event=set_tensor name=blk.14.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=920
+rpc_trace event=set_tensor name=blk.14.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=57
+rpc_trace event=set_tensor name=blk.14.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.14.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=7
+rpc_trace event=set_tensor name=blk.14.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3421
+rpc_trace event=set_tensor name=blk.14.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=52
+rpc_trace event=set_tensor name=blk.14.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7241
+rpc_trace event=set_tensor name=blk.14.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10951
+rpc_trace event=set_tensor name=blk.14.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7218
+rpc_trace event=set_tensor name=blk.15.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=59
+rpc_trace event=set_tensor name=blk.15.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3285
+rpc_trace event=set_tensor name=blk.15.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=674
+rpc_trace event=set_tensor name=blk.15.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=600
+rpc_trace event=set_tensor name=blk.15.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=50
+rpc_trace event=set_tensor name=blk.15.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.15.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.15.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2921
+rpc_trace event=set_tensor name=blk.15.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=52
+rpc_trace event=set_tensor name=blk.15.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7318
+rpc_trace event=set_tensor name=blk.15.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7996
+rpc_trace event=set_tensor name=blk.15.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7279
+rpc_trace event=set_tensor name=blk.16.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=60
+rpc_trace event=set_tensor name=blk.16.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2990
+rpc_trace event=set_tensor name=blk.16.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=589
+rpc_trace event=set_tensor name=blk.16.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=538
+rpc_trace event=set_tensor name=blk.16.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=49
+rpc_trace event=set_tensor name=blk.16.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.16.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.16.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2600
+rpc_trace event=set_tensor name=blk.16.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.16.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7145
+rpc_trace event=set_tensor name=blk.16.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7128
+rpc_trace event=set_tensor name=blk.16.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7444
+rpc_trace event=set_tensor name=blk.17.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=55
+rpc_trace event=set_tensor name=blk.17.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3076
+rpc_trace event=set_tensor name=blk.17.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=638
+rpc_trace event=set_tensor name=blk.17.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=758
+rpc_trace event=set_tensor name=blk.17.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=47
+rpc_trace event=set_tensor name=blk.17.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.17.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.17.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2796
+rpc_trace event=set_tensor name=blk.17.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=59
+rpc_trace event=set_tensor name=blk.17.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7316
+rpc_trace event=set_tensor name=blk.17.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10428
+rpc_trace event=set_tensor name=blk.17.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7350
+rpc_trace event=set_tensor name=blk.18.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=53
+rpc_trace event=set_tensor name=blk.18.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3466
+rpc_trace event=set_tensor name=blk.18.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=557
+rpc_trace event=set_tensor name=blk.18.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=535
+rpc_trace event=set_tensor name=blk.18.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=46
+rpc_trace event=set_tensor name=blk.18.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.18.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.18.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2735
+rpc_trace event=set_tensor name=blk.18.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=95
+rpc_trace event=set_tensor name=blk.18.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7437
+rpc_trace event=set_tensor name=blk.18.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7168
+rpc_trace event=set_tensor name=blk.18.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7169
+rpc_trace event=set_tensor name=blk.19.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.19.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3086
+rpc_trace event=set_tensor name=blk.19.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=570
+rpc_trace event=set_tensor name=blk.19.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=542
+rpc_trace event=set_tensor name=blk.19.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=49
+rpc_trace event=set_tensor name=blk.19.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=4
+rpc_trace event=set_tensor name=blk.19.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.19.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2797
+rpc_trace event=set_tensor name=blk.19.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=58
+rpc_trace event=set_tensor name=blk.19.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7277
+rpc_trace event=set_tensor name=blk.19.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7182
+rpc_trace event=set_tensor name=blk.19.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7221
+rpc_trace event=set_tensor name=blk.20.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=52
+rpc_trace event=set_tensor name=blk.20.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3540
+rpc_trace event=set_tensor name=blk.20.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=590
+rpc_trace event=set_tensor name=blk.20.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=774
+rpc_trace event=set_tensor name=blk.20.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=80
+rpc_trace event=set_tensor name=blk.20.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=6
+rpc_trace event=set_tensor name=blk.20.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.20.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3054
+rpc_trace event=set_tensor name=blk.20.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.20.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7233
+rpc_trace event=set_tensor name=blk.20.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=11204
+rpc_trace event=set_tensor name=blk.20.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7156
+rpc_trace event=set_tensor name=blk.21.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.21.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3352
+rpc_trace event=set_tensor name=blk.21.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=551
+rpc_trace event=set_tensor name=blk.21.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=538
+rpc_trace event=set_tensor name=blk.21.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=46
+rpc_trace event=set_tensor name=blk.21.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.21.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.21.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2611
+rpc_trace event=set_tensor name=blk.21.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=140
+rpc_trace event=set_tensor name=blk.21.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7205
+rpc_trace event=set_tensor name=blk.21.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7383
+rpc_trace event=set_tensor name=blk.21.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7432
+rpc_trace event=set_tensor name=blk.22.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=64
+rpc_trace event=set_tensor name=blk.22.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3237
+rpc_trace event=set_tensor name=blk.22.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=545
+rpc_trace event=set_tensor name=blk.22.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=534
+rpc_trace event=set_tensor name=blk.22.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=46
+rpc_trace event=set_tensor name=blk.22.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=71
+rpc_trace event=set_tensor name=blk.22.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.22.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2863
+rpc_trace event=set_tensor name=blk.22.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.22.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7352
+rpc_trace event=set_tensor name=blk.22.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7150
+rpc_trace event=set_tensor name=blk.22.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7178
+rpc_trace event=set_tensor name=blk.23.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=51
+rpc_trace event=set_tensor name=blk.23.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2903
+rpc_trace event=set_tensor name=blk.23.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=655
+rpc_trace event=set_tensor name=blk.23.attn_v.weight type=q6_K ne=5120,1024,1,1 offset=0 bytes=4300800 duration_us=815
+rpc_trace event=set_tensor name=blk.23.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=47
+rpc_trace event=set_tensor name=blk.23.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.23.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.23.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2639
+rpc_trace event=set_tensor name=blk.23.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=48
+rpc_trace event=set_tensor name=blk.23.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7250
+rpc_trace event=set_tensor name=blk.23.ffn_down.weight type=q6_K ne=13824,5120,1,1 offset=0 bytes=58060800 duration_us=10437
+rpc_trace event=set_tensor name=blk.23.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7288
+rpc_trace event=set_tensor name=blk.24.attn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=56
+rpc_trace event=set_tensor name=blk.24.attn_q.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=3051
+rpc_trace event=set_tensor name=blk.24.attn_k.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=570
+rpc_trace event=set_tensor name=blk.24.attn_v.weight type=q4_K ne=5120,1024,1,1 offset=0 bytes=2949120 duration_us=533
+rpc_trace event=set_tensor name=blk.24.attn_q.bias type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=46
+rpc_trace event=set_tensor name=blk.24.attn_k.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.24.attn_v.bias type=f32 ne=1024,1,1,1 offset=0 bytes=4096 duration_us=5
+rpc_trace event=set_tensor name=blk.24.attn_output.weight type=q4_K ne=5120,5120,1,1 offset=0 bytes=14745600 duration_us=2662
+rpc_trace event=set_tensor name=blk.24.ffn_norm.weight type=f32 ne=5120,1,1,1 offset=0 bytes=20480 duration_us=49
+rpc_trace event=set_tensor name=blk.24.ffn_gate.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7313
+rpc_trace event=set_tensor name=blk.24.ffn_down.weight type=q4_K ne=13824,5120,1,1 offset=0 bytes=39813120 duration_us=7169
+rpc_trace event=set_tensor name=blk.24.ffn_up.weight type=q4_K ne=5120,13824,1,1 offset=0 bytes=39813120 duration_us=7177
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#embd#0 type=f32 ne=5120,2,1,1 offset=0 bytes=40960 duration_us=78
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_6#0 type=i32 ne=2,1,1,1 offset=0 bytes=8 duration_us=5
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_11#0 type=i64 ne=2,1,1,1 offset=0 bytes=16 duration_us=4
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_13#0 type=i64 ne=2048,1,1,1 offset=0 bytes=16384 duration_us=10
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#attn_inp_kq_mask#0 type=f32 ne=256,2,1,1 offset=0 bytes=2048 duration_us=5
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+ggml_cuda_graph_set_enabled: disabling CUDA graphs due to GPU architecture
+rpc_trace event=graph_compute device=0 nodes=975 tensors=1330 request_bytes=401492 duration_us=47969
+rpc_trace event=get_tensor name=l_out-24 type=f32 ne=5120,2,1,1 offset=0 bytes=40960 duration_us=38
+rpc_trace side=server event=get_tensor_send name=l_out-24 payload_bytes=40960 frame_bytes=40968 socket_send_us=46
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#embd#0 type=f32 ne=5120,25,1,1 offset=0 bytes=512000 duration_us=206
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_6#0 type=i32 ne=25,1,1,1 offset=0 bytes=100 duration_us=47
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_11#0 type=i64 ne=25,1,1,1 offset=0 bytes=200 duration_us=4
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#leaf_13#0 type=i64 ne=25600,1,1,1 offset=0 bytes=204800 duration_us=52
+rpc_trace event=set_tensor name=RPC0[127.0.0.1:50052]#attn_inp_kq_mask#0 type=f32 ne=256,25,1,1 offset=0 bytes=25600 duration_us=11
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l0 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l0 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l1 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l1 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l2 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l2 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l3 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l3 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l4 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l4 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l5 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l5 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l6 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l6 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l7 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l7 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l8 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l8 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l9 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l9 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l10 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l10 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l11 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l11 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l12 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l12 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l13 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l13 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l14 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l14 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l15 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l15 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l16 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l16 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l17 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l17 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l18 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l18 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l19 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l19 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l20 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l20 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l21 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l21 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l22 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l22 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l23 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l23 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 type=1 shape=[1024,2048,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (reshaped) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (reshaped) (view) type=1 shape=[1,2097152,1,1] bytes=4194304
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (view) type=1 shape=[256,8,128,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_v_l24 (view) (permuted) type=1 shape=[256,128,8,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) type=1 shape=[128,8,256,1] bytes=524288
+rpc_trace event=kv_tensor device=0 name=cache_k_l24 (view) (permuted) type=1 shape=[128,256,8,1] bytes=524288
+rpc_trace event=graph_compute device=0 nodes=975 tensors=1330 request_bytes=401492 duration_us=78035
+rpc_trace event=get_tensor name=l_out-24 type=f32 ne=5120,25,1,1 offset=0 bytes=512000 duration_us=301
+rpc_trace side=server event=get_tensor_send name=l_out-24 payload_bytes=512000 frame_bytes=512008 socket_send_us=167
+Client connection closed

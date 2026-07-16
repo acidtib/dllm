@@ -1,0 +1,62 @@
+{
+  "status": "complete_with_failed_acceptance",
+  "assumption_a8": "disproven",
+  "runtime_revision": "505b1ed15ca80e2a19f12ff4ac365e40fb374053",
+  "tests": {
+    "client_cancel": {
+      "client_deadline_ms": 350,
+      "observed_client_time_ms": 350.509,
+      "server_slot_release_after_cancel_ms": 55.274,
+      "server_remained_healthy": true,
+      "terminal_done": false,
+      "success_finish_reason": false,
+      "explicit_stream_error": false
+    },
+    "slow_consumer": {
+      "receive_limit_bytes_per_second": 1024,
+      "client_deadline_ms": 2000,
+      "observed_client_time_ms": 2005.481,
+      "bytes_received": 2048,
+      "server_slot_release_after_disconnect_ms": 56.781,
+      "server_remained_healthy": true,
+      "terminal_done": false,
+      "explicit_stream_error": false
+    },
+    "kill_worker_0": {
+      "assigned_layers": "0-24",
+      "client_closed_after_injection_ms": 1615,
+      "curl_exit_code": 18,
+      "coordinator_exit_code": 139,
+      "stage_specific_error": false,
+      "terminal_done": false,
+      "success_finish_reason": false
+    },
+    "kill_worker_1": {
+      "assigned_layers": "25-47+output",
+      "client_closed_after_injection_ms": 1644,
+      "curl_exit_code": 18,
+      "coordinator_exit_code": 139,
+      "stage_specific_error": false,
+      "terminal_done": false,
+      "success_finish_reason": false
+    },
+    "stall_worker_0": {
+      "client_deadline_ms": 2000,
+      "coordinator_rpc_deadline": false,
+      "coordinator_remained_blocked_until_external_resume": true,
+      "health_during_stall_http_status": 200,
+      "second_request_completed": false,
+      "terminal_done": false
+    },
+    "stall_worker_1": {
+      "client_deadline_ms": 2000,
+      "coordinator_rpc_deadline": false,
+      "coordinator_remained_blocked_until_external_resume": true,
+      "health_during_stall_http_status": 200,
+      "second_request_completed": false,
+      "terminal_done": false
+    }
+  },
+  "no_partial_fabricated_success": true,
+  "production_viable_failure_semantics": false
+}

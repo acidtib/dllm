@@ -1,0 +1,53 @@
+{
+  "status": "complete",
+  "runtime_revision": "505b1ed15ca80e2a19f12ff4ac365e40fb374053",
+  "warmup_runs_per_path": 1,
+  "measured_runs_per_path": 5,
+  "prompt": "The three primary colors are",
+  "evaluated_prompt_tokens": 34,
+  "generated_tokens": 16,
+  "sampler": "greedy",
+  "seed": 1,
+  "token_ids": [785, 2326, 6028, 7987, 304, 279, 2266, 315, 63238, 1894, 26792, 320, 20805, 438, 304, 3100],
+  "token_sequence_sha256": "829afad5a1a7f4e0f7dea10744c45f3505accc4a4a6e2a0a0bbf848bf9a4d522",
+  "all_sequences_match": true,
+  "baseline": {
+    "median_ttft_ms": 156.754,
+    "ttft_range_ms": [155.251, 157.993],
+    "median_decode_interval_ms": 52.332,
+    "decode_interval_range_ms": [51.494, 54.776],
+    "median_generation_tokens_per_second": 20.4,
+    "generation_tokens_per_second_range": [20.3, 20.4]
+  },
+  "rpc": {
+    "median_ttft_ms": 135.946,
+    "ttft_range_ms": [134.974, 143.824],
+    "median_decode_interval_ms": 56.875,
+    "decode_interval_range_ms": [55.256, 63.449],
+    "median_generation_tokens_per_second": 18.8,
+    "generation_tokens_per_second_range": [18.7, 18.8],
+    "worker_0_decode_compute_us": {
+      "samples": 75,
+      "median": 26077,
+      "range": [24943, 28078]
+    },
+    "worker_1_decode_compute_us": {
+      "samples": 75,
+      "median": 29040,
+      "range": [28937, 29872]
+    },
+    "boundary_get_roundtrip_us": {
+      "samples": 75,
+      "median": 26339,
+      "range": [25135, 29304]
+    },
+    "logits_get_roundtrip_us": {
+      "samples": 75,
+      "median": 29474,
+      "range": [29336, 31388]
+    },
+    "logical_boundary_activation_bytes_per_decode": 20480,
+    "coordinator_worker_payload_bytes_per_decode": 649216,
+    "rpc_bytes_per_decode_excluding_tcp_ip_headers": 650215
+  }
+}

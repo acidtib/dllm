@@ -1,0 +1,13 @@
+{
+  "model": "phase0-qwen2.5-14b-q4_k_m",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Reply with exactly three color names."
+    }
+  ],
+  "stream": true,
+  "temperature": 0,
+  "seed": 1,
+  "max_tokens": 12
+}

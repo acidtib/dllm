@@ -1,0 +1,13 @@
+0.00.457.441 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.02.714.084 I 
+0.02.714.143 I system_info: n_threads = 8 (n_threads_batch = 8) / 8 | CUDA : ARCHS = 610 | USE_GRAPHS = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.02.714.143 I 
+Model add_bos: false
+Input prompt: "Hello"
+Token ids (1):
+Hello(9707) 
+Data saved to /results/llamacpp-qwen2.5-14b-instruct-q4_k_m-00001-of-00003.bin
+Data saved to /results/llamacpp-qwen2.5-14b-instruct-q4_k_m-00001-of-00003.txt
+Prompt saved to /results/llamacpp-qwen2.5-14b-instruct-q4_k_m-00001-of-00003-prompt.txt
+Tokens saved to /results/llamacpp-qwen2.5-14b-instruct-q4_k_m-00001-of-00003-tokens.bin
+

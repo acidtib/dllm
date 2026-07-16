@@ -1,0 +1,10 @@
+run=1 direction=desktop_to_laptop bytes=16777216 seconds=1.467406 mbps=91.466
+run=1 direction=laptop_to_desktop bytes=16777216 seconds=1.390135 mbps=96.550
+run=2 direction=desktop_to_laptop bytes=16777216 seconds=1.756262 mbps=76.422
+run=2 direction=laptop_to_desktop bytes=16777216 seconds=1.585965 mbps=84.628
+run=3 direction=desktop_to_laptop bytes=16777216 seconds=1.165392 mbps=115.170
+run=3 direction=laptop_to_desktop bytes=16777216 seconds=1.495544 mbps=89.745
+run=4 direction=desktop_to_laptop bytes=16777216 seconds=1.522245 mbps=88.171
+run=4 direction=laptop_to_desktop bytes=16777216 seconds=1.362209 mbps=98.529
+run=5 direction=desktop_to_laptop bytes=16777216 seconds=1.021306 mbps=131.418
+run=5 direction=laptop_to_desktop bytes=16777216 seconds=1.328781 mbps=101.008

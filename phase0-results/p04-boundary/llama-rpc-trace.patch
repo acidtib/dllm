@@ -1,0 +1,121 @@
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index d380577..baa8a35 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -19,10 +19,14 @@
+ #include <algorithm>
+ 
+ static const char * RPC_DEBUG = std::getenv("GGML_RPC_DEBUG");
++static const char * RPC_TRACE = std::getenv("GGML_RPC_TRACE");
+ 
+ #define LOG_DBG(...) \
+     do { if (RPC_DEBUG) GGML_LOG_DEBUG(__VA_ARGS__); } while (0)
+ 
++#define LOG_TRACE(...) \
++    do { if (RPC_TRACE) fprintf(stderr, __VA_ARGS__); } while (0)
++
+ 
+ namespace fs = std::filesystem;
+ 
+@@ -479,12 +483,17 @@ static void ggml_backend_rpc_buffer_set_tensor(ggml_backend_buffer_t buffer, ggm
+         }
+     }
+     // input serialization format: | rpc_tensor | offset (8 bytes) | data (size bytes)
++    const int64_t serialize_start_us = ggml_time_us();
+     size_t input_size = sizeof(rpc_tensor) + sizeof(uint64_t) + size;
+     std::vector<uint8_t> input(input_size, 0);
+     memcpy(input.data(), &rpc_tensor, sizeof(rpc_tensor));
+     memcpy(input.data() + sizeof(rpc_tensor), &offset, sizeof(offset));
+     memcpy(input.data() + sizeof(rpc_tensor) + sizeof(offset), data, size);
++    const int64_t serialize_us = ggml_time_us() - serialize_start_us;
++    const int64_t send_start_us = ggml_time_us();
+     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_SET_TENSOR, input.data(), input.size());
++    LOG_TRACE("rpc_trace side=client event=set_tensor name=%s payload_bytes=%zu frame_bytes=%zu serialize_us=%" PRId64 " socket_send_us=%" PRId64 "\n",
++              tensor->name, size, input.size() + sizeof(uint8_t) + sizeof(uint64_t), serialize_us, ggml_time_us() - send_start_us);
+     RPC_STATUS_ASSERT(status);
+ }
+ 
+@@ -494,7 +503,10 @@ static void ggml_backend_rpc_buffer_get_tensor(ggml_backend_buffer_t buffer, con
+     request.tensor = serialize_tensor(tensor);
+     request.offset = offset;
+     request.size = size;
++    const int64_t roundtrip_start_us = ggml_time_us();
+     bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request), data, size);
++    LOG_TRACE("rpc_trace side=client event=get_tensor name=%s payload_bytes=%zu request_bytes=%zu roundtrip_us=%" PRId64 "\n",
++              tensor->name, size, sizeof(request) + sizeof(uint8_t) + sizeof(uint64_t), ggml_time_us() - roundtrip_start_us);
+     RPC_STATUS_ASSERT(status);
+ }
+ 
+@@ -712,9 +724,14 @@ static enum ggml_status ggml_backend_rpc_graph_compute(ggml_backend_t backend, g
+     } else {
+         rpc_dev_ctx->last_graph_uid = cgraph->uid;
+         std::vector<uint8_t> input;
++        const int64_t serialize_start_us = ggml_time_us();
+         serialize_graph(rpc_ctx->device, cgraph, input);
++        const int64_t serialize_us = ggml_time_us() - serialize_start_us;
+         auto sock = get_socket(rpc_ctx->endpoint);
++        const int64_t send_start_us = ggml_time_us();
+         bool status = send_rpc_cmd(sock, RPC_CMD_GRAPH_COMPUTE, input.data(), input.size());
++        LOG_TRACE("rpc_trace side=client event=graph_compute endpoint=%s nodes=%d payload_bytes=%zu serialize_us=%" PRId64 " socket_send_us=%" PRId64 "\n",
++                  rpc_ctx->endpoint.c_str(), cgraph->n_nodes, input.size(), serialize_us, ggml_time_us() - send_start_us);
+         RPC_STATUS_ASSERT(status);
+     }
+     return GGML_STATUS_SUCCESS;
+@@ -1087,7 +1104,10 @@ bool rpc_server::set_tensor(const std::vector<uint8_t> & input) {
+         ofs.write((const char *)data, size);
+         GGML_LOG_INFO("[%s] saved to '%s'\n", __func__, cache_file.string().c_str());
+     }
++    const int64_t start_us = ggml_time_us();
+     ggml_backend_tensor_set(tensor, data, offset, size);
++    LOG_TRACE("rpc_trace event=set_tensor name=%s type=%s ne=%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 " offset=%" PRIu64 " bytes=%zu duration_us=%" PRId64 "\n",
++              tensor->name, ggml_type_name(tensor->type), tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3], offset, size, ggml_time_us() - start_us);
+     return true;
+ }
+ 
+@@ -1219,7 +1239,10 @@ bool rpc_server::get_tensor(const rpc_msg_get_tensor_req & request, std::vector<
+     }
+ 
+     response.resize(request.size, 0);
++    const int64_t start_us = ggml_time_us();
+     ggml_backend_tensor_get(tensor, response.data(), request.offset, request.size);
++    LOG_TRACE("rpc_trace event=get_tensor name=%s type=%s ne=%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 " offset=%" PRIu64 " bytes=%" PRIu64 " duration_us=%" PRId64 "\n",
++              tensor->name, ggml_type_name(tensor->type), tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3], request.offset, request.size, ggml_time_us() - start_us);
+     return true;
+ }
+ 
+@@ -1384,7 +1407,10 @@ bool rpc_server::graph_compute(const std::vector<uint8_t> & input) {
+             return false;
+         }
+     }
++    const int64_t start_us = ggml_time_us();
+     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
++    LOG_TRACE("rpc_trace event=graph_compute device=%u nodes=%u tensors=%u request_bytes=%zu duration_us=%" PRId64 "\n",
++              device, n_nodes, n_tensors, input.size(), ggml_time_us() - start_us);
+     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+     stored_graphs[device].graph = graph;
+     return true;
+@@ -1400,7 +1426,10 @@ bool rpc_server::graph_recompute(const rpc_msg_graph_recompute_req & request) {
+     }
+     ggml_cgraph * graph = stored_graphs[device].graph;
+     LOG_DBG("[%s] device: %u\n", __func__, device);
++    const int64_t start_us = ggml_time_us();
+     ggml_status status = ggml_backend_graph_compute(backends[device], graph);
++    LOG_TRACE("rpc_trace event=graph_recompute device=%u nodes=%d duration_us=%" PRId64 "\n",
++              device, graph->n_nodes, ggml_time_us() - start_us);
+     GGML_ASSERT(status == GGML_STATUS_SUCCESS && "Unsuccessful graph computations are not supported with RPC");
+     return true;
+ }
+@@ -1631,9 +1660,12 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
+                 if (!server.get_tensor(request, response)) {
+                     return;
+                 }
++                const int64_t send_start_us = ggml_time_us();
+                 if (!send_msg(sock, response.data(), response.size())) {
+                     return;
+                 }
++                LOG_TRACE("rpc_trace side=server event=get_tensor_send name=%s payload_bytes=%zu frame_bytes=%zu socket_send_us=%" PRId64 "\n",
++                          request.tensor.name, response.size(), response.size() + sizeof(uint64_t), ggml_time_us() - send_start_us);
+                 break;
+             }
+             case RPC_CMD_COPY_TENSOR: {
+

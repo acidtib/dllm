@@ -1,0 +1,77 @@
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50052 nodes=975 payload_bytes=401492 serialize_us=337 socket_send_us=67
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=40960 request_bytes=321 roundtrip_us=28705
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=40960 frame_bytes=41273 serialize_us=8 socket_send_us=35
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50053 nodes=902 payload_bytes=371900 serialize_us=563 socket_send_us=91
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=31489
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=40960 request_bytes=321 roundtrip_us=27001
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=40960 frame_bytes=41273 serialize_us=7 socket_send_us=20
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=30541
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50052 nodes=975 payload_bytes=401492 serialize_us=334 socket_send_us=58
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=696320 request_bytes=321 roundtrip_us=69067
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=696320 frame_bytes=696633 serialize_us=44 socket_send_us=91
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50053 nodes=902 payload_bytes=371900 serialize_us=291 socket_send_us=54
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=61923
+phase0_sample sequence=0 token=785 timestamp_us=10228141920
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50052 nodes=975 payload_bytes=401492 serialize_us=291 socket_send_us=61
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=27156
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=4 socket_send_us=49
+rpc_trace side=client event=graph_compute endpoint=127.0.0.1:50053 nodes=902 payload_bytes=371900 serialize_us=659 socket_send_us=81
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=30699
+phase0_sample sequence=1 token=2326 timestamp_us=10228202706
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=25744
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=2 socket_send_us=15
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29952
+phase0_sample sequence=2 token=6028 timestamp_us=10228259300
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=27138
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=5 socket_send_us=22
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29523
+phase0_sample sequence=3 token=7987 timestamp_us=10228316882
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26558
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=2 socket_send_us=15
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29404
+phase0_sample sequence=4 token=304 timestamp_us=10228373470
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26763
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=4 socket_send_us=17
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29415
+phase0_sample sequence=5 token=279 timestamp_us=10228430279
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26078
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=3 socket_send_us=20
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29400
+phase0_sample sequence=6 token=2266 timestamp_us=10228486337
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26567
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=4 socket_send_us=19
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29567
+phase0_sample sequence=7 token=315 timestamp_us=10228543042
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=25968
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=2 socket_send_us=14
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29445
+phase0_sample sequence=8 token=63238 timestamp_us=10228598994
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26352
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=3 socket_send_us=16
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29519
+phase0_sample sequence=9 token=1894 timestamp_us=10228655410
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26422
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=4 socket_send_us=21
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29719
+phase0_sample sequence=10 token=26792 timestamp_us=10228712169
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=25891
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=5 socket_send_us=19
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29549
+phase0_sample sequence=11 token=320 timestamp_us=10228768191
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=27148
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=4 socket_send_us=18
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29445
+phase0_sample sequence=12 token=20805 timestamp_us=10228825358
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=25790
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=2 socket_send_us=15
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29572
+phase0_sample sequence=13 token=438 timestamp_us=10228881279
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=27730
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=3 socket_send_us=17
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29501
+phase0_sample sequence=14 token=304 timestamp_us=10228939335
+rpc_trace side=client event=get_tensor name=l_out-24 payload_bytes=20480 request_bytes=321 roundtrip_us=26144
+rpc_trace side=client event=set_tensor name=RPC0[127.0.0.1:50053]#l_out-24#0 payload_bytes=20480 frame_bytes=20793 serialize_us=5 socket_send_us=21
+rpc_trace side=client event=get_tensor name=result_output payload_bytes=608256 request_bytes=321 roundtrip_us=29703
+phase0_sample sequence=15 token=3100 timestamp_us=10228996025
+[ Prompt: 251.9 t/s | Generation: 18.7 t/s ]

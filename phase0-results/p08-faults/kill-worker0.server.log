@@ -1,0 +1,60 @@
+
+==========
+== CUDA ==
+==========
+
+CUDA Version 12.9.1
+
+Container image Copyright (c) 2016-2023, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This container image and its contents are governed by the NVIDIA Deep Learning Container License.
+By pulling and using the container, you accept the terms and conditions of this license:
+https://developer.nvidia.com/ngc/nvidia-deep-learning-container-license
+
+A copy of this license is made available in this container at /NGC-DL-CONTAINER-LICENSE for your convenience.
+
+0.00.002.679 E ggml_cuda_init: failed to initialize CUDA: no CUDA-capable device is detected
+0.00.006.095 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.00.006.856 W srv  llama_server: -----------------
+0.00.006.858 W srv  llama_server: CORS is set to allow all origins ('*') and no API key is set
+0.00.006.858 W srv  llama_server: this can be a security risk (cross-origin attacks)
+0.00.006.858 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
+0.00.006.858 W srv  llama_server: -----------------
+0.00.008.080 I srv    load_model: loading model '/model/qwen2.5-14b-instruct-q4_k_m-00001-of-00003.gguf'
+0.00.164.626 W load: control-looking token: 128247 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.12.730.081 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 2048, kv_unified = 'false'
+0.12.734.658 I srv  llama_server: model loaded
+0.12.734.664 I srv  llama_server: listening on http://127.0.0.1:8088
+0.21.581.468 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.21.581.505 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.21.940.538 W srv          stop: cancel task, id_task = 0
+0.21.995.812 I slot      release: id  0 | task 0 | stop processing: n_tokens = 46, truncated = 0
+0.43.938.674 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.913
+0.43.938.710 I slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
+0.43.938.716 W slot   operator(): id  0 | task 7 | need to evaluate at least 1 token for each active slot (n_past = 42, task.n_tokens() = 42)
+0.43.938.716 W slot   operator(): id  0 | task 7 | n_past was set to 41
+0.45.948.324 W srv          stop: cancel task, id_task = 7
+0.46.005.105 I slot      release: id  0 | task 7 | stop processing: n_tokens = 77, truncated = 0
+1.09.512.594 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.545
+1.09.512.698 I slot launch_slot_: id  0 | task 45 | processing task, is_child = 0
+1.09.512.731 W slot   operator(): id  0 | task 45 | need to evaluate at least 1 token for each active slot (n_past = 42, task.n_tokens() = 42)
+1.09.512.733 W slot   operator(): id  0 | task 45 | n_past was set to 41
+1.09.811.599 E send failed (bytes_sent=0, size_to_send=8)
+/src/ggml/src/ggml-rpc/ggml-rpc.cpp:497: Remote RPC server crashed or returned malformed response
+/src/build-phase0/bin/libggml-base.so.0(+0x1c1cb)[0x7f230d0b21cb]
+/src/build-phase0/bin/libggml-base.so.0(ggml_print_backtrace+0x21c)[0x7f230d0b264c]
+/src/build-phase0/bin/libggml-base.so.0(ggml_abort+0x15b)[0x7f230d0b282b]
+/src/build-phase0/bin/libggml-rpc.so.0(+0xc88e)[0x7f230d07f88e]
+/src/build-phase0/bin/libggml-base.so.0(ggml_backend_sched_graph_compute_async+0x20e)[0x7f230d0cfe8e]
+/src/build-phase0/bin/libllama.so.0(_ZN13llama_context13graph_computeEP11ggml_cgraphb+0xa1)[0x7f230c8ed301]
+/src/build-phase0/bin/libllama.so.0(_ZN13llama_context14process_ubatchERK12llama_ubatch14llm_graph_typeP22llama_memory_context_iR11ggml_status+0x11a)[0x7f230c8f147a]
+/src/build-phase0/bin/libllama.so.0(_ZN13llama_context6decodeERK11llama_batch+0x390)[0x7f230c8f7c30]
+/src/build-phase0/bin/libllama.so.0(llama_decode+0xf)[0x7f230c8f98bf]
+/src/build-phase0/bin/libllama-server-impl.so(_ZN19server_context_impl6decodeERiiR11llama_batch+0xed)[0x7f230d79f16d]
+/src/build-phase0/bin/libllama-server-impl.so(_ZN19server_context_impl12update_slotsEv+0x3b2)[0x7f230d7a0772]
+/src/build-phase0/bin/libllama-server-impl.so(_ZN12server_queue10start_loopEl+0x221)[0x7f230d7480b1]
+/src/build-phase0/bin/libllama-server-impl.so(_Z12llama_serverR13common_paramsiPPc+0x39e8)[0x7f230d6e95f8]
+/src/build-phase0/bin/libllama-server-impl.so(_Z12llama_serveriPPc+0xfff)[0x7f230d6eb24f]
+/lib/x86_64-linux-gnu/libc.so.6(+0x2a1ca)[0x7f230d19a1ca]
+/lib/x86_64-linux-gnu/libc.so.6(__libc_start_main+0x8b)[0x7f230d19a28b]
+./build-phase0/bin/llama-server(+0x12a5)[0x55fd367892a5]

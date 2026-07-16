@@ -1,0 +1,42 @@
+{
+  "prompt_tokens": 25,
+  "vocabulary_logits": 152064,
+  "baseline_logits_sha256": "dd1a3f79b1dfed4176947705e35f30361d283020088b8afa2c5ff00702bea17b",
+  "rpc_logits_sha256": "dd1a3f79b1dfed4176947705e35f30361d283020088b8afa2c5ff00702bea17b",
+  "token_ids_sha256": "7896a82a931b872ac3fbe8c3aa63b84c2cdfdfe3d78dc1bf79aedbac750775b3",
+  "bit_identical": true,
+  "maximum_absolute_error": 0.0,
+  "mean_absolute_error": 0.0,
+  "root_mean_square_error": 0.0,
+  "top_k_agreement": {
+    "1": 1.0,
+    "5": 1.0,
+    "10": 1.0,
+    "50": 1.0
+  },
+  "boundary_tensor": {
+    "name": "l_out-24",
+    "type": "f32",
+    "shape": [5120, 25, 1, 1],
+    "payload_bytes": 512000,
+    "frame_bytes": 512313
+  },
+  "worker_0": {
+    "layers": [0, 24],
+    "base_kv_tensors": 50,
+    "kv_type": "f16",
+    "base_tensor_shape": [1024, 2048, 1, 1],
+    "base_tensor_bytes": 4194304,
+    "kv_buffer_bytes": 209715200,
+    "foreign_layer_cache_tensors": 0
+  },
+  "worker_1": {
+    "layers": [25, 47],
+    "base_kv_tensors": 46,
+    "kv_type": "f16",
+    "base_tensor_shape": [1024, 2048, 1, 1],
+    "base_tensor_bytes": 4194304,
+    "kv_buffer_bytes": 192937984,
+    "foreign_layer_cache_tensors": 0
+  }
+}
