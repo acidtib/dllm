@@ -85,6 +85,8 @@ pub struct Placement {
 pub struct Member {
     pub node_pubkey: [u8; 32],
     pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_endpoint: Option<String>,
     pub joined_generation: u64,
 }
 
@@ -98,11 +100,20 @@ pub enum HealthState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    Local,
+    Direct,
+    Relay,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeStatus {
     pub node_pubkey: [u8; 32],
     pub endpoint: String,
     pub owner: bool,
     pub health: HealthState,
+    pub transport: Option<TransportKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

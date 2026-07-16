@@ -15,7 +15,7 @@ use axum::{
 };
 use dllm_protocol::{
     HardwareProfile, HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken,
-    WorkerStatus,
+    TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,7 @@ pub struct JoinRequest {
     pub token: SignedJoinToken,
     pub node_pubkey: Vec<u8>,
     pub node_endpoint: String,
+    pub relay_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +133,16 @@ pub fn router(state: ApiState) -> Router {
     if let Some(token) = state.api_key.clone() {
         inference = inference.route_layer(middleware::from_fn_with_state(token, require_bearer));
     }
+    let mut peer = Router::new()
+        .route("/v1/peer/health", get(|| async { StatusCode::OK }))
+        .route("/v1/peer/health/runtime", get(runtime_health))
+        .route("/v1/peer/chat/completions", post(proxy_chat));
+    if state.peer_api_key.is_some() {
+        peer = peer.route_layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_peer_identity,
+        ));
+    }
     Router::new()
         .route("/", get(ui))
         .route("/health", get(|| async { StatusCode::OK }))
@@ -142,6 +153,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(operator)
         .merge(admin)
         .merge(inference)
+        .merge(peer)
         .with_state(state)
 }
 
@@ -219,6 +231,49 @@ async fn require_bearer(
     Ok(next.run(request).await)
 }
 
+async fn require_peer_identity(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let supplied = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if supplied != state.peer_api_key.as_deref() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let network_id = request
+        .headers()
+        .get("x-dllm-network-id")
+        .and_then(|value| value.to_str().ok());
+    let caller = request
+        .headers()
+        .get("x-dllm-node-key")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_hex_key);
+    let store = state.store.lock().await;
+    if network_id != Some(store.state.state.network_id.to_string().as_str()) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let Some(caller) = caller else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    if caller != store.state.state.owner_pubkey
+        && !store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == caller)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    drop(store);
+    Ok(next.run(request).await)
+}
+
 async fn require_management_role(
     State((credentials, required)): State<(Arc<RwLock<CredentialRegistry>>, ManagementRole)>,
     request: Request,
@@ -285,40 +340,36 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
         endpoint: state.public_url.clone(),
         owner: true,
         health: HealthState::Ready,
+        transport: Some(TransportKind::Local),
     }];
     let probes = network.state.members.iter().map(|member| {
-        let client = state.client.clone();
+        let probe_state = state.clone();
         let member = member.clone();
         async move {
-            let ready = client
-                .get(format!("{}/health", member.endpoint))
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await
-                .is_ok_and(|response| response.status().is_success());
+            let transport = resolve_member_transport(&probe_state, &member, false).await;
             NodeStatus {
                 node_pubkey: member.node_pubkey,
-                endpoint: member.endpoint,
+                endpoint: transport
+                    .as_ref()
+                    .map_or_else(|| member.endpoint.clone(), |candidate| candidate.0.clone()),
                 owner: false,
-                health: if ready {
+                health: if transport.is_some() {
                     HealthState::Ready
                 } else {
                     HealthState::Unavailable
                 },
+                transport: transport.map(|candidate| candidate.1),
             }
         }
     });
     nodes.extend(join_all(probes).await);
     let runtime_probes = network.state.members.iter().map(|member| {
-        let client = state.client.clone();
+        let probe_state = state.clone();
         let member = member.clone();
         async move {
-            let ready = client
-                .get(format!("{}/health/runtime", member.endpoint))
-                .timeout(Duration::from_secs(5))
-                .send()
+            let ready = resolve_member_transport(&probe_state, &member, true)
                 .await
-                .is_ok_and(|response| response.status().is_success());
+                .is_some();
             (member.node_pubkey, ready)
         }
     });
@@ -403,7 +454,12 @@ async fn join(
 ) -> Result<Json<MutationResponse>, ApiError> {
     let node_pubkey = key_bytes(request.node_pubkey)?;
     let mut store = state.store.lock().await;
-    store.redeem_join_token(request.token, node_pubkey, request.node_endpoint)?;
+    store.redeem_join_token_with_relay(
+        request.token,
+        node_pubkey,
+        request.node_endpoint,
+        request.relay_endpoint,
+    )?;
     store.save(&state.state_path)?;
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
@@ -644,12 +700,24 @@ async fn proxy(
             .fetch_add(1, Ordering::Relaxed);
         ApiError::Saturated
     })?;
+    let upstream_path = if replica.peer && state.peer_api_key.is_some() {
+        format!("/v1/peer{}", path.strip_prefix("/v1").unwrap_or(path))
+    } else {
+        path.to_owned()
+    };
     let mut request = state
         .client
-        .request(method, format!("{}{path}", replica.runtime_url));
+        .request(method, format!("{}{upstream_path}", replica.runtime_url));
     if replica.peer {
         if let Some(key) = &state.peer_api_key {
             request = request.bearer_auth(key);
+            let store = state.store.lock().await;
+            request = request
+                .header(
+                    "x-dllm-network-id",
+                    store.state.state.network_id.to_string(),
+                )
+                .header("x-dllm-node-key", hex_key(&store.state.state.owner_pubkey));
         }
     }
     if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
@@ -746,14 +814,14 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
             .iter()
             .find(|member| member.node_pubkey == placement.node_pubkey)
         {
-            let ready = state
-                .client
-                .get(format!("{}/health/runtime", member.endpoint))
-                .timeout(Duration::from_secs(5))
-                .send()
-                .await
-                .is_ok_and(|response| response.status().is_success());
-            (member.endpoint.clone(), true, ready)
+            let transport = resolve_member_transport(state, member, true).await;
+            (
+                transport
+                    .as_ref()
+                    .map_or_else(String::new, |candidate| candidate.0.clone()),
+                true,
+                transport.is_some(),
+            )
         } else {
             continue;
         };
@@ -784,6 +852,67 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
             in_flight,
         })
         .ok_or(ApiError::RuntimeUnavailable)
+}
+
+async fn resolve_member_transport(
+    state: &ApiState,
+    member: &dllm_protocol::Member,
+    runtime: bool,
+) -> Option<(String, TransportKind)> {
+    let mut candidates = vec![(member.endpoint.clone(), TransportKind::Direct)];
+    if let Some(relay) = &member.relay_endpoint {
+        if relay != &member.endpoint {
+            candidates.push((relay.clone(), TransportKind::Relay));
+        }
+    }
+    let (network_id, caller) = {
+        let store = state.store.lock().await;
+        (
+            store.state.state.network_id.to_string(),
+            hex_key(&store.state.state.owner_pubkey),
+        )
+    };
+    for (endpoint, kind) in candidates {
+        let path = match (state.peer_api_key.is_some(), runtime) {
+            (true, true) => "/v1/peer/health/runtime",
+            (true, false) => "/v1/peer/health",
+            (false, true) => "/health/runtime",
+            (false, false) => "/health",
+        };
+        let mut request = state
+            .client
+            .get(format!("{endpoint}{path}"))
+            .timeout(Duration::from_secs(5));
+        if let Some(key) = &state.peer_api_key {
+            request = request
+                .bearer_auth(key)
+                .header("x-dllm-network-id", &network_id)
+                .header("x-dllm-node-key", &caller);
+        }
+        if request
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success())
+        {
+            return Some((endpoint, kind));
+        }
+    }
+    None
+}
+
+fn hex_key(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn parse_hex_key(value: &str) -> Option<[u8; 32]> {
+    if value.len() != 64 {
+        return None;
+    }
+    let mut bytes = [0_u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(bytes)
 }
 
 fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
@@ -1275,14 +1404,26 @@ mod tests {
     #[tokio::test]
     async fn chat_routes_to_assigned_member_with_peer_key() {
         let upstream = Router::new()
-            .route("/health/runtime", get(|| async { StatusCode::OK }))
             .route(
-                "/v1/chat/completions",
+                "/v1/peer/health/runtime",
+                get(|headers: HeaderMap| async move {
+                    if headers.get("x-dllm-network-id").is_none()
+                        || headers.get("x-dllm-node-key").is_none()
+                    {
+                        return StatusCode::FORBIDDEN;
+                    }
+                    StatusCode::OK
+                }),
+            )
+            .route(
+                "/v1/peer/chat/completions",
                 post(|headers: HeaderMap| async move {
                     if headers
                         .get(header::AUTHORIZATION)
                         .and_then(|value| value.to_str().ok())
                         != Some("Bearer peer-secret")
+                        || headers.get("x-dllm-network-id").is_none()
+                        || headers.get("x-dllm-node-key").is_none()
                     {
                         return StatusCode::UNAUTHORIZED.into_response();
                     }
@@ -1329,6 +1470,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unavailable.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn peer_identity_is_required_and_relay_is_selected_after_direct_failure() {
+        let relay = Router::new().route(
+            "/v1/peer/health/runtime",
+            get(|headers: HeaderMap| async move {
+                if headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    == Some("Bearer peer-secret")
+                    && headers.get("x-dllm-network-id").is_some()
+                    && headers.get("x-dllm-node-key").is_some()
+                {
+                    StatusCode::OK
+                } else {
+                    StatusCode::UNAUTHORIZED
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
+
+        let mut api_state = state(None, None);
+        api_state.peer_api_key = Some("peer-secret".into());
+        let member_key = NetworkStore::random_node_key();
+        let member = {
+            let mut store = api_state.store.lock().await;
+            let token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token_with_relay(
+                    token,
+                    member_key,
+                    "http://127.0.0.1:9".into(),
+                    Some(relay_endpoint.clone()),
+                )
+                .unwrap();
+            store.state.state.members[0].clone()
+        };
+        let selected = resolve_member_transport(&api_state, &member, true)
+            .await
+            .unwrap();
+        assert_eq!(selected, (relay_endpoint, TransportKind::Relay));
+
+        let network = api_state.store.lock().await.state.state.clone();
+        let app = router(api_state);
+        let missing_identity = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/peer/health")
+                    .header(header::AUTHORIZATION, "Bearer peer-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_identity.status(), StatusCode::FORBIDDEN);
+
+        let valid_identity = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/peer/health")
+                    .header(header::AUTHORIZATION, "Bearer peer-secret")
+                    .header("x-dllm-network-id", network.network_id.to_string())
+                    .header("x-dllm-node-key", hex_key(&network.owner_pubkey))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(valid_identity.status(), StatusCode::OK);
     }
 
     #[tokio::test]

@@ -51,6 +51,8 @@ enum Command {
     },
     Join {
         token_file: PathBuf,
+        #[arg(long)]
+        relay_endpoint: Option<String>,
     },
     Revoke {
         node_key: PathBuf,
@@ -140,7 +142,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", String::from_utf8(encoded)?);
             }
         }
-        Command::Join { token_file } => {
+        Command::Join {
+            token_file,
+            relay_endpoint,
+        } => {
             let token: SignedJoinToken = serde_json::from_slice(&fs::read(token_file)?)?;
             token.verify(now_unix())?;
             let node_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
@@ -154,7 +159,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .json(&json!({
                         "token": token,
                         "node_pubkey": node_pubkey,
-                        "node_endpoint": cli.node_endpoint
+                        "node_endpoint": cli.node_endpoint,
+                        "relay_endpoint": relay_endpoint
                     })),
                 &None,
             ))?;

@@ -132,3 +132,26 @@ The CLI exposes these operations as `dllm credentials`,
 matrix, one-time secret exposure, digest-only persistence, mode `0600`, live
 revocation, and persistent revocation after registry reload. This completes
 P3.1.
+
+## P3.2 authenticated peer transport
+
+The first P3.2 slice separates daemon-to-daemon traffic from public inference.
+When `DLLMD_PEER_API_KEY` is configured, peers use dedicated
+`/v1/peer/health`, `/v1/peer/health/runtime`, and
+`/v1/peer/chat/completions` routes. Requests must carry the peer bearer secret,
+the signed network ID, and the caller node public key. The receiving daemon
+rejects an unknown network or a caller that is neither the owner nor a signed
+member. Runtime ports remain loopback-only behind the receiving daemon.
+
+Member state now optionally carries an owner-signed `relay_endpoint` alongside
+the direct endpoint. Health checks and replica routing probe the direct path
+first, then the relay path. Management status reports `local`, `direct`, or
+`relay` for the selected node path. The join CLI accepts
+`--relay-endpoint URL`; existing joins and networks without a relay endpoint
+retain their Phase 2 behavior.
+
+Automated coverage proves authenticated peer headers are forwarded, missing
+identity is rejected, direct failure selects a ready relay, and member inference
+uses the dedicated peer route. Automatic NAT candidate discovery, a maintained
+relay service, connection freshness and replay protection, and physical WAN
+evidence remain before P3.2 can be marked complete.

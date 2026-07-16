@@ -134,6 +134,16 @@ impl NetworkStore {
         node_pubkey: [u8; 32],
         node_endpoint: String,
     ) -> Result<(), StoreError> {
+        self.redeem_join_token_with_relay(token, node_pubkey, node_endpoint, None)
+    }
+
+    pub fn redeem_join_token_with_relay(
+        &mut self,
+        token: SignedJoinToken,
+        node_pubkey: [u8; 32],
+        node_endpoint: String,
+        relay_endpoint: Option<String>,
+    ) -> Result<(), StoreError> {
         token.verify(now_unix())?;
         if token.token.network_id != self.state.state.network_id
             || token.token.owner_pubkey != self.state.state.owner_pubkey
@@ -148,6 +158,7 @@ impl NetworkStore {
         next.members.push(Member {
             node_pubkey,
             endpoint: node_endpoint,
+            relay_endpoint,
             joined_generation: next.generation,
         });
         self.state = SignedState::sign(next, &self.owner_key)?;
