@@ -3,6 +3,7 @@ use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllmd::{
     api,
     credentials::{CredentialRegistry, ManagementCredential},
+    inference::{InferenceCredential, InferenceRegistry},
     NetworkStore,
 };
 use serde::Deserialize;
@@ -23,6 +24,8 @@ struct AdditionalNetworkConfig {
     management_credentials: Vec<ManagementCredential>,
     management_credentials_path: Option<PathBuf>,
     api_key: String,
+    #[serde(default)]
+    inference_credentials: Vec<InferenceCredential>,
     public_url: Option<String>,
 }
 
@@ -50,6 +53,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .map(PathBuf::from);
     let api_key = std::env::var("DLLMD_API_KEY").ok();
+    let inference_credentials = std::env::var("DLLMD_INFERENCE_CREDENTIALS")
+        .ok()
+        .map(|value| serde_json::from_str::<Vec<InferenceCredential>>(&value))
+        .transpose()?
+        .unwrap_or_default();
     let peer_api_key = std::env::var("DLLMD_PEER_API_KEY").ok();
     let tls_cert = std::env::var("DLLMD_TLS_CERT").ok();
     let tls_key = std::env::var("DLLMD_TLS_KEY").ok();
@@ -57,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind_address: SocketAddr = bind.parse()?;
     if !bind_address.ip().is_loopback()
         && (!has_management_access(&management_token, &management_credentials)
-            || api_key.is_none()
+            || (api_key.is_none() && inference_credentials.is_empty())
             || tls_cert.is_none()
             || tls_key.is_none())
     {
@@ -111,7 +119,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             management_token.clone(),
             management_credentials_path,
         )?)),
-        api_key: api_key.clone(),
+        inference_credentials: Arc::new(InferenceRegistry::new(
+            inference_credentials,
+            api_key.clone(),
+            admission_limit,
+        )),
         peer_api_key: peer_api_key.clone(),
         metrics: Arc::new(api::Metrics::default()),
         public_url: public_url.clone(),
@@ -159,7 +171,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         config.management_credentials_path,
                     )?,
                 )),
-                api_key: Some(config.api_key),
+                inference_credentials: Arc::new(InferenceRegistry::new(
+                    config.inference_credentials,
+                    Some(config.api_key),
+                    admission_limit,
+                )),
                 peer_api_key: peer_api_key.clone(),
                 metrics: Arc::new(api::Metrics::default()),
                 public_url: network_public_url,

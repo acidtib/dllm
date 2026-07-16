@@ -79,6 +79,16 @@ pub struct Placement {
     pub model: String,
     pub node_pubkey: [u8; 32],
     pub created_generation: u64,
+    #[serde(default)]
+    pub lifecycle: PlacementLifecycle,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementLifecycle {
+    #[default]
+    Ready,
+    Draining,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +141,7 @@ pub struct PlacementStatus {
     pub generation: u64,
     pub worker_ids: Vec<Uuid>,
     pub health: HealthState,
+    pub lifecycle: PlacementLifecycle,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

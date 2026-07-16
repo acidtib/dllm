@@ -2,11 +2,12 @@ use crate::{
     credentials::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
+    inference::{InferenceIdentity, InferenceRegistry},
     now_unix, NetworkStore, StoreError,
 };
 use axum::{
     body::{Body, Bytes},
-    extract::{Path, Request, State},
+    extract::{Extension, Path, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -14,8 +15,8 @@ use axum::{
     Json, Router,
 };
 use dllm_protocol::{
-    HardwareProfile, HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken,
-    TransportKind, WorkerStatus,
+    HardwareProfile, HealthState, ManagementStatus, NodeStatus, PlacementLifecycle,
+    PlacementStatus, SignedJoinToken, TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -38,7 +39,7 @@ pub struct ApiState {
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
     pub management_credentials: Arc<RwLock<CredentialRegistry>>,
-    pub api_key: Option<String>,
+    pub inference_credentials: Arc<InferenceRegistry>,
     pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
     pub public_url: String,
@@ -96,7 +97,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/placements/preview", post(preview_placement));
     let mut operator = Router::new()
         .route("/v1/assignments", post(assign).delete(unassign))
-        .route("/v1/hardware-profiles", post(publish_hardware_profile));
+        .route("/v1/hardware-profiles", post(publish_hardware_profile))
+        .route(
+            "/v1/placements/{placement_id}/drain",
+            post(drain_placement).delete(resume_placement),
+        );
     let mut admin = Router::new()
         .route("/v1/invitations", post(invite))
         .route("/v1/members/revoke", post(revoke))
@@ -130,9 +135,10 @@ pub fn router(state: ApiState) -> Router {
     let mut inference = Router::new()
         .route("/v1/models", get(proxy_models))
         .route("/v1/chat/completions", post(proxy_chat));
-    if let Some(token) = state.api_key.clone() {
-        inference = inference.route_layer(middleware::from_fn_with_state(token, require_bearer));
-    }
+    inference = inference.route_layer(middleware::from_fn_with_state(
+        state.inference_credentials.clone(),
+        require_inference_identity,
+    ));
     let mut peer = Router::new()
         .route("/v1/peer/health", get(|| async { StatusCode::OK }))
         .route("/v1/peer/health/runtime", get(runtime_health))
@@ -215,9 +221,9 @@ async fn metrics(State(state): State<ApiState>) -> String {
     output
 }
 
-async fn require_bearer(
-    State(expected): State<String>,
-    request: Request,
+async fn require_inference_identity(
+    State(registry): State<Arc<InferenceRegistry>>,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
     let supplied = request
@@ -225,9 +231,10 @@ async fn require_bearer(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    if supplied != Some(expected.as_str()) {
+    let Some(identity) = registry.authenticate(supplied) else {
         return Err(StatusCode::UNAUTHORIZED);
-    }
+    };
+    request.extensions_mut().insert(identity);
     Ok(next.run(request).await)
 }
 
@@ -416,6 +423,7 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
             generation: placement.created_generation,
             worker_ids: vec![placement.placement_id],
             health: placement_health(&placement.node_pubkey),
+            lifecycle: placement.lifecycle.clone(),
         })
         .collect::<Vec<_>>();
     let health = if placements
@@ -521,6 +529,36 @@ async fn publish_hardware_profile(
 ) -> Result<Json<MutationResponse>, ApiError> {
     let mut store = state.store.lock().await;
     let changed = store.publish_hardware_profile(profile)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn drain_placement(
+    State(state): State<ApiState>,
+    Path(placement_id): Path<uuid::Uuid>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    set_placement_draining(state, placement_id, true).await
+}
+
+async fn resume_placement(
+    State(state): State<ApiState>,
+    Path(placement_id): Path<uuid::Uuid>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    set_placement_draining(state, placement_id, false).await
+}
+
+async fn set_placement_draining(
+    state: ApiState,
+    placement_id: uuid::Uuid,
+    draining: bool,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let mut store = state.store.lock().await;
+    let changed = store.set_placement_draining(placement_id, draining)?;
     if changed {
         store.save(&state.state_path)?;
     }
@@ -662,6 +700,7 @@ async fn proxy_models(State(state): State<ApiState>) -> Json<serde_json::Value> 
 
 async fn proxy_chat(
     State(state): State<ApiState>,
+    Extension(identity): Extension<InferenceIdentity>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
@@ -673,6 +712,7 @@ async fn proxy_chat(
         "/v1/chat/completions",
         headers,
         body,
+        identity,
     )
     .await
 }
@@ -684,6 +724,7 @@ async fn proxy(
     path: &str,
     headers: HeaderMap,
     body: Bytes,
+    identity: InferenceIdentity,
 ) -> Result<Response, ApiError> {
     state
         .metrics
@@ -693,6 +734,13 @@ async fn proxy(
         .metrics
         .request_bytes
         .fetch_add(body.len() as u64, Ordering::Relaxed);
+    let quota_permit = identity.quota.try_acquire_owned().map_err(|_| {
+        state
+            .metrics
+            .admission_rejections
+            .fetch_add(1, Ordering::Relaxed);
+        ApiError::QuotaExceeded(identity.label)
+    })?;
     let permit = state.admission.clone().try_acquire_owned().map_err(|_| {
         state
             .metrics
@@ -739,6 +787,7 @@ async fn proxy(
     let metrics = state.metrics.clone();
     let stream = upstream.bytes_stream().map(move |item| {
         let _permit = &permit;
+        let _quota_permit = &quota_permit;
         let _replica_lease = &replica_lease;
         if let Ok(bytes) = &item {
             metrics
@@ -793,7 +842,9 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                 .state
                 .placements
                 .iter()
-                .filter(|placement| placement.model == model)
+                .filter(|placement| {
+                    placement.model == model && placement.lifecycle == PlacementLifecycle::Ready
+                })
                 .cloned()
                 .collect::<Vec<_>>(),
             store.state.state.members.clone(),
@@ -929,6 +980,7 @@ enum ApiError {
     Saturated,
     Runtime(reqwest::Error),
     ModelUnavailable,
+    QuotaExceeded(String),
     Credential(CredentialError),
 }
 
@@ -972,6 +1024,11 @@ impl IntoResponse for ApiError {
             Self::Saturated => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "inference admission queue is saturated",
+            )
+                .into_response(),
+            Self::QuotaExceeded(label) => (
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("inference quota exceeded for credential {label}"),
             )
                 .into_response(),
             Self::Runtime(error) => (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
@@ -1026,7 +1083,7 @@ mod tests {
                 CredentialRegistry::load(Vec::new(), management_token.map(str::to_owned), None)
                     .unwrap(),
             )),
-            api_key: None,
+            inference_credentials: Arc::new(InferenceRegistry::new(Vec::new(), None, 1)),
             peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
@@ -1322,7 +1379,11 @@ mod tests {
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
         let mut state = state(None, Some(format!("http://{address}")));
-        state.api_key = Some("inference-secret".into());
+        state.inference_credentials = Arc::new(InferenceRegistry::new(
+            Vec::new(),
+            Some("inference-secret".into()),
+            1,
+        ));
         let owner = state.store.lock().await.state.state.owner_pubkey;
         state
             .store
@@ -1355,6 +1416,76 @@ mod tests {
         drop(permit);
         assert_eq!(saturated.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(metrics.admission_rejections.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn inference_quota_isolated_from_other_credentials() {
+        let upstream = Router::new()
+            .route("/health", get(|| async { StatusCode::OK }))
+            .route(
+                "/v1/chat/completions",
+                post(|| async { Json(serde_json::json!({"choices": []})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let mut state = state(None, Some(format!("http://{address}")));
+        let registry = Arc::new(InferenceRegistry::new(
+            vec![
+                crate::inference::InferenceCredential {
+                    label: "client-a".into(),
+                    token: "token-a".into(),
+                    max_in_flight: 1,
+                },
+                crate::inference::InferenceCredential {
+                    label: "client-b".into(),
+                    token: "token-b".into(),
+                    max_in_flight: 1,
+                },
+            ],
+            None,
+            2,
+        ));
+        let client_a = registry.authenticate(Some("token-a")).unwrap();
+        let held = client_a.quota.acquire_owned().await.unwrap();
+        state.inference_credentials = registry;
+        state.admission = Arc::new(Semaphore::new(2));
+        let owner = state.store.lock().await.state.state.owner_pubkey;
+        state
+            .store
+            .lock()
+            .await
+            .assign_model("qwen".into(), owner)
+            .unwrap();
+        let app = router(state);
+
+        let limited = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header(header::AUTHORIZATION, "Bearer token-a")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{\"model\":\"qwen\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        let body = limited.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("client-a"));
+
+        let other_client = app
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header(header::AUTHORIZATION, "Bearer token-b")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{\"model\":\"qwen\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(other_client.status(), StatusCode::OK);
+        drop(held);
     }
 
     #[tokio::test]
@@ -1575,7 +1706,7 @@ mod tests {
                 .unwrap();
             let second_token = store.issue_join_token("http://owner".into(), None);
             store
-                .redeem_join_token(second_token, second, busy_endpoint)
+                .redeem_join_token(second_token, second, busy_endpoint.clone())
                 .unwrap();
             let third_token = store.issue_join_token("http://owner".into(), None);
             store
@@ -1611,6 +1742,17 @@ mod tests {
             .unwrap();
         assert_eq!(selected.runtime_url, ready_endpoint);
         assert!(selected.peer);
+
+        state
+            .store
+            .lock()
+            .await
+            .set_placement_draining(third_placement, true)
+            .unwrap();
+        let after_drain = resolve_runtime(&state, &Bytes::from_static(b"{\"model\":\"qwen\"}"))
+            .await
+            .unwrap();
+        assert_eq!(after_drain.runtime_url, busy_endpoint);
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use dllm_protocol::{
-    HardwareProfile, Member, ModelAssignment, NetworkState, Placement, SignedJoinToken,
-    SignedState, StateError, TokenError, SCHEMA_VERSION,
+    HardwareProfile, Member, ModelAssignment, NetworkState, Placement, PlacementLifecycle,
+    SignedJoinToken, SignedState, StateError, TokenError, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -15,7 +15,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod api;
+pub mod backup;
 pub mod credentials;
+pub mod inference;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -39,6 +41,8 @@ pub enum StoreError {
     AssignmentNodeUnknown,
     #[error("hardware profile node is not a network member")]
     ProfileNodeUnknown,
+    #[error("new owner must be a current network member")]
+    TransferTargetUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,6 +223,7 @@ impl NetworkStore {
             model,
             node_pubkey,
             created_generation: next.generation,
+            lifecycle: PlacementLifecycle::Ready,
         });
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
@@ -242,6 +247,65 @@ impl NetworkStore {
         next.generation += 1;
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
+    }
+
+    pub fn set_placement_draining(
+        &mut self,
+        placement_id: Uuid,
+        draining: bool,
+    ) -> Result<bool, StoreError> {
+        let mut next = self.state.state.clone();
+        let Some(placement) = next
+            .placements
+            .iter_mut()
+            .find(|placement| placement.placement_id == placement_id)
+        else {
+            return Ok(false);
+        };
+        let lifecycle = if draining {
+            PlacementLifecycle::Draining
+        } else {
+            PlacementLifecycle::Ready
+        };
+        if placement.lifecycle == lifecycle {
+            return Ok(false);
+        }
+        placement.lifecycle = lifecycle;
+        next.generation += 1;
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(true)
+    }
+
+    pub fn transfer_owner(
+        &mut self,
+        new_owner_key: SigningKey,
+        old_owner_endpoint: String,
+    ) -> Result<(), StoreError> {
+        let old_owner = self.state.state.owner_pubkey;
+        let new_owner = new_owner_key.verifying_key().to_bytes();
+        if !self
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == new_owner)
+        {
+            return Err(StoreError::TransferTargetUnknown);
+        }
+        let mut next = self.state.state.clone();
+        next.generation += 1;
+        next.owner_pubkey = new_owner;
+        next.members
+            .retain(|member| member.node_pubkey != new_owner);
+        next.members.push(Member {
+            node_pubkey: old_owner,
+            endpoint: old_owner_endpoint,
+            relay_endpoint: None,
+            joined_generation: next.generation,
+        });
+        self.state = SignedState::sign(next, &new_owner_key)?;
+        self.owner_key = new_owner_key;
+        Ok(())
     }
 
     pub fn publish_hardware_profile(
@@ -401,5 +465,56 @@ mod tests {
         assert_eq!(store.state.state.generation, 3);
         assert!(store.state.state.placements.is_empty());
         assert!(store.state.verify().is_ok());
+    }
+
+    #[test]
+    fn placement_drain_is_signed_and_idempotent() {
+        let mut store = NetworkStore::create("test");
+        let owner = store.state.state.owner_pubkey;
+        store.assign_model("qwen".into(), owner).unwrap();
+        let placement_id = store.state.state.placements[0].placement_id;
+        assert!(store.set_placement_draining(placement_id, true).unwrap());
+        assert_eq!(store.state.state.generation, 3);
+        assert_eq!(
+            store.state.state.placements[0].lifecycle,
+            PlacementLifecycle::Draining
+        );
+        assert!(!store.set_placement_draining(placement_id, true).unwrap());
+        assert!(store.set_placement_draining(placement_id, false).unwrap());
+        assert_eq!(
+            store.state.state.placements[0].lifecycle,
+            PlacementLifecycle::Ready
+        );
+        store.state.verify().unwrap();
+    }
+
+    #[test]
+    fn owner_transfer_moves_authority_without_unsigned_state() {
+        let mut store = NetworkStore::create("test");
+        let old_owner = store.state.state.owner_pubkey;
+        let new_owner_key = SigningKey::generate(&mut rand::thread_rng());
+        let new_owner = new_owner_key.verifying_key().to_bytes();
+        let token = store.issue_join_token("http://old-owner".into(), None);
+        store
+            .redeem_join_token(token, new_owner, "http://new-owner".into())
+            .unwrap();
+        store
+            .transfer_owner(new_owner_key, "http://old-owner".into())
+            .unwrap();
+        assert_eq!(store.state.state.owner_pubkey, new_owner);
+        assert!(store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == old_owner));
+        assert!(!store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == new_owner));
+        store.state.verify().unwrap();
+        assert_eq!(store.owner_key.verifying_key().to_bytes(), new_owner);
     }
 }

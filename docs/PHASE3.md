@@ -54,9 +54,9 @@ distributed dense layer stages without a new feasibility decision.
   rotation, and audit-safe status surfaces.
 - [ ] P3.2: implement authenticated peer transport, NAT traversal, and relay
   fallback with explicit direct-versus-relayed state.
-- [ ] P3.3: implement owner transfer, encrypted control-plane backup, and
+- [x] P3.3: implement owner transfer, encrypted control-plane backup, and
   documented recovery validation.
-- [ ] P3.4: implement placement draining and validate a replica-safe rolling
+- [x] P3.4: implement placement draining and validate a replica-safe rolling
   daemon upgrade.
 - [ ] P3.5: implement per-credential quotas and fair admission, then evaluate
   runtime-supported batching.
@@ -155,3 +155,50 @@ identity is rejected, direct failure selects a ready relay, and member inference
 uses the dedicated peer route. Automatic NAT candidate discovery, a maintained
 relay service, connection freshness and replay protection, and physical WAN
 evidence remain before P3.2 can be marked complete.
+
+## P3.3 ownership and recovery
+
+`dllm transfer-owner NEW_OWNER_KEY --old-owner-endpoint URL` transfers authority
+only to a current signed member. The transition advances the generation,
+promotes the member, retains the old owner as a member, replaces the local owner
+key, and signs the resulting state directly with the new owner key. There is no
+unsigned intermediate state. The operation is offline so state and key files
+can be backed up before authority changes.
+
+`dllm backup OUTPUT --passphrase-file FILE` creates a versioned encrypted
+archive containing persisted signed state, the owner key, and the optional
+credential registry. Argon2 derives the archive key and ChaCha20-Poly1305
+provides authenticated encryption. Archives and recovered private files use
+mode `0600` on Unix. `dllm restore INPUT --passphrase-file FILE` authenticates
+and decrypts the archive, verifies the signed state, and verifies the owner key
+against that state before writing recovery files. Tests cover wrong-passphrase
+rejection and a complete restore load. This completes P3.3.
+
+## P3.4 placement draining and upgrade safety
+
+Placements carry an owner-signed `ready` or `draining` lifecycle. Operators use
+`POST /v1/placements/{placement-id}/drain` to drain and `DELETE` on the same
+route to resume. The CLI exposes `dllm drain PLACEMENT_ID` and
+`dllm resume PLACEMENT_ID`. Draining is idempotent and advances the signed
+generation only on change.
+
+Replica selection excludes draining placements from new requests. A request
+already assigned to the placement retains its admission permit and replica
+lease until its response stream closes. Automated replica validation drains the
+preferred replica and proves the next request moves to another ready replica,
+which validates the routing portion of a rolling daemon upgrade. This completes
+P3.4.
+
+## P3.5 inference fairness and quotas
+
+`DLLMD_INFERENCE_CREDENTIALS` accepts named inference credentials with an
+independent `max_in_flight` limit. Tokens are hashed before comparison and are
+separate from management credentials. Each request acquires its credential
+quota before the daemon-wide admission permit, and both permits remain held
+until a streaming response closes. The legacy `DLLMD_API_KEY` remains a single
+credential with the global admission limit.
+
+Automated coverage exhausts one client's quota, observes a labeled HTTP 429,
+and proves a second credential still completes through the same globally
+available runtime. Runtime batching evaluation remains before P3.5 can be
+marked complete.

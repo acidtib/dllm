@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use dllm_protocol::SignedJoinToken;
-use dllmd::NetworkStore;
+use dllmd::{backup, NetworkStore};
 use ed25519_dalek::SigningKey;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -27,6 +27,8 @@ struct Cli {
     owner_key: PathBuf,
     #[arg(long, default_value = "dllm-node.key")]
     node_key: PathBuf,
+    #[arg(long)]
+    credentials_path: Option<PathBuf>,
     #[arg(long, default_value = "http://127.0.0.1:7337")]
     node_endpoint: String,
     #[command(subcommand)]
@@ -89,6 +91,27 @@ enum Command {
     },
     RevokeCredential {
         credential_id: String,
+    },
+    Drain {
+        placement_id: String,
+    },
+    Resume {
+        placement_id: String,
+    },
+    Backup {
+        output: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+    },
+    Restore {
+        input: PathBuf,
+        #[arg(long)]
+        passphrase_file: PathBuf,
+    },
+    TransferOwner {
+        new_owner_key: PathBuf,
+        #[arg(long)]
+        old_owner_endpoint: String,
     },
 }
 
@@ -266,6 +289,62 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?;
             println!("revoked credential {credential_id}");
         }
+        Command::Drain { placement_id } => {
+            let response = request_json(auth(
+                client.post(format!("{}/v1/placements/{placement_id}/drain", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::Resume { placement_id } => {
+            let response = request_json(auth(
+                client.delete(format!("{}/v1/placements/{placement_id}/drain", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::Backup {
+            output,
+            passphrase_file,
+        } => {
+            let passphrase = read_passphrase(&passphrase_file)?;
+            backup::create_backup(
+                &cli.state,
+                &cli.owner_key,
+                cli.credentials_path.as_deref(),
+                &output,
+                &passphrase,
+            )?;
+            println!("created encrypted backup {}", output.display());
+        }
+        Command::Restore {
+            input,
+            passphrase_file,
+        } => {
+            let passphrase = read_passphrase(&passphrase_file)?;
+            backup::restore_backup(
+                &input,
+                &cli.state,
+                &cli.owner_key,
+                cli.credentials_path.as_deref(),
+                &passphrase,
+            )?;
+            println!("restored control plane from {}", input.display());
+        }
+        Command::TransferOwner {
+            new_owner_key,
+            old_owner_endpoint,
+        } => {
+            let mut store = NetworkStore::load(&cli.state, &cli.owner_key)?;
+            let new_owner_key = NetworkStore::load_owner_key(new_owner_key)?;
+            store.transfer_owner(new_owner_key, old_owner_endpoint)?;
+            store.save(&cli.state)?;
+            store.save_owner_key(&cli.owner_key)?;
+            println!(
+                "transferred ownership at generation {}",
+                store.state.state.generation
+            );
+        }
     }
     Ok(())
 }
@@ -352,4 +431,15 @@ fn request_empty(
 ) -> Result<(), Box<dyn std::error::Error>> {
     builder.send()?.error_for_status()?;
     Ok(())
+}
+
+fn read_passphrase(path: &PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let mut passphrase = fs::read(path)?;
+    while passphrase.last().is_some_and(u8::is_ascii_whitespace) {
+        passphrase.pop();
+    }
+    if passphrase.is_empty() {
+        return Err("passphrase file is empty".into());
+    }
+    Ok(passphrase)
 }
