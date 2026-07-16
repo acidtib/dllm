@@ -91,11 +91,23 @@ The `dllmd` crate now provides the first owner-led state store. It creates an
 owner identity, issues network-scoped join tokens, redeems each token once,
 advances the signed membership generation, revokes members, and can persist the
 signed state as JSON. Its redemption, replay protection, and revocation paths
-have passing tests.
+have passing tests. Owner key bytes can now be saved and loaded with strict
+32-byte validation, preventing accidental identity changes across restarts.
 
 ## Status
 
 P1.1 control-plane protocol and initial daemon state store implemented and
-tested. Authenticated transport, durable owner-key storage, and the CLI remain
-next.
+tested. The `dllm` CLI now supports network creation and JSON or human-readable
+status from persisted state. A loopback-bound `dllmd` management API now exposes
+status, invitation issuance, join redemption, and member revocation. Successful
+membership mutations persist the new signed generation.
+
+A loopback smoke test started `dllmd`, issued an invitation through the API,
+joined one generated node, and read status back successfully. The response
+reported generation 2, one member, and a 64-byte state signature.
+
+The daemon currently creates fresh network state when started. Loading the
+existing owner identity, persisting token redemption records, and authenticating
+the local management API are required before this API is suitable for anything
+beyond local development.
 No Phase 2 work has started.

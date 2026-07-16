@@ -5,6 +5,8 @@ use std::{collections::HashSet, fs, path::Path};
 use thiserror::Error;
 use uuid::Uuid;
 
+pub mod api;
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("state error: {0}")]
@@ -17,6 +19,8 @@ pub enum StoreError {
     WrongNetwork,
     #[error("join token has already been redeemed")]
     TokenUsed,
+    #[error("owner key must contain exactly 32 bytes")]
+    InvalidOwnerKey,
 }
 
 pub struct NetworkStore {
@@ -26,6 +30,17 @@ pub struct NetworkStore {
 }
 
 impl NetworkStore {
+    pub fn save_owner_key(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
+        fs::write(path, self.owner_key.to_bytes())?;
+        Ok(())
+    }
+
+    pub fn load_owner_key(path: impl AsRef<Path>) -> Result<SigningKey, StoreError> {
+        let bytes = fs::read(path)?;
+        let bytes: [u8; 32] = bytes.try_into().map_err(|_| StoreError::InvalidOwnerKey)?;
+        Ok(SigningKey::from_bytes(&bytes))
+    }
+
     pub fn create(name: impl Into<String>) -> Self {
         let owner_key = SigningKey::generate(&mut rand::thread_rng());
         let state = NetworkState {
@@ -37,15 +52,29 @@ impl NetworkStore {
             members: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
-        Self { owner_key, state: signed, used_tokens: HashSet::new() }
+        Self {
+            owner_key,
+            state: signed,
+            used_tokens: HashSet::new(),
+        }
     }
 
     pub fn issue_join_token(&self, expires_at_unix: Option<u64>) -> JoinToken {
-        JoinToken::new(self.state.state.network_id, self.state.state.owner_pubkey, expires_at_unix)
+        JoinToken::new(
+            self.state.state.network_id,
+            self.state.state.owner_pubkey,
+            expires_at_unix,
+        )
     }
 
-    pub fn redeem_join_token(&mut self, token: JoinToken, node_pubkey: [u8; 32]) -> Result<(), StoreError> {
-        if token.network_id != self.state.state.network_id || token.owner_pubkey != self.state.state.owner_pubkey {
+    pub fn redeem_join_token(
+        &mut self,
+        token: JoinToken,
+        node_pubkey: [u8; 32],
+    ) -> Result<(), StoreError> {
+        if token.network_id != self.state.state.network_id
+            || token.owner_pubkey != self.state.state.owner_pubkey
+        {
             return Err(StoreError::WrongNetwork);
         }
         if !self.used_tokens.insert(token.token_id) {
@@ -53,7 +82,10 @@ impl NetworkStore {
         }
         let mut next = self.state.state.clone();
         next.generation += 1;
-        next.members.push(Member { node_pubkey, joined_generation: next.generation });
+        next.members.push(Member {
+            node_pubkey,
+            joined_generation: next.generation,
+        });
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(())
     }
@@ -61,7 +93,8 @@ impl NetworkStore {
     pub fn revoke_member(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
         let mut next = self.state.state.clone();
         let before = next.members.len();
-        next.members.retain(|member| member.node_pubkey != node_pubkey);
+        next.members
+            .retain(|member| member.node_pubkey != node_pubkey);
         if next.members.len() == before {
             return Ok(false);
         }
@@ -96,18 +129,33 @@ mod tests {
         assert_eq!(store.state.state.generation, 2);
         assert_eq!(store.state.state.members.len(), 1);
         assert!(store.state.verify().is_ok());
-        assert!(matches!(store.redeem_join_token(token, NetworkStore::random_node_key()), Err(StoreError::TokenUsed)));
+        assert!(matches!(
+            store.redeem_join_token(token, NetworkStore::random_node_key()),
+            Err(StoreError::TokenUsed)
+        ));
     }
 
     #[test]
     fn revocation_advances_generation_and_is_idempotent() {
         let mut store = NetworkStore::create("test");
         let node = NetworkStore::random_node_key();
-        store.redeem_join_token(store.issue_join_token(None), node).unwrap();
+        store
+            .redeem_join_token(store.issue_join_token(None), node)
+            .unwrap();
         assert!(store.revoke_member(node).unwrap());
         assert_eq!(store.state.state.generation, 3);
         assert!(store.state.state.members.is_empty());
         assert!(!store.revoke_member(node).unwrap());
         assert!(store.state.verify().is_ok());
+    }
+
+    #[test]
+    fn owner_key_round_trips() {
+        let store = NetworkStore::create("test");
+        let path = std::env::temp_dir().join(format!("dllmd-key-{}", Uuid::new_v4()));
+        store.save_owner_key(&path).unwrap();
+        let loaded = NetworkStore::load_owner_key(&path).unwrap();
+        assert_eq!(loaded.verifying_key(), store.owner_key.verifying_key());
+        std::fs::remove_file(path).unwrap();
     }
 }
