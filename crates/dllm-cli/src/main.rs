@@ -84,6 +84,7 @@ enum Command {
         backends: Vec<String>,
     },
     Credentials,
+    InferencePolicy,
     CreateCredential {
         label: String,
         #[arg(value_parser = ["viewer", "operator", "admin"])]
@@ -266,6 +267,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Credentials => {
             let response = request_json(auth(
                 client.get(format!("{}/v1/management/credentials", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::InferencePolicy => {
+            let response = request_json(auth(
+                client.get(format!("{}/v1/inference-policy", cli.daemon)),
                 &cli.management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);

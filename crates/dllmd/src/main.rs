@@ -128,6 +128,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics: Arc::new(api::Metrics::default()),
         public_url: public_url.clone(),
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
+        peer_nonces: Arc::new(Mutex::new(HashMap::new())),
+        peer_quota: Arc::new(Semaphore::new(admission_limit)),
     };
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
@@ -180,6 +182,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 metrics: Arc::new(api::Metrics::default()),
                 public_url: network_public_url,
                 replica_loads: Arc::new(Mutex::new(HashMap::new())),
+                peer_nonces: Arc::new(Mutex::new(HashMap::new())),
+                peer_quota: Arc::new(Semaphore::new(admission_limit)),
             },
         ));
     }

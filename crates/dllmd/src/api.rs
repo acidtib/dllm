@@ -2,7 +2,7 @@ use crate::{
     credentials::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
-    inference::{InferenceIdentity, InferenceRegistry},
+    inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
     now_unix, NetworkStore, StoreError,
 };
 use axum::{
@@ -19,6 +19,7 @@ use dllm_protocol::{
     PlacementStatus, SignedJoinToken, TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -44,6 +45,8 @@ pub struct ApiState {
     pub metrics: Arc<Metrics>,
     pub public_url: String,
     pub replica_loads: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicU64>>>>,
+    pub peer_nonces: Arc<Mutex<HashMap<String, u64>>>,
+    pub peer_quota: Arc<Semaphore>,
 }
 
 #[derive(Default)]
@@ -94,6 +97,7 @@ struct CreateCredentialRequest {
 pub fn router(state: ApiState) -> Router {
     let mut viewer = Router::new()
         .route("/v1/status", get(status))
+        .route("/v1/inference-policy", get(inference_policy))
         .route("/v1/placements/preview", post(preview_placement));
     let mut operator = Router::new()
         .route("/v1/assignments", post(assign).delete(unassign))
@@ -142,7 +146,7 @@ pub fn router(state: ApiState) -> Router {
     let mut peer = Router::new()
         .route("/v1/peer/health", get(|| async { StatusCode::OK }))
         .route("/v1/peer/health/runtime", get(runtime_health))
-        .route("/v1/peer/chat/completions", post(proxy_chat));
+        .route("/v1/peer/chat/completions", post(proxy_peer_chat));
     if state.peer_api_key.is_some() {
         peer = peer.route_layer(middleware::from_fn_with_state(
             state.clone(),
@@ -260,8 +264,24 @@ async fn require_peer_identity(
         .get("x-dllm-node-key")
         .and_then(|value| value.to_str().ok())
         .and_then(parse_hex_key);
+    let timestamp = request
+        .headers()
+        .get("x-dllm-timestamp")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    let nonce = request
+        .headers()
+        .get("x-dllm-nonce")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let signature = request
+        .headers()
+        .get("x-dllm-signature")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
     let store = state.store.lock().await;
-    if network_id != Some(store.state.state.network_id.to_string().as_str()) {
+    let expected_network_id = store.state.state.network_id.to_string();
+    if network_id != Some(expected_network_id.as_str()) {
         return Err(StatusCode::FORBIDDEN);
     }
     let Some(caller) = caller else {
@@ -277,7 +297,33 @@ async fn require_peer_identity(
     {
         return Err(StatusCode::FORBIDDEN);
     }
+    let (Some(timestamp), Some(nonce), Some(signature), Some(key)) =
+        (timestamp, nonce, signature, state.peer_api_key.as_deref())
+    else {
+        return Err(StatusCode::FORBIDDEN);
+    };
+    let now = now_unix();
+    if now.abs_diff(timestamp) > 30
+        || !verify_peer_signature(
+            key,
+            &expected_network_id,
+            &hex_key(&caller),
+            timestamp,
+            &nonce,
+            request.method().as_str(),
+            request.uri().path(),
+            &signature,
+        )
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
     drop(store);
+    let mut nonces = state.peer_nonces.lock().await;
+    nonces.retain(|_, seen_at| now.saturating_sub(*seen_at) <= 60);
+    if nonces.insert(nonce, now).is_some() {
+        return Err(StatusCode::CONFLICT);
+    }
+    drop(nonces);
     Ok(next.run(request).await)
 }
 
@@ -306,6 +352,10 @@ async fn require_management_role(
 
 async fn list_credentials(State(state): State<ApiState>) -> Json<Vec<CredentialSummary>> {
     Json(state.management_credentials.read().await.list())
+}
+
+async fn inference_policy(State(state): State<ApiState>) -> Json<Vec<InferencePolicy>> {
+    Json(state.inference_credentials.policies())
 }
 
 async fn create_credential(
@@ -717,6 +767,28 @@ async fn proxy_chat(
     .await
 }
 
+async fn proxy_peer_chat(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let identity = InferenceIdentity {
+        label: "peer".into(),
+        quota: state.peer_quota.clone(),
+    };
+    let replica = resolve_runtime(&state, &body).await?;
+    proxy(
+        state,
+        replica,
+        reqwest::Method::POST,
+        "/v1/chat/completions",
+        headers,
+        body,
+        identity,
+    )
+    .await
+}
+
 async fn proxy(
     state: ApiState,
     replica: ResolvedReplica,
@@ -753,19 +825,24 @@ async fn proxy(
     } else {
         path.to_owned()
     };
+    let upstream_method = method.as_str().to_owned();
     let mut request = state
         .client
         .request(method, format!("{}{upstream_path}", replica.runtime_url));
     if replica.peer {
         if let Some(key) = &state.peer_api_key {
-            request = request.bearer_auth(key);
             let store = state.store.lock().await;
-            request = request
-                .header(
-                    "x-dllm-network-id",
-                    store.state.state.network_id.to_string(),
-                )
-                .header("x-dllm-node-key", hex_key(&store.state.state.owner_pubkey));
+            let network_id = store.state.state.network_id.to_string();
+            let caller = hex_key(&store.state.state.owner_pubkey);
+            drop(store);
+            request = add_peer_identity(
+                request,
+                key,
+                &network_id,
+                &caller,
+                &upstream_method,
+                &upstream_path,
+            );
         }
     }
     if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
@@ -935,10 +1012,7 @@ async fn resolve_member_transport(
             .get(format!("{endpoint}{path}"))
             .timeout(Duration::from_secs(5));
         if let Some(key) = &state.peer_api_key {
-            request = request
-                .bearer_auth(key)
-                .header("x-dllm-network-id", &network_id)
-                .header("x-dllm-node-key", &caller);
+            request = add_peer_identity(request, key, &network_id, &caller, "GET", path);
         }
         if request
             .send()
@@ -964,6 +1038,79 @@ fn parse_hex_key(value: &str) -> Option<[u8; 32]> {
         *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16).ok()?;
     }
     Some(bytes)
+}
+
+fn add_peer_identity(
+    request: reqwest::RequestBuilder,
+    key: &str,
+    network_id: &str,
+    caller: &str,
+    method: &str,
+    path: &str,
+) -> reqwest::RequestBuilder {
+    let timestamp = now_unix();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let signature = peer_signature(key, network_id, caller, timestamp, &nonce, method, path);
+    request
+        .bearer_auth(key)
+        .header("x-dllm-network-id", network_id)
+        .header("x-dllm-node-key", caller)
+        .header("x-dllm-timestamp", timestamp)
+        .header("x-dllm-nonce", nonce)
+        .header("x-dllm-signature", signature)
+}
+
+fn peer_signature(
+    key: &str,
+    network_id: &str,
+    caller: &str,
+    timestamp: u64,
+    nonce: &str,
+    method: &str,
+    path: &str,
+) -> String {
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(
+        format!("{network_id}\n{caller}\n{timestamp}\n{nonce}\n{method}\n{path}").as_bytes(),
+    );
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn verify_peer_signature(
+    key: &str,
+    network_id: &str,
+    caller: &str,
+    timestamp: u64,
+    nonce: &str,
+    method: &str,
+    path: &str,
+    signature: &str,
+) -> bool {
+    let Some(signature) = decode_hex(signature) else {
+        return false;
+    };
+    let mut mac = Hmac::<sha2::Sha256>::new_from_slice(key.as_bytes())
+        .expect("HMAC accepts keys of any length");
+    mac.update(
+        format!("{network_id}\n{caller}\n{timestamp}\n{nonce}\n{method}\n{path}").as_bytes(),
+    );
+    mac.verify_slice(&signature).is_ok()
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+        .collect()
 }
 
 fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
@@ -1088,6 +1235,8 @@ mod tests {
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
             replica_loads: Arc::new(Mutex::new(HashMap::new())),
+            peer_nonces: Arc::new(Mutex::new(HashMap::new())),
+            peer_quota: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -1661,19 +1810,35 @@ mod tests {
             .unwrap();
         assert_eq!(missing_identity.status(), StatusCode::FORBIDDEN);
 
-        let valid_identity = app
-            .oneshot(
-                Request::builder()
-                    .uri("/v1/peer/health")
-                    .header(header::AUTHORIZATION, "Bearer peer-secret")
-                    .header("x-dllm-network-id", network.network_id.to_string())
-                    .header("x-dllm-node-key", hex_key(&network.owner_pubkey))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let timestamp = now_unix();
+        let nonce = "fixed-replay-nonce";
+        let network_id = network.network_id.to_string();
+        let caller = hex_key(&network.owner_pubkey);
+        let signature = peer_signature(
+            "peer-secret",
+            &network_id,
+            &caller,
+            timestamp,
+            nonce,
+            "GET",
+            "/v1/peer/health",
+        );
+        let peer_request = || {
+            Request::builder()
+                .uri("/v1/peer/health")
+                .header(header::AUTHORIZATION, "Bearer peer-secret")
+                .header("x-dllm-network-id", &network_id)
+                .header("x-dllm-node-key", &caller)
+                .header("x-dllm-timestamp", timestamp)
+                .header("x-dllm-nonce", nonce)
+                .header("x-dllm-signature", &signature)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let valid_identity = app.clone().oneshot(peer_request()).await.unwrap();
         assert_eq!(valid_identity.status(), StatusCode::OK);
+        let replay = app.oneshot(peer_request()).await.unwrap();
+        assert_eq!(replay.status(), StatusCode::CONFLICT);
     }
 
     #[tokio::test]
@@ -1859,7 +2024,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bundled_ui_exposes_phase_two_orchestration_controls() {
+    async fn bundled_ui_exposes_phase_three_management_controls() {
         let response = router(state(None, None))
             .oneshot(Request::get("/").body(Body::empty()).unwrap())
             .await
@@ -1869,7 +2034,11 @@ mod tests {
         let html = String::from_utf8(body.to_vec()).unwrap();
         assert!(html.contains("Hardware capacity"));
         assert!(html.contains("Placement preview"));
-        assert!(html.contains("replicas ready"));
+        assert!(html.contains("replicas accepting work"));
+        assert!(html.contains("Management credentials"));
+        assert!(html.contains("Recovery"));
+        assert!(html.contains("Drain"));
+        assert!(html.contains("Inference ${policy.label}"));
         assert!(html.contains("networkMatch"));
     }
 }

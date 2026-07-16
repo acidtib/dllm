@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -19,6 +19,13 @@ pub struct InferenceIdentity {
 struct Entry {
     token_hash: Vec<u8>,
     identity: InferenceIdentity,
+    max_in_flight: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InferencePolicy {
+    pub label: String,
+    pub max_in_flight: usize,
 }
 
 pub struct InferenceRegistry {
@@ -41,6 +48,7 @@ impl InferenceRegistry {
                     label: credential.label,
                     quota: Arc::new(Semaphore::new(credential.max_in_flight)),
                 },
+                max_in_flight: credential.max_in_flight,
             })
             .collect::<Vec<_>>();
         if let Some(token) = legacy_token.filter(|token| !token.is_empty()) {
@@ -50,6 +58,7 @@ impl InferenceRegistry {
                     label: "legacy".into(),
                     quota: Arc::new(Semaphore::new(default_limit)),
                 },
+                max_in_flight: default_limit,
             });
         }
         Self {
@@ -70,6 +79,19 @@ impl InferenceRegistry {
             .iter()
             .find(|entry| entry.token_hash == supplied)
             .map(|entry| entry.identity.clone())
+    }
+
+    pub fn policies(&self) -> Vec<InferencePolicy> {
+        let mut policies = self
+            .entries
+            .iter()
+            .map(|entry| InferencePolicy {
+                label: entry.identity.label.clone(),
+                max_in_flight: entry.max_in_flight,
+            })
+            .collect::<Vec<_>>();
+        policies.sort_by(|left, right| left.label.cmp(&right.label));
+        policies
     }
 }
 

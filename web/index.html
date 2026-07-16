@@ -23,7 +23,16 @@
     <section><h2>Nodes</h2><div id="nodes"></div></section>
     <section><h2>Models and placements</h2><div id="placements"></div></section>
     <section><h2>Hardware capacity</h2><div id="capacity"></div></section>
-    <section><h2>Diagnostics</h2><div id="diagnostics"></div></section>
+    <section><h2>Diagnostics</h2><div id="diagnostics"></div><div id="inference-policy"></div></section>
+    <section>
+      <h2>Management credentials</h2>
+      <div id="credentials"></div>
+      <p><input id="credential-label" placeholder="credential label"></p>
+      <p><select id="credential-role"><option>viewer</option><option>operator</option><option>admin</option></select></p>
+      <button id="create-credential">Create credential</button>
+      <pre id="created-credential"></pre>
+    </section>
+    <section><h2>Recovery</h2><p>Encrypted backup, restore, and owner transfer are offline CLI operations so owner keys are never sent to this page.</p></section>
     <section><h2>Invitation</h2><button id="invite">Generate invitation</button><pre id="invitation"></pre></section>
     <section><h2>Assign owner model</h2><input id="model" placeholder="model ID"><button id="assign">Assign</button><p id="action"></p></section>
     <section>
@@ -52,7 +61,7 @@
     async function mutate(path, method, body) {
       const response = await fetch(apiPath(path), {method, headers: headers(), body: JSON.stringify(body)});
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      await refresh(); return response.json();
+      const result = response.status === 204 ? null : await response.json(); await refresh(); return result;
     }
     async function refresh() {
       try {
@@ -65,7 +74,7 @@
         set('network', [`Name: ${network.name}`, `Generation: ${network.generation}`, `ID: ${network.network_id}`]);
         const nodes = document.getElementById('nodes'); nodes.replaceChildren();
         for (const node of status.nodes) {
-          const p = document.createElement('p'); p.append(text(`${node.owner ? 'Owner' : 'Member'}: ${node.health} (${node.endpoint})`));
+          const p = document.createElement('p'); p.append(text(`${node.owner ? 'Owner' : 'Member'}: ${node.health}, ${node.transport || 'unknown'} (${node.endpoint})`));
           if (!node.owner) { const button = document.createElement('button'); button.textContent = 'Revoke'; button.onclick = () => mutate('/v1/members/revoke', 'POST', {node_pubkey: node.node_pubkey}).catch(showError); p.append(' ', button); }
           nodes.append(p);
         }
@@ -74,10 +83,17 @@
           const group = replicas.get(placement.model) || [];
           group.push(placement); replicas.set(placement.model, group);
         }
-        set('placements', replicas.size ? [...replicas].map(([model, group]) => {
-          const ready = group.filter((placement) => placement.health === 'ready').length;
-          return `${model}: ${ready}/${group.length} replicas ready`;
-        }) : ['No model placements']);
+        const placements = document.getElementById('placements'); placements.replaceChildren();
+        if (!replicas.size) placements.append(document.createElement('p')).append(text('No model placements'));
+        for (const [model, group] of replicas) {
+          const ready = group.filter((placement) => placement.health === 'ready' && placement.lifecycle === 'ready').length;
+          const heading = document.createElement('p'); heading.append(text(`${model}: ${ready}/${group.length} replicas accepting work`)); placements.append(heading);
+          for (const placement of group) {
+            const row = document.createElement('p'); row.append(text(`${placement.placement_id}: ${placement.lifecycle}, ${placement.health}`));
+            const button = document.createElement('button'); const draining = placement.lifecycle === 'draining'; button.textContent = draining ? 'Resume' : 'Drain';
+            button.onclick = () => mutate(`/v1/placements/${placement.placement_id}/drain`, draining ? 'DELETE' : 'POST').catch(showError); row.append(' ', button); placements.append(row);
+          }
+        }
         const profiles = network.hardware_profiles || [];
         set('capacity', profiles.length ? profiles.map((profile) => {
           const gib = (profile.available_memory_bytes / 1073741824).toFixed(1);
@@ -85,6 +101,18 @@
           return `${profile.cpu.model}: ${gib} GiB available, backends ${backends}`;
         }) : ['No published hardware profiles']);
         set('diagnostics', [`Workers: ${status.workers.length}`, `Members: ${network.members.length}`, `Hardware profiles: ${profiles.length}`]);
+        const policyResponse = await fetch(apiPath('/v1/inference-policy'), {headers: headers()});
+        if (policyResponse.ok) { const policies = await policyResponse.json(); set('inference-policy', policies.length ? policies.map((policy) => `Inference ${policy.label}: ${policy.max_in_flight} concurrent`) : ['Open local inference policy']); }
+        const credentialResponse = await fetch(apiPath('/v1/management/credentials'), {headers: headers()});
+        if (credentialResponse.ok) {
+          const credentials = await credentialResponse.json();
+          const root = document.getElementById('credentials'); root.replaceChildren();
+          for (const credential of credentials) {
+            const row = document.createElement('p'); row.append(text(`${credential.label}: ${credential.role}, ${credential.revocable ? 'revocable' : 'configured'} (${credential.id})`));
+            if (credential.revocable) { const button = document.createElement('button'); button.textContent = 'Revoke'; button.onclick = () => mutate(`/v1/management/credentials/${credential.id}`, 'DELETE').catch(showError); row.append(' ', button); }
+            root.append(row);
+          }
+        } else { set('credentials', ['Admin credential required']); }
       } catch (error) { document.getElementById('summary').textContent = `Status unavailable: ${error.message}`; }
     }
     const showError = (error) => { document.getElementById('action').textContent = error.message; };
@@ -109,6 +137,14 @@
           const rate = candidate.decode_tokens_per_second_milli == null ? 'unmeasured' : `${(candidate.decode_tokens_per_second_milli / 1000).toFixed(2)} tok/s`;
           return `${candidate.compatible ? 'Compatible' : 'Incompatible'}: ${candidate.backend || 'no backend'}, ${memory} GiB headroom, ${rate}. ${candidate.explanations.join('; ')}`;
         }) : ['No hardware profiles available']);
+      } catch (error) { showError(error); }
+    };
+    document.getElementById('create-credential').onclick = async () => {
+      try {
+        const label = document.getElementById('credential-label').value.trim(); const role = document.getElementById('credential-role').value;
+        if (!label) throw new Error('Credential label is required');
+        const created = await mutate('/v1/management/credentials', 'POST', {label, role});
+        document.getElementById('created-credential').textContent = `Save this token now. It will not be shown again.\n${created.token}`;
       } catch (error) { showError(error); }
     };
     document.getElementById('token').value = localStorage.getItem('dllm-management-token') || '';

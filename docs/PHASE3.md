@@ -58,7 +58,7 @@ distributed dense layer stages without a new feasibility decision.
   documented recovery validation.
 - [x] P3.4: implement placement draining and validate a replica-safe rolling
   daemon upgrade.
-- [ ] P3.5: implement per-credential quotas and fair admission, then evaluate
+- [x] P3.5: implement per-credential quotas and fair admission, then evaluate
   runtime-supported batching.
 - [ ] P3.6: run the LAN, metro, and cross-country direct and relay benchmark
   matrix.
@@ -152,9 +152,15 @@ retain their Phase 2 behavior.
 
 Automated coverage proves authenticated peer headers are forwarded, missing
 identity is rejected, direct failure selects a ready relay, and member inference
-uses the dedicated peer route. Automatic NAT candidate discovery, a maintained
-relay service, connection freshness and replay protection, and physical WAN
-evidence remain before P3.2 can be marked complete.
+uses the dedicated peer route. Peer requests are HMAC-SHA256 bound to method,
+path, network ID, caller key, timestamp, and a single-use nonce. The receiver
+enforces a 30-second clock window and rejects replayed nonces.
+
+The `dllm-relay` binary forwards only `/v1/peer/*` traffic to a configured
+upstream and preserves streaming responses and authenticated identity headers.
+It supports an explicit delay only for reproducible benchmark profiles. An
+outbound reverse tunnel or equivalent automatic NAT traversal mechanism and
+physical WAN evidence remain before P3.2 can be marked complete.
 
 ## P3.3 ownership and recovery
 
@@ -200,5 +206,42 @@ credential with the global admission limit.
 
 Automated coverage exhausts one client's quota, observes a labeled HTTP 429,
 and proves a second credential still completes through the same globally
-available runtime. Runtime batching evaluation remains before P3.5 can be
-marked complete.
+available runtime.
+
+The pinned llama.cpp runtime supports `--cont-batching` and
+`--no-cont-batching`. A controlled two-request Gemma test on desktop Vulkan0
+compared five pairs per mode with 128 generated tokens per request. Excluding
+one warmup pair, continuous batching reduced mean pair completion from 1.9689
+seconds to 1.9229 seconds, a 2.34 percent improvement. That result is too small
+to justify forcing a runtime override across hardware profiles. DLLM retains
+the runtime default and its explicit admission controls. Evidence is in
+`phase3-results/p35-batching/summary.json`. This completes P3.5.
+
+## P3.6 network benchmark matrix
+
+The pinned Gemma runtime completed five HTTP 200 inference repetitions for a
+physical local direct path, physical local relay, 20 ms metro-emulated relay,
+and 70 ms cross-country-emulated relay. All paths used the authenticated peer
+transport and 64 generated tokens. The local direct mean was 0.7139 seconds,
+local relay was 0.7000 seconds, metro-emulated relay was 0.7071 seconds, and
+cross-country-emulated relay was 0.7752 seconds. Runtime variance is larger than
+the 20 ms delay at this workload, while the 70 ms profile is visible.
+
+This is useful transport and inference evidence but does not satisfy P3.6.
+Physical metro and cross-country endpoints are not available in the current
+environment, so direct and relayed physical WAN runs, traffic capture, and
+failure recovery timing remain. The partial evidence is
+`phase3-results/p36-network-matrix/summary.json`.
+
+## P3.7 management surfaces and current decision
+
+The CLI exposes credential rotation, inference policy, relay candidates,
+draining, resume, encrypted backup, restore, and owner transfer. The Web UI
+shows selected transport, placement lifecycle controls, management credential
+inventory and rotation, inference quotas, and the offline recovery boundary.
+It does not display bearer tokens after creation or owner key material.
+
+The current machine-readable decision is `phase3-results/final-summary.json`.
+Phase 3 remains incomplete because P3.2 and P3.6 still require infrastructure
+that is not present locally. P3.7 therefore also remains open. Phase 4 has not
+started.
