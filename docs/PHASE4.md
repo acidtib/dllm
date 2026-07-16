@@ -26,7 +26,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
 - [ ] P4.0: select the embedded peer transport after local, separate-NAT,
   node-integrated forwarding, recovery, resource, and dependency validation.
 - [ ] P4.1: add owner-signed bindings between DLLM node identities and rotating
-  iroh endpoint identities, including revocation and replay protection.
+  transport endpoint identities, including revocation and replay protection.
 - [ ] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
   `dllmd`, prove automatic selection of an eligible participating node, and
   remove SSH and separately deployed relays from the supported peer path.
@@ -125,3 +125,30 @@ next comparison must test an embedded `dllmd` forwarding role against
 rust-libp2p's DHT, AutoNAT, and Circuit Relay v2 composition. Detailed evidence
 from the rejected experiment remains in
 `results/phase4-results/p40-iroh-evaluation/summary.json`.
+
+### Rust-libp2p node-integrated spike
+
+The 2026-07-16 local spike uses rust-libp2p 0.56.0 in one executable with two
+ordinary node configurations. A forwarding-eligible node runs Circuit Relay
+v2 alongside Identify, Kademlia, Ping, and the DLLM request protocol. Edge
+nodes run the relay client, DCUtR, AutoNAT, Kademlia, and the same authenticated
+request protocol. There is no separate relay executable or SSH data path.
+
+The three-process test passed encrypted circuit reservation, forwarding, and
+application exchange. The forwarding node reported `CircuitReqAccepted`, and
+the authorized peer received `hello-through-node`. A fourth peer could create
+a transport circuit but was rejected by the DLLM application identity check.
+Transport reachability therefore did not grant DLLM membership.
+
+The spike also found two integration constraints. A forwarding node must add
+its observed address as an external address after Identify, otherwise clients
+cannot retain the reservation. Also, the current prototype does not restore a
+listener reservation after the forwarding process restarts. The pre-restart
+request passed, but the post-restart request timed out. Automatic reselection
+and reservation recovery remain required before P4.0 can pass.
+
+The local result validates the proposed deployment shape, not the complete
+transport selection. Separate-NAT testing, DHT-based forwarding-node
+selection, direct-path upgrade, recovery, resource measurements, and the
+streaming matrix remain open. Evidence is in
+`results/phase4-results/p40-libp2p-evaluation/summary.json`.

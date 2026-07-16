@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+futures-util = "0.3"
 iroh = { version = "1.0.2", default-features = false, features = ["tls-ring"] }
+libp2p = { version = "0.56.0", features = ["autonat", "cbor", "dcutr", "dns", "identify", "kad", "macros", "noise", "ping", "quic", "relay", "request-response", "serde", "tcp", "tokio", "yamux"] }
+serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

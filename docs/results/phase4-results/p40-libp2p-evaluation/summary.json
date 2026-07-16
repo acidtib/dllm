@@ -1,0 +1,53 @@
+{
+  "date": "2026-07-16",
+  "candidate": "rust-libp2p 0.56.0",
+  "status": "local_node_integrated_shape_validated",
+  "deployment_shape": {
+    "separate_relay_service": false,
+    "ssh_data_path": false,
+    "forwarding_role": "ordinary node process with forwarding enabled",
+    "forwarder_behaviours": [
+      "circuit-relay-v2",
+      "identify",
+      "kademlia",
+      "ping",
+      "dllm-request-response"
+    ],
+    "edge_behaviours": [
+      "circuit-relay-v2-client",
+      "dcutr",
+      "autonat",
+      "identify",
+      "kademlia",
+      "ping",
+      "dllm-request-response"
+    ]
+  },
+  "local_tests": {
+    "authorized_forwarded_request": {
+      "result": "pass",
+      "response": "hello-through-node",
+      "forwarder_event": "CircuitReqAccepted"
+    },
+    "unauthorized_identity": {
+      "result": "pass",
+      "transport_circuit_established": true,
+      "application_authorized": false,
+      "client_exit_code": 1
+    },
+    "forwarder_restart": {
+      "result": "fail",
+      "request_before_restart": "pass",
+      "request_after_restart": "timeout",
+      "required_change": "restore or reselect the reservation after forwarding-node loss"
+    }
+  },
+  "open_validation": [
+    "DHT-based forwarding-node discovery and selection",
+    "separate-NAT physical forwarding",
+    "DCUtR direct-path upgrade and path reporting",
+    "forwarding-node loss and address-change recovery",
+    "streaming, cancellation, deadlines, and concurrency",
+    "release size, startup time, memory, and sustained resource limits"
+  ]
+}
