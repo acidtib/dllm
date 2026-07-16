@@ -14,6 +14,7 @@ use dllm_protocol::{
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -35,6 +36,7 @@ pub struct ApiState {
     pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
     pub public_url: String,
+    pub replica_loads: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicU64>>>>,
 }
 
 #[derive(Default)]
@@ -123,7 +125,7 @@ async fn runtime_is_ready(state: &ApiState) -> bool {
 }
 
 async fn metrics(State(state): State<ApiState>) -> String {
-    format!(
+    let mut output = format!(
         concat!(
             "dllm_inference_requests_total {}\n",
             "dllm_admission_rejections_total {}\n",
@@ -138,7 +140,17 @@ async fn metrics(State(state): State<ApiState>) -> String {
         state.metrics.request_bytes.load(Ordering::Relaxed),
         state.metrics.response_bytes.load(Ordering::Relaxed),
         state.admission.available_permits(),
-    )
+    );
+    let loads = state.replica_loads.lock().await;
+    let mut placements = loads.iter().collect::<Vec<_>>();
+    placements.sort_by_key(|(placement_id, _)| **placement_id);
+    for (placement_id, load) in placements {
+        output.push_str(&format!(
+            "dllm_replica_in_flight{{placement_id=\"{placement_id}\"}} {}\n",
+            load.load(Ordering::Relaxed)
+        ));
+    }
+    output
 }
 
 async fn require_bearer(
@@ -348,14 +360,20 @@ async fn unassign(
 
 async fn proxy_models(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let store = state.store.lock().await;
-    let data = store
+    let mut models = store
         .state
         .state
         .model_assignments
         .iter()
-        .map(|assignment| {
+        .map(|assignment| assignment.model.clone())
+        .collect::<Vec<_>>();
+    models.sort();
+    models.dedup();
+    let data = models
+        .into_iter()
+        .map(|model| {
             serde_json::json!({
-                "id": assignment.model,
+                "id": model,
                 "object": "model",
                 "owned_by": "dllm"
             })
@@ -369,11 +387,10 @@ async fn proxy_chat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
-    let (runtime_url, peer) = resolve_runtime(&state, &body).await?;
+    let replica = resolve_runtime(&state, &body).await?;
     proxy(
         state,
-        runtime_url,
-        peer,
+        replica,
         reqwest::Method::POST,
         "/v1/chat/completions",
         headers,
@@ -384,8 +401,7 @@ async fn proxy_chat(
 
 async fn proxy(
     state: ApiState,
-    runtime_url: String,
-    peer: bool,
+    replica: ResolvedReplica,
     method: reqwest::Method,
     path: &str,
     headers: HeaderMap,
@@ -406,8 +422,10 @@ async fn proxy(
             .fetch_add(1, Ordering::Relaxed);
         ApiError::Saturated
     })?;
-    let mut request = state.client.request(method, format!("{runtime_url}{path}"));
-    if peer {
+    let mut request = state
+        .client
+        .request(method, format!("{}{path}", replica.runtime_url));
+    if replica.peer {
         if let Some(key) = &state.peer_api_key {
             request = request.bearer_auth(key);
         }
@@ -418,6 +436,7 @@ async fn proxy(
     if !body.is_empty() {
         request = request.body(body);
     }
+    let replica_lease = ReplicaLease::new(replica.in_flight);
     let upstream = request.send().await.map_err(|error| {
         state
             .metrics
@@ -430,6 +449,7 @@ async fn proxy(
     let metrics = state.metrics.clone();
     let stream = upstream.bytes_stream().map(move |item| {
         let _permit = &permit;
+        let _replica_lease = &replica_lease;
         if let Ok(bytes) = &item {
             metrics
                 .response_bytes
@@ -446,36 +466,102 @@ async fn proxy(
         .map_err(|_| ApiError::BadRequest("invalid upstream response"))
 }
 
-async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<(String, bool), ApiError> {
+struct ResolvedReplica {
+    runtime_url: String,
+    peer: bool,
+    in_flight: Arc<AtomicU64>,
+}
+
+struct ReplicaLease(Arc<AtomicU64>);
+
+impl ReplicaLease {
+    fn new(load: Arc<AtomicU64>) -> Self {
+        load.fetch_add(1, Ordering::Relaxed);
+        Self(load)
+    }
+}
+
+impl Drop for ReplicaLease {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedReplica, ApiError> {
     let request: serde_json::Value =
         serde_json::from_slice(body).map_err(|_| ApiError::BadRequest("invalid JSON request"))?;
     let model = request
         .get("model")
         .and_then(|value| value.as_str())
         .ok_or(ApiError::BadRequest("model is required"))?;
-    let store = state.store.lock().await;
-    let placement = store
-        .state
-        .state
-        .placements
-        .iter()
-        .find(|placement| placement.model == model)
-        .ok_or(ApiError::ModelUnavailable)?;
-    if placement.node_pubkey == store.state.state.owner_pubkey {
-        return state
-            .runtime_url
-            .clone()
-            .map(|url| (url, false))
-            .ok_or(ApiError::RuntimeUnavailable);
+    let (owner, placements, members) = {
+        let store = state.store.lock().await;
+        (
+            store.state.state.owner_pubkey,
+            store
+                .state
+                .state
+                .placements
+                .iter()
+                .filter(|placement| placement.model == model)
+                .cloned()
+                .collect::<Vec<_>>(),
+            store.state.state.members.clone(),
+        )
+    };
+    if placements.is_empty() {
+        return Err(ApiError::ModelUnavailable);
     }
-    store
-        .state
-        .state
-        .members
-        .iter()
-        .find(|member| member.node_pubkey == placement.node_pubkey)
-        .map(|member| (member.endpoint.clone(), true))
-        .ok_or(ApiError::ModelUnavailable)
+    let mut candidates = Vec::new();
+    for placement in placements {
+        let (runtime_url, peer, ready) = if placement.node_pubkey == owner {
+            (
+                state.runtime_url.clone().unwrap_or_default(),
+                false,
+                runtime_is_ready(state).await,
+            )
+        } else if let Some(member) = members
+            .iter()
+            .find(|member| member.node_pubkey == placement.node_pubkey)
+        {
+            let ready = state
+                .client
+                .get(format!("{}/health/runtime", member.endpoint))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success());
+            (member.endpoint.clone(), true, ready)
+        } else {
+            continue;
+        };
+        if ready {
+            let load = state
+                .replica_loads
+                .lock()
+                .await
+                .entry(placement.placement_id)
+                .or_default()
+                .clone();
+            candidates.push((
+                load.load(Ordering::Relaxed),
+                placement.placement_id,
+                runtime_url,
+                peer,
+                load,
+            ));
+        }
+    }
+    candidates.sort_by_key(|(load, placement_id, ..)| (*load, *placement_id));
+    candidates
+        .into_iter()
+        .next()
+        .map(|(_, _, runtime_url, peer, in_flight)| ResolvedReplica {
+            runtime_url,
+            peer,
+            in_flight,
+        })
+        .ok_or(ApiError::RuntimeUnavailable)
 }
 
 fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
@@ -484,6 +570,7 @@ fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
         .map_err(|_| ApiError::BadRequest("node_pubkey must contain 32 bytes"))
 }
 
+#[derive(Debug)]
 enum ApiError {
     BadRequest(&'static str),
     Store(StoreError),
@@ -551,6 +638,7 @@ mod tests {
             peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
+            replica_loads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -596,7 +684,11 @@ mod tests {
 
     #[tokio::test]
     async fn inference_api_key_and_saturation_are_enforced() {
-        let mut state = state(None, Some("http://127.0.0.1:1".into()));
+        let upstream = Router::new().route("/health", get(|| async { StatusCode::OK }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let mut state = state(None, Some(format!("http://{address}")));
         state.api_key = Some("inference-secret".into());
         let owner = state.store.lock().await.state.state.owner_pubkey;
         state
@@ -634,15 +726,17 @@ mod tests {
 
     #[tokio::test]
     async fn chat_proxy_preserves_streaming_content_type() {
-        let upstream = Router::new().route(
-            "/v1/chat/completions",
-            post(|| async {
-                (
-                    [(header::CONTENT_TYPE, "text/event-stream")],
-                    "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
-                )
-            }),
-        );
+        let upstream = Router::new()
+            .route("/health", get(|| async { StatusCode::OK }))
+            .route(
+                "/v1/chat/completions",
+                post(|| async {
+                    (
+                        [(header::CONTENT_TYPE, "text/event-stream")],
+                        "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
+                    )
+                }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
@@ -676,20 +770,22 @@ mod tests {
 
     #[tokio::test]
     async fn chat_routes_to_assigned_member_with_peer_key() {
-        let upstream = Router::new().route(
-            "/v1/chat/completions",
-            post(|headers: HeaderMap| async move {
-                if headers
-                    .get(header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    != Some("Bearer peer-secret")
-                {
-                    return StatusCode::UNAUTHORIZED.into_response();
-                }
-                Json(serde_json::json!({"choices":[{"message":{"content":"remote"}}]}))
-                    .into_response()
-            }),
-        );
+        let upstream = Router::new()
+            .route("/health/runtime", get(|| async { StatusCode::OK }))
+            .route(
+                "/v1/chat/completions",
+                post(|headers: HeaderMap| async move {
+                    if headers
+                        .get(header::AUTHORIZATION)
+                        .and_then(|value| value.to_str().ok())
+                        != Some("Bearer peer-secret")
+                    {
+                        return StatusCode::UNAUTHORIZED.into_response();
+                    }
+                    Json(serde_json::json!({"choices":[{"message":{"content":"remote"}}]}))
+                        .into_response()
+                }),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
@@ -729,5 +825,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(unavailable.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn replica_routing_prefers_ready_replica_with_less_load() {
+        async fn replica(ready: bool) -> String {
+            let health = if ready {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            let app = Router::new().route("/health/runtime", get(move || async move { health }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            format!("http://{address}")
+        }
+
+        let unavailable_endpoint = replica(false).await;
+        let busy_endpoint = replica(true).await;
+        let ready_endpoint = replica(true).await;
+        let state = state(None, None);
+        let first = NetworkStore::random_node_key();
+        let second = NetworkStore::random_node_key();
+        let third = NetworkStore::random_node_key();
+        let (first_placement, second_placement, third_placement) = {
+            let mut store = state.store.lock().await;
+            let first_token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token(first_token, first, unavailable_endpoint)
+                .unwrap();
+            let second_token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token(second_token, second, busy_endpoint)
+                .unwrap();
+            let third_token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token(third_token, third, ready_endpoint.clone())
+                .unwrap();
+            store.assign_model("qwen".into(), first).unwrap();
+            store.assign_model("qwen".into(), second).unwrap();
+            store.assign_model("qwen".into(), third).unwrap();
+            (
+                store.state.state.placements[0].placement_id,
+                store.state.state.placements[1].placement_id,
+                store.state.state.placements[2].placement_id,
+            )
+        };
+        state
+            .replica_loads
+            .lock()
+            .await
+            .insert(first_placement, Arc::new(AtomicU64::new(0)));
+        state
+            .replica_loads
+            .lock()
+            .await
+            .insert(second_placement, Arc::new(AtomicU64::new(10)));
+        state
+            .replica_loads
+            .lock()
+            .await
+            .insert(third_placement, Arc::new(AtomicU64::new(5)));
+
+        let selected = resolve_runtime(&state, &Bytes::from_static(b"{\"model\":\"qwen\"}"))
+            .await
+            .unwrap();
+        assert_eq!(selected.runtime_url, ready_endpoint);
+        assert!(selected.peer);
     }
 }

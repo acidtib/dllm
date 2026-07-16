@@ -2,7 +2,7 @@ use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllmd::{api, NetworkStore};
 use std::time::Duration;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, Semaphore},
@@ -85,6 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_api_key,
         metrics: Arc::new(api::Metrics::default()),
         public_url,
+        replica_loads: Arc::new(Mutex::new(HashMap::new())),
     });
     println!("dllmd listening on {bind}");
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
