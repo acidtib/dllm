@@ -1,0 +1,8 @@
+/target/
+*.swp
+*.tmp
+.env
+*.db
+*.db-journal
+*.key
+*.sock
