@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "runtime": {"name": "llama.cpp", "revision": "505b1ed15ca80e2a19f12ff4ac365e40fb374053", "device": "Vulkan0", "device_name": "NVIDIA GeForce GTX 1080"},
+  "model": {"id": "gemma-3-1b-it-q4_k_m", "sha256": "8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135"},
+  "workload": {"repetitions": 5, "max_generated_tokens": 64, "request_bytes": 164, "all_http_200": true},
+  "infrastructure": [
+    {"profile": "kansas", "location": "Kansas, US", "host": "165.245.194.22", "measured_mean_rtt_ms": 57.472, "cpu_count": 2, "memory_kib": 4009868},
+    {"profile": "new_york", "location": "New York, US", "host": "161.35.1.120", "measured_mean_rtt_ms": 44.180, "cpu_count": 2, "memory_kib": 2014860}
+  ],
+  "measurements": [
+    {"profile": "lan_direct", "physical": true, "relayed": false, "mean_total_seconds": 0.713879, "total_seconds": [0.798829, 0.717840, 0.670653, 0.668973, 0.713100]},
+    {"profile": "lan_relay", "physical": true, "relayed": true, "configured_one_way_delay_ms": 0, "mean_total_seconds": 0.7000112, "total_seconds": [0.755613, 0.687453, 0.672167, 0.691656, 0.693167]},
+    {"profile": "metro_relay_emulated", "physical": false, "relayed": true, "configured_one_way_delay_ms": 20, "mean_total_seconds": 0.7071054, "total_seconds": [0.696199, 0.747731, 0.704973, 0.701295, 0.685329]},
+    {"profile": "cross_country_relay_emulated", "physical": false, "relayed": true, "configured_one_way_delay_ms": 70, "mean_total_seconds": 0.7751816, "total_seconds": [0.823176, 0.724854, 0.800008, 0.774054, 0.753816]},
+    {
+      "profile": "kansas_direct", "physical": true, "relayed": false,
+      "mean_total_seconds": 0.9353578, "warm_mean_total_seconds": 0.5232055,
+      "total_seconds": [2.583967, 0.513043, 0.533653, 0.529189, 0.516937],
+      "time_to_first_byte_seconds": [2.583945, 0.513012, 0.533620, 0.529167, 0.516916],
+      "response_bytes": [801, 770, 782, 797, 777], "mean_response_bytes_per_second": 1256.6, "failures": 0
+    },
+    {
+      "profile": "kansas_relay", "physical": true, "relayed": true, "mean_total_seconds": 0.454087,
+      "total_seconds": [0.570082, 0.413488, 0.417135, 0.409755, 0.459975],
+      "time_to_first_byte_seconds": [0.512830, 0.353108, 0.360635, 0.353031, 0.403201],
+      "response_bytes": [775, 767, 779, 769, 815], "mean_response_bytes_per_second": 1745.4, "failures": 0
+    },
+    {
+      "profile": "new_york_direct", "physical": true, "relayed": false, "mean_total_seconds": 0.5161198,
+      "total_seconds": [0.661361, 0.472138, 0.486561, 0.456928, 0.503611],
+      "time_to_first_byte_seconds": [0.661327, 0.472111, 0.486522, 0.456906, 0.503587],
+      "response_bytes": [770, 794, 784, 790, 803], "mean_response_bytes_per_second": 1555.6, "failures": 0
+    },
+    {
+      "profile": "new_york_relay", "physical": true, "relayed": true, "mean_total_seconds": 0.448272,
+      "total_seconds": [0.511600, 0.368893, 0.401498, 0.456165, 0.503204],
+      "time_to_first_byte_seconds": [0.467573, 0.320775, 0.356724, 0.410880, 0.458702],
+      "response_bytes": [777, 796, 805, 804, 847], "mean_response_bytes_per_second": 1825.0, "failures": 0
+    }
+  ],
+  "transport": {
+    "relay_binary": "dllm-relay", "tunnel_binary": "dllm-tunnel",
+    "peer_authentication": "bearer plus HMAC-SHA256 method/path/timestamp/nonce binding",
+    "replay_rejection_validated": true, "runtime_ports_publicly_exposed": false
+  },
+  "recovery": {
+    "tunnel_ssh_child_interruption_recovery_ms": 1819,
+    "relay_process_interruption_recovery_ms": 1786,
+    "direct_path_loss_fallback": {"request_status": 200, "selected_transport_before": "direct", "selected_transport_after": "relay", "total_seconds": 0.683038},
+    "direct_path_restore_selected_transport": "direct"
+  }
+}

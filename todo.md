@@ -17,13 +17,13 @@ Two Linux x86-64 VPS hosts are needed:
 
 Record tomorrow:
 
-- Metro VPS SSH: `TBD`
-- Metro VPS location: `TBD`
-- Cross-country VPS SSH: `TBD`
-- Cross-country VPS location: `TBD`
-- Existing SSH key authorized: `TBD`
-- Passwordless sudo available: `TBD`
-- TCP ports allowed by each provider firewall: `TBD`
+- Metro VPS SSH: `root@165.245.194.22`
+- Metro VPS location: `Kansas, US`
+- Cross-country VPS SSH: `root@161.35.1.120`
+- Cross-country VPS location: `New York, US`
+- Existing SSH key authorized: `yes`
+- Passwordless sudo available: `yes, root login`
+- TCP ports allowed by each provider firewall: `7443 and 7444 during validation`
 
 Do not put passwords, private SSH keys, API tokens, or VPS provider credentials
 in this file.

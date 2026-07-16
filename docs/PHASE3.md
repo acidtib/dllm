@@ -1,6 +1,6 @@
 # Phase 3 Engineering Log
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 This is the authoritative engineering log for WAN hardening and remote
 management described in `docs/dllm-proposal.md`. Phase 2 completed with the
@@ -52,7 +52,7 @@ distributed dense layer stages without a new feasibility decision.
   implementation order.
 - [x] P3.1: implement remote-management roles, scoped credentials, credential
   rotation, and audit-safe status surfaces.
-- [ ] P3.2: implement authenticated peer transport, NAT traversal, and relay
+- [x] P3.2: implement authenticated peer transport, NAT traversal, and relay
   fallback with explicit direct-versus-relayed state.
 - [x] P3.3: implement owner transfer, encrypted control-plane backup, and
   documented recovery validation.
@@ -60,9 +60,9 @@ distributed dense layer stages without a new feasibility decision.
   daemon upgrade.
 - [x] P3.5: implement per-credential quotas and fair admission, then evaluate
   runtime-supported batching.
-- [ ] P3.6: run the LAN, metro, and cross-country direct and relay benchmark
+- [x] P3.6: run the LAN, metro, and cross-country direct and relay benchmark
   matrix.
-- [ ] P3.7: expose Phase 3 operations in the CLI and UI, run the full acceptance
+- [x] P3.7: expose Phase 3 operations in the CLI and UI, run the full acceptance
   suite, and record the machine-readable Phase 3 decision.
 
 Milestones are marked complete only when their implementation and required
@@ -158,9 +158,13 @@ enforces a 30-second clock window and rejects replayed nonces.
 
 The `dllm-relay` binary forwards only `/v1/peer/*` traffic to a configured
 upstream and preserves streaming responses and authenticated identity headers.
-It supports an explicit delay only for reproducible benchmark profiles. An
-outbound reverse tunnel or equivalent automatic NAT traversal mechanism and
-physical WAN evidence remain before P3.2 can be marked complete.
+It supports an explicit delay only for reproducible benchmark profiles.
+`dllm-tunnel` establishes a loopback-scoped SSH reverse forward from the member
+to the relay host. It fails if the forward cannot be installed, checks SSH
+liveness, and reconnects after interruption. The relay connects only to the
+loopback end of the tunnel, while the runtime remains on member loopback behind
+`dllmd`. A physical SSH-child interruption restored the New York relay path in
+1.819 seconds. This completes P3.2.
 
 ## P3.3 ownership and recovery
 
@@ -227,11 +231,21 @@ local relay was 0.7000 seconds, metro-emulated relay was 0.7071 seconds, and
 cross-country-emulated relay was 0.7752 seconds. Runtime variance is larger than
 the 20 ms delay at this workload, while the 70 ms profile is visible.
 
-This is useful transport and inference evidence but does not satisfy P3.6.
-Physical metro and cross-country endpoints are not available in the current
-environment, so direct and relayed physical WAN runs, traffic capture, and
-failure recovery timing remain. The partial evidence is
-`phase3-results/p36-network-matrix/summary.json`.
+Physical Kansas and New York hosts completed five direct and five relayed
+authenticated inference requests each, all HTTP 200. The Kansas direct warm
+mean was 0.5232 seconds and its relay mean was 0.4541 seconds. The New York
+direct mean was 0.5161 seconds and its relay mean was 0.4483 seconds. Provider
+routing produced 57.472 ms mean RTT to Kansas and 44.180 ms to New York, so
+location and measured RTT are recorded separately.
+
+Each run records connection time, time to first byte, total time, request and
+response bytes, response byte throughput, and failure count. Tunnel recovery
+took 1.819 seconds and relay-process recovery took 1.786 seconds. Disabling a
+physical member's direct path changed management status from `direct` to
+`relay`; inference then completed with HTTP 200 in 0.6830 seconds. The runtime
+port remained loopback-only. Evidence is in
+`docs/results/phase3-results/p36-network-matrix/summary.json`. This completes
+P3.6.
 
 ## P3.7 management surfaces and current decision
 
@@ -241,7 +255,7 @@ shows selected transport, placement lifecycle controls, management credential
 inventory and rotation, inference quotas, and the offline recovery boundary.
 It does not display bearer tokens after creation or owner key material.
 
-The current machine-readable decision is `phase3-results/final-summary.json`.
-Phase 3 remains incomplete because P3.2 and P3.6 still require infrastructure
-that is not present locally. P3.7 therefore also remains open. Phase 4 has not
+The full workspace test and clippy suites pass. The current machine-readable
+decision is `docs/results/phase3-results/final-summary.json`. Every Phase 3
+acceptance criterion passes, so P3.7 and Phase 3 are complete. Phase 4 has not
 started.
