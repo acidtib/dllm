@@ -52,11 +52,8 @@ of distributed dense layer stages without a new feasibility decision.
 ## Milestones
 
 - [x] P2.0: establish scope, acceptance criteria, and implementation order.
-- [ ] P2.1: complete replica routing and physical concurrent-replica evidence.
-  The routing core and automated tests are complete. Physical evidence remains.
-- [ ] P2.2: publish signed hardware profiles for the desktop and laptop. The
-  laptop source and device probe and profile protocol are complete. Publishing
-  measured physical profiles for both machines remains.
+- [x] P2.1: complete replica routing and physical concurrent-replica evidence.
+- [x] P2.2: publish signed hardware profiles for the desktop and laptop.
 - [x] P2.3: implement placement preview, compatibility explanations, and
   capacity recommendations in the management API and CLI. Web UI exposure is
   tracked separately in P2.7.
@@ -66,9 +63,8 @@ of distributed dense layer stages without a new feasibility decision.
   IDs without duplicate logical entries.
 - [x] P2.6: manage two isolated networks in one daemon with independent state,
   credentials, membership, assignments, and status.
-- [ ] P2.7: expose replicas, placement preview, compatibility, and capacity in
-  the Web UI, then run the complete Phase 2 acceptance suite. UI exposure is
-  implemented. Final acceptance remains.
+- [x] P2.7: expose replicas, placement preview, compatibility, and capacity in
+  the Web UI, then run the complete Phase 2 acceptance suite.
 
 Milestones are marked complete only when their implementation and required
 evidence are recorded here. A partially complete milestone keeps an unchecked
@@ -205,3 +201,41 @@ backend requirements and renders compatibility, selected backend, memory
 headroom, measured decode rate, and explanations. The UI derives an additional
 network's route prefix from its URL, so the same bundled page works for primary
 and mounted networks.
+
+## P2.8 physical replica and profile acceptance
+
+The final physical network used the exact Gemma artifact and pinned llama.cpp
+revision on both machines. The desktop served the model on one GTX 1080 through
+Vulkan. The laptop served the model on its selected four-thread AVX2 CPU path.
+Both owner-signed placements reported ready at generation 6.
+
+Two overlapping 256-token streaming requests completed with HTTP 200 and
+`[DONE]`, with zero admission rejections. The laptop daemon inference counter
+increased by exactly one, proving the least-in-flight router sent one request to
+each physical replica. Removing the laptop worker produced one ready and one
+unavailable placement and degraded aggregate health. A new request still
+returned HTTP 200 from the desktop with `desktop fallback`.
+
+The owner published measured profiles for both nodes. The final signed state at
+generation 7 records the desktop i7-9700K, two GTX 1080 Vulkan devices, and its
+Gemma observation, plus the laptop i7-8550U, UHD 620, CPU and Vulkan runtime
+compatibility, and the controlled CPU/Vulkan benchmark results.
+
+The physical test exposed one remaining control-plane limitation. Owner-signed
+state is not automatically propagated into a member daemon's local store, so
+the laptop required a matching worker-local assignment before it could proxy to
+its runtime. This does not invalidate routing, concurrency, health, or failover
+evidence, but it must be addressed before remote worker configuration is fully
+automatic. The physical evidence is
+`phase2-results/p21-physical-replicas/summary.json`.
+
+## Phase 2 conclusion
+
+Phase 2 is complete. All seven acceptance criteria pass. DLLM now supports
+health-aware whole-model replicas, measured hardware profiles, deterministic
+placement preview, CPU-only workers, a validated Gemma architecture, multiple
+isolated networks per daemon, and orchestration visibility in the CLI and UI.
+
+The machine-readable decision is `phase2-results/final-summary.json`. Phase 3
+has not started. Distributed layer-stage execution remains excluded by the
+Phase 0 decision.
