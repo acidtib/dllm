@@ -52,8 +52,8 @@ impl SignedState {
         let key = VerifyingKey::from_bytes(&self.state.owner_pubkey)
             .map_err(|_| StateError::InvalidSignature)?;
         let bytes = serde_json::to_vec(&self.state).expect("protocol state is serializable");
-        let signature = Signature::from_slice(&self.signature)
-            .map_err(|_| StateError::InvalidSignature)?;
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| StateError::InvalidSignature)?;
         key.verify(&bytes, &signature)
             .map_err(|_| StateError::InvalidSignature)
     }
@@ -123,7 +123,10 @@ mod tests {
     fn signer_must_be_network_owner() {
         let key = SigningKey::generate(&mut rand::thread_rng());
         let other = SigningKey::generate(&mut rand::thread_rng());
-        assert_eq!(SignedState::sign(state(&key), &other), Err(StateError::OwnerMismatch));
+        assert_eq!(
+            SignedState::sign(state(&key), &other),
+            Err(StateError::OwnerMismatch)
+        );
     }
 
     #[test]
