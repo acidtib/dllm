@@ -170,10 +170,24 @@ become eligible. This proves capability discovery, but the probe still needs to
 connect to the discovered address and apply signed policy when multiple
 providers are returned.
 
+The edge now resolves and connects to the selected provider by peer identity
+using addresses learned through Kademlia. In the physical topology, Colorado
+received only the Kansas bootstrap address, discovered New York, and connected
+directly to its QUIC endpoint in 354 ms. No operator supplied the New York
+address to the edge.
+
+A local two-provider test added a fail-closed policy filter. Both providers
+were returned by the DHT, but the edge connected only to the explicitly
+approved peer. A policy naming a peer that was not among the providers returned
+an error and made no connection. This probe input models the decision boundary;
+it is not a substitute for the owner-signed forwarding policy required by
+P4.1 and P4.2.
+
 This result validates the proposed deployment shape, not the complete
-transport selection. Automatic connection and policy selection among
-discovered providers, replacement-node recovery, direct-path upgrade and
+transport selection. The selected provider still needs to drive circuit
+reservation automatically, and the probe allowlist must be replaced with
+owner-signed policy. Replacement-node recovery, direct-path upgrade and
 reporting, address-change recovery, sustained resource measurements, and the
-streaming matrix remain open.
+streaming matrix also remain open.
 Evidence is in
 `results/phase4-results/p40-libp2p-evaluation/summary.json`.

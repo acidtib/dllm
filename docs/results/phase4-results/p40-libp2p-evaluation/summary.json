@@ -62,11 +62,21 @@
     },
     "dht_forwarding_discovery": {
       "result": "pass",
-      "elapsed_ms": 301,
+      "discovery_elapsed_ms": 301,
+      "discovery_and_provider_connection_elapsed_ms": 354,
       "bootstrap": "ordinary Kansas node that did not publish forwarding eligibility",
       "provider": "ordinary New York node publishing /dllm/forwarding/v1",
       "discoverer": "Colorado development machine behind residential NAT",
-      "discovered_peer": "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X"
+      "discovered_peer": "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X",
+      "provider_connection": "/ip4/161.35.1.120/udp/19146/quic-v1"
+    },
+    "forwarding_policy_filter": {
+      "result": "local_pass",
+      "providers_returned": 2,
+      "approved_provider_selected": true,
+      "unapproved_only_policy": "failed_closed",
+      "current_policy_source": "explicit probe allowlist",
+      "required_policy_source": "owner-signed DLLM state"
     },
     "release_binary_bytes": 15988904,
     "short_run_memory_bytes": {
@@ -76,7 +86,8 @@
     "cleanup": "pass"
   },
   "open_validation": [
-    "automatic connection and policy selection among discovered forwarding providers",
+    "use the selected provider automatically for circuit reservation and forwarding",
+    "replace the probe allowlist with owner-signed forwarding policy",
     "DCUtR direct-path upgrade and path reporting",
     "automatic selection of a different forwarding node after loss",
     "address-change recovery",

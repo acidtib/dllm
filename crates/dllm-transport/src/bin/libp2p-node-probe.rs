@@ -31,6 +31,7 @@ enum Command {
         seed: u8,
         port: u16,
         bootstrap: Multiaddr,
+        allowed_provider: Option<PeerId>,
     },
     Listen {
         seed: u8,
@@ -145,10 +146,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.listen_on(format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?)?;
 
     let mut discovering = false;
+    let mut discovered_provider = None;
+    let mut allowed_provider = None;
     let (allowed_peer, target, mut outbound_request, mut relay_action) = match args.command {
         Command::Forwarder { .. } => unreachable!(),
-        Command::Discover { bootstrap, .. } => {
+        Command::Discover {
+            bootstrap,
+            allowed_provider: allowed,
+            ..
+        } => {
             discovering = true;
+            allowed_provider = allowed;
             (None, None, None, Some(RelayAction::Listen(bootstrap)))
         }
         Command::Listen {
@@ -237,6 +245,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 peer_id, endpoint, ..
             } => {
                 println!("connected peer_id={peer_id} endpoint={endpoint:?}");
+                if discovered_provider == Some(peer_id) {
+                    println!(
+                        "discovery=provider_connected peer_id={peer_id} address={}",
+                        endpoint.get_remote_address()
+                    );
+                    return Ok(());
+                }
                 if target == Some(peer_id) {
                     if let Some(message) = outbound_request.take() {
                         swarm
@@ -333,22 +348,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 kad::Event::OutboundQueryProgressed {
                     result:
                         kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                            key: _,
                             providers,
-                            ..
                         })),
                     ..
                 },
             )) if discovering => {
-                let providers = providers
+                let mut providers = providers.into_iter().collect::<Vec<_>>();
+                providers.sort_by_key(|peer| peer.to_bytes());
+                println!(
+                    "discovery=providers_found peers={}",
+                    providers
+                        .iter()
+                        .map(PeerId::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                );
+                if let Some(allowed) = allowed_provider {
+                    providers.retain(|peer| *peer == allowed);
+                    println!("discovery=policy_applied allowed_provider={allowed}");
+                }
+                let provider = providers
                     .into_iter()
-                    .map(|peer| peer.to_string())
-                    .collect::<Vec<_>>();
-                println!("discovery=providers_found peers={}", providers.join(","));
-                return if providers.is_empty() {
-                    Err("no forwarding-capable node discovered".into())
-                } else {
-                    Ok(())
-                };
+                    .next()
+                    .ok_or("no forwarding-capable node discovered")?;
+                swarm.dial(provider)?;
+                discovered_provider = Some(provider);
+                println!("discovery=provider_selected peer_id={provider}");
             }
             _ => {}
         }
@@ -416,11 +442,15 @@ async fn run_forwarder(
             .add_address(&peer, routing_address);
         swarm.dial(address.clone())?;
     }
+    let mut forwarding_capability_published = false;
     println!("node_ready peer_id={local_peer} forwarding_enabled=true");
 
     while let Some(event) = swarm.next().await {
         match event {
-            SwarmEvent::NewListenAddr { address, .. } => println!("listen={address}"),
+            SwarmEvent::NewListenAddr { address, .. } => {
+                swarm.add_external_address(address.clone());
+                println!("listen={address}");
+            }
             SwarmEvent::ConnectionEstablished { peer_id, .. } => {
                 println!("connected peer_id={peer_id}");
             }
@@ -437,16 +467,14 @@ async fn run_forwarder(
                     "identified peer_id={peer_id} observed={}",
                     info.observed_addr
                 );
-            }
-            SwarmEvent::Behaviour(ForwardBehaviourEvent::Identify(identify::Event::Sent {
-                peer_id,
-                ..
-            })) if bootstrap_peer == Some(peer_id) => {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))?;
-                println!("discovery=forwarding_capability_published");
+                if bootstrap_peer == Some(peer_id) && !forwarding_capability_published {
+                    swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))?;
+                    forwarding_capability_published = true;
+                    println!("discovery=forwarding_capability_published");
+                }
             }
             SwarmEvent::Behaviour(ForwardBehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
