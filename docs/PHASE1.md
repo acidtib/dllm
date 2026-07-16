@@ -225,4 +225,30 @@ The first streaming run exposed a five-second shared client timeout that cut off
 SSE responses. Health probes now carry their own five-second deadlines while
 inference streams have no fixed request deadline. The repeated real-model stream
 then completed normally with `[DONE]`.
+
+Machine-readable results are stored in
+`phase1-results/p14-real-runtime/summary.json`.
+
+## P1.5 TLS, failure semantics, and two-machine readiness
+
+Non-loopback daemon binds now require a TLS certificate, TLS private key,
+management credential, and inference credential. HTTPS smoke tests returned 401
+without the appropriate bearer credential and 200 with it for both management
+and inference. Rustls uses an explicitly selected Ring crypto provider to avoid
+ambiguous provider selection when the server and client TLS stacks coexist.
+
+Request metrics now count both request and response bytes. Revoking a member
+removes its assignments and placements from the signed generation. An
+integration test proves a request routed to an authenticated member succeeds
+before revocation and a new request for the same model receives HTTP 404 after
+revocation.
+
+The physical laptop at `192.168.1.189` was probed for the two-machine acceptance
+run, but SSH timed out on 2026-07-15. The local daemon, signed endpoint, peer
+routing, authentication, revocation, and runtime paths are ready for that run.
+No physical two-machine Phase 1 claim is made while the laptop is unreachable.
+
+Machine-readable security results are stored in
+`phase1-results/p15-security/summary.json`.
+
 No Phase 2 work has started.

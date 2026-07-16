@@ -42,6 +42,7 @@ pub struct Metrics {
     inference_requests: AtomicU64,
     admission_rejections: AtomicU64,
     upstream_failures: AtomicU64,
+    request_bytes: AtomicU64,
     response_bytes: AtomicU64,
 }
 
@@ -105,12 +106,14 @@ async fn metrics(State(state): State<ApiState>) -> String {
             "dllm_inference_requests_total {}\n",
             "dllm_admission_rejections_total {}\n",
             "dllm_upstream_failures_total {}\n",
+            "dllm_request_bytes_total {}\n",
             "dllm_response_bytes_total {}\n",
             "dllm_admission_available_permits {}\n"
         ),
         state.metrics.inference_requests.load(Ordering::Relaxed),
         state.metrics.admission_rejections.load(Ordering::Relaxed),
         state.metrics.upstream_failures.load(Ordering::Relaxed),
+        state.metrics.request_bytes.load(Ordering::Relaxed),
         state.metrics.response_bytes.load(Ordering::Relaxed),
         state.admission.available_permits(),
     )
@@ -359,6 +362,10 @@ async fn proxy(
         .metrics
         .inference_requests
         .fetch_add(1, Ordering::Relaxed);
+    state
+        .metrics
+        .request_bytes
+        .fetch_add(body.len() as u64, Ordering::Relaxed);
     let permit = state.admission.clone().try_acquire_owned().map_err(|_| {
         state
             .metrics
@@ -614,7 +621,9 @@ mod tests {
             .await
             .assign_model("qwen".into(), owner)
             .unwrap();
-        let response = router(state)
+        let app = router(state);
+        let response = app
+            .clone()
             .oneshot(
                 Request::post("/v1/chat/completions")
                     .header(header::CONTENT_TYPE, "application/json")
@@ -661,7 +670,10 @@ mod tests {
             store.redeem_join_token(token, member, endpoint).unwrap();
             store.assign_model("qwen".into(), member).unwrap();
         }
-        let response = router(state)
+        let shared_store = state.store.clone();
+        let app = router(state);
+        let response = app
+            .clone()
             .oneshot(
                 Request::post("/v1/chat/completions")
                     .header(header::CONTENT_TYPE, "application/json")
@@ -673,5 +685,16 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(body.windows(6).any(|window| window == b"remote"));
+        shared_store.lock().await.revoke_member(member).unwrap();
+        let unavailable = app
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{\"model\":\"qwen\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unavailable.status(), StatusCode::NOT_FOUND);
     }
 }

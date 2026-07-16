@@ -1,3 +1,4 @@
+use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllmd::{api, NetworkStore};
 use std::time::Duration;
@@ -9,6 +10,7 @@ use tokio::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let bind = std::env::var("DLLMD_BIND").unwrap_or_else(|_| "127.0.0.1:7337".into());
     let state_path =
         PathBuf::from(std::env::var("DLLMD_STATE").unwrap_or_else(|_| "dllm-state.json".into()));
@@ -23,10 +25,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let management_token = std::env::var("DLLMD_MANAGEMENT_TOKEN").ok();
     let api_key = std::env::var("DLLMD_API_KEY").ok();
     let peer_api_key = std::env::var("DLLMD_PEER_API_KEY").ok();
+    let tls_cert = std::env::var("DLLMD_TLS_CERT").ok();
+    let tls_key = std::env::var("DLLMD_TLS_KEY").ok();
     let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
     let bind_address: SocketAddr = bind.parse()?;
-    if !bind_address.ip().is_loopback() && management_token.is_none() {
-        return Err("DLLMD_MANAGEMENT_TOKEN is required for a non-loopback bind".into());
+    if !bind_address.ip().is_loopback()
+        && (management_token.is_none()
+            || api_key.is_none()
+            || tls_cert.is_none()
+            || tls_key.is_none())
+    {
+        return Err(
+            "non-loopback binds require management and inference credentials plus TLS certificate and key"
+                .into(),
+        );
     }
     let store = if state_path.exists() {
         NetworkStore::load(&state_path, &owner_key_path)?
@@ -74,11 +86,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics: Arc::new(api::Metrics::default()),
         public_url,
     });
-    let listener = TcpListener::bind(bind_address).await?;
     println!("dllmd listening on {bind}");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+        let config = RustlsConfig::from_pem_file(cert, key).await?;
+        let handle = Handle::new();
+        let shutdown_handle = handle.clone();
+        tokio::spawn(async move {
+            shutdown().await;
+            shutdown_handle.graceful_shutdown(Some(Duration::from_secs(10)));
+        });
+        axum_server::bind_rustls(bind_address, config)
+            .handle(handle)
+            .serve(app.into_make_service())
+            .await?;
+    } else {
+        let listener = TcpListener::bind(bind_address).await?;
+        axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown())
+            .await?;
+    }
     if let Some(worker) = runtime_worker {
         worker.shutdown().await?;
     }
