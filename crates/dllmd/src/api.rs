@@ -25,6 +25,20 @@ use std::{
 };
 use tokio::sync::{Mutex, Semaphore};
 
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagementRole {
+    Viewer,
+    Operator,
+    Admin,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ManagementCredential {
+    pub token: String,
+    pub role: ManagementRole,
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     pub store: Arc<Mutex<NetworkStore>>,
@@ -33,6 +47,7 @@ pub struct ApiState {
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
     pub management_token: Option<String>,
+    pub management_credentials: Vec<ManagementCredential>,
     pub api_key: Option<String>,
     pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
@@ -79,15 +94,29 @@ struct MutationResponse {
 }
 
 pub fn router(state: ApiState) -> Router {
-    let mut management = Router::new()
+    let mut viewer = Router::new()
         .route("/v1/status", get(status))
-        .route("/v1/invitations", post(invite))
-        .route("/v1/members/revoke", post(revoke))
-        .route("/v1/assignments", post(assign).delete(unassign))
-        .route("/v1/hardware-profiles", post(publish_hardware_profile))
         .route("/v1/placements/preview", post(preview_placement));
-    if let Some(token) = state.management_token.clone() {
-        management = management.route_layer(middleware::from_fn_with_state(token, require_bearer));
+    let mut operator = Router::new()
+        .route("/v1/assignments", post(assign).delete(unassign))
+        .route("/v1/hardware-profiles", post(publish_hardware_profile));
+    let mut admin = Router::new()
+        .route("/v1/invitations", post(invite))
+        .route("/v1/members/revoke", post(revoke));
+    let credentials = management_credentials(&state);
+    if !credentials.is_empty() {
+        viewer = viewer.route_layer(middleware::from_fn_with_state(
+            (credentials.clone(), ManagementRole::Viewer),
+            require_management_role,
+        ));
+        operator = operator.route_layer(middleware::from_fn_with_state(
+            (credentials.clone(), ManagementRole::Operator),
+            require_management_role,
+        ));
+        admin = admin.route_layer(middleware::from_fn_with_state(
+            (credentials, ManagementRole::Admin),
+            require_management_role,
+        ));
     }
     let mut inference = Router::new()
         .route("/v1/models", get(proxy_models))
@@ -101,7 +130,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/runtime", get(runtime_health))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
-        .merge(management)
+        .merge(viewer)
+        .merge(operator)
+        .merge(admin)
         .merge(inference)
         .with_state(state)
 }
@@ -176,6 +207,50 @@ async fn require_bearer(
         .and_then(|value| value.strip_prefix("Bearer "));
     if supplied != Some(expected.as_str()) {
         return Err(StatusCode::UNAUTHORIZED);
+    }
+    Ok(next.run(request).await)
+}
+
+fn management_credentials(state: &ApiState) -> Vec<ManagementCredential> {
+    let mut by_token = HashMap::new();
+    for credential in &state.management_credentials {
+        if !credential.token.is_empty() {
+            by_token
+                .entry(credential.token.clone())
+                .and_modify(|role: &mut ManagementRole| *role = (*role).max(credential.role))
+                .or_insert(credential.role);
+        }
+    }
+    if let Some(token) = &state.management_token {
+        if !token.is_empty() {
+            by_token.insert(token.clone(), ManagementRole::Admin);
+        }
+    }
+    by_token
+        .into_iter()
+        .map(|(token, role)| ManagementCredential { token, role })
+        .collect()
+}
+
+async fn require_management_role(
+    State((credentials, required)): State<(Vec<ManagementCredential>, ManagementRole)>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    let supplied = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let Some(credential) = supplied.and_then(|token| {
+        credentials
+            .iter()
+            .find(|credential| credential.token == token)
+    }) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if credential.role < required {
+        return Err(StatusCode::FORBIDDEN);
     }
     Ok(next.run(request).await)
 }
@@ -774,6 +849,7 @@ mod tests {
             admission: Arc::new(Semaphore::new(1)),
             client: reqwest::Client::new(),
             management_token: management_token.map(str::to_owned),
+            management_credentials: Vec::new(),
             api_key: None,
             peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
@@ -838,6 +914,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(authorized.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn management_roles_enforce_least_privilege() {
+        let mut api_state = state(None, None);
+        api_state.management_credentials = vec![
+            ManagementCredential {
+                token: "viewer-secret".into(),
+                role: ManagementRole::Viewer,
+            },
+            ManagementCredential {
+                token: "operator-secret".into(),
+                role: ManagementRole::Operator,
+            },
+            ManagementCredential {
+                token: "admin-secret".into(),
+                role: ManagementRole::Admin,
+            },
+        ];
+        let app = router(api_state);
+
+        let viewer_status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .header(header::AUTHORIZATION, "Bearer viewer-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_status.status(), StatusCode::OK);
+
+        let viewer_assignment = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/assignments")
+                    .header(header::AUTHORIZATION, "Bearer viewer-secret")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_assignment.status(), StatusCode::FORBIDDEN);
+
+        let operator_invite = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/invitations")
+                    .header(header::AUTHORIZATION, "Bearer operator-secret")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"expires_at_unix":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(operator_invite.status(), StatusCode::FORBIDDEN);
+
+        let admin_invite = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/invitations")
+                    .header(header::AUTHORIZATION, "Bearer admin-secret")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"expires_at_unix":null}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(admin_invite.status(), StatusCode::OK);
     }
 
     #[tokio::test]

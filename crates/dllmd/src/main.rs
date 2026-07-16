@@ -1,6 +1,6 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
-use dllmd::{api, NetworkStore};
+use dllmd::{api, api::ManagementCredential, NetworkStore};
 use serde::Deserialize;
 use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -14,7 +14,9 @@ struct AdditionalNetworkConfig {
     name: String,
     state_path: PathBuf,
     owner_key_path: PathBuf,
-    management_token: String,
+    management_token: Option<String>,
+    #[serde(default)]
+    management_credentials: Vec<ManagementCredential>,
     api_key: String,
     public_url: Option<String>,
 }
@@ -34,6 +36,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
     let management_token = std::env::var("DLLMD_MANAGEMENT_TOKEN").ok();
+    let management_credentials = std::env::var("DLLMD_MANAGEMENT_CREDENTIALS")
+        .ok()
+        .map(|value| serde_json::from_str::<Vec<ManagementCredential>>(&value))
+        .transpose()?
+        .unwrap_or_default();
     let api_key = std::env::var("DLLMD_API_KEY").ok();
     let peer_api_key = std::env::var("DLLMD_PEER_API_KEY").ok();
     let tls_cert = std::env::var("DLLMD_TLS_CERT").ok();
@@ -41,7 +48,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
     let bind_address: SocketAddr = bind.parse()?;
     if !bind_address.ip().is_loopback()
-        && (management_token.is_none()
+        && (!has_management_access(&management_token, &management_credentials)
             || api_key.is_none()
             || tls_cert.is_none()
             || tls_key.is_none())
@@ -92,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         admission: Arc::new(Semaphore::new(admission_limit)),
         client: reqwest::Client::new(),
         management_token: management_token.clone(),
+        management_credentials,
         api_key: api_key.clone(),
         peer_api_key: peer_api_key.clone(),
         metrics: Arc::new(api::Metrics::default()),
@@ -105,6 +113,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_default();
     let mut additional = Vec::with_capacity(additional_configs.len());
     for config in additional_configs {
+        if !bind_address.ip().is_loopback()
+            && !has_management_access(&config.management_token, &config.management_credentials)
+        {
+            return Err(
+                "each additional network requires a management credential on a non-loopback bind"
+                    .into(),
+            );
+        }
         let store = if config.state_path.exists() {
             NetworkStore::load(&config.state_path, &config.owner_key_path)?
         } else {
@@ -125,7 +141,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 runtime_url: runtime_url.clone(),
                 admission: Arc::new(Semaphore::new(admission_limit)),
                 client: reqwest::Client::new(),
-                management_token: Some(config.management_token),
+                management_token: config.management_token,
+                management_credentials: config.management_credentials,
                 api_key: Some(config.api_key),
                 peer_api_key: peer_api_key.clone(),
                 metrics: Arc::new(api::Metrics::default()),
@@ -158,6 +175,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker.shutdown().await?;
     }
     Ok(())
+}
+
+fn has_management_access(
+    legacy_token: &Option<String>,
+    credentials: &[ManagementCredential],
+) -> bool {
+    legacy_token.as_ref().is_some_and(|token| !token.is_empty())
+        || credentials
+            .iter()
+            .any(|credential| !credential.token.is_empty())
 }
 
 async fn shutdown() {
