@@ -11,6 +11,7 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 dllm-protocol = { path = "../dllm-protocol" }
 dllm-runtime = { path = "../dllm-runtime" }
+dllm-transport = { path = "../dllm-transport" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 futures-util = "0.3"
 hmac = "0.12"

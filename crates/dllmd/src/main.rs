@@ -1,5 +1,8 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
+use dllm_transport::peer::{
+    load_or_create_identity, start_peer_node, Multiaddr, PeerId, PeerNodeConfig,
+};
 use dllmd::{
     api,
     credentials::{CredentialRegistry, ManagementCredential},
@@ -7,8 +10,13 @@ use dllmd::{
     NetworkStore,
 };
 use serde::Deserialize;
-use std::time::Duration;
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, Semaphore},
@@ -75,13 +83,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let store = if state_path.exists() {
-        NetworkStore::load(&state_path, &owner_key_path)?
+        if owner_key_path.exists() {
+            NetworkStore::load(&state_path, &owner_key_path)?
+        } else {
+            NetworkStore::load_replica(&state_path)?
+        }
     } else {
         let store = NetworkStore::create(network_name);
         store.save_owner_key(&owner_key_path)?;
         store.save(&state_path)?;
         store
     };
+    let peer_config = peer_config(&store, &owner_key_path)?;
+    let peer_handle = peer_config.map(start_peer_node).transpose()?;
+    let peer_diagnostics = peer_handle.as_ref().map(|handle| handle.diagnostics());
     let mut runtime_worker = None;
     if runtime_url.is_none() {
         if let (Ok(binary), Ok(model)) = (
@@ -130,6 +145,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
         peer_nonces: Arc::new(Mutex::new(HashMap::new())),
         peer_quota: Arc::new(Semaphore::new(admission_limit)),
+        peer_diagnostics,
     };
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
@@ -147,7 +163,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         let store = if config.state_path.exists() {
-            NetworkStore::load(&config.state_path, &config.owner_key_path)?
+            if config.owner_key_path.exists() {
+                NetworkStore::load(&config.state_path, &config.owner_key_path)?
+            } else {
+                NetworkStore::load_replica(&config.state_path)?
+            }
         } else {
             let store = NetworkStore::create(config.name);
             store.save_owner_key(&config.owner_key_path)?;
@@ -184,6 +204,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 replica_loads: Arc::new(Mutex::new(HashMap::new())),
                 peer_nonces: Arc::new(Mutex::new(HashMap::new())),
                 peer_quota: Arc::new(Semaphore::new(admission_limit)),
+                peer_diagnostics: None,
             },
         ));
     }
@@ -210,7 +231,100 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(worker) = runtime_worker {
         worker.shutdown().await?;
     }
+    if let Some(peer) = peer_handle {
+        peer.abort();
+    }
     Ok(())
+}
+
+fn peer_config(
+    store: &NetworkStore,
+    owner_key_path: &Path,
+) -> Result<Option<PeerNodeConfig>, Box<dyn std::error::Error>> {
+    if !env_bool("DLLMD_P2P_ENABLED", false)? {
+        return Ok(None);
+    }
+    let key_path = PathBuf::from(
+        std::env::var("DLLMD_P2P_KEY").unwrap_or_else(|_| "dllm-transport.key".into()),
+    );
+    let local_node_key_path = std::env::var("DLLMD_NODE_KEY")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| owner_key_path.to_path_buf());
+    let local_node = NetworkStore::load_owner_key(local_node_key_path)?
+        .verifying_key()
+        .to_bytes();
+    let transport_key = load_or_create_identity(&key_path)?;
+    let local_peer = transport_key.public().to_peer_id();
+    store.authorize_transport_endpoint(local_node, &local_peer.to_string(), now_unix())?;
+
+    let bootstrap = std::env::var("DLLMD_P2P_BOOTSTRAP")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .map(str::parse::<Multiaddr>)
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let mut eligible_forwarders = HashSet::new();
+    for policy in &store.state.state.forwarding_policy {
+        if let Some(binding) = store
+            .state
+            .state
+            .transport_bindings
+            .iter()
+            .find(|binding| binding.node_pubkey == policy.node_pubkey)
+        {
+            if binding.expires_at_unix > now_unix() {
+                eligible_forwarders.insert(binding.transport_peer_id.parse::<PeerId>()?);
+            }
+        }
+    }
+    let local_policy = store
+        .state
+        .state
+        .forwarding_policy
+        .iter()
+        .find(|policy| policy.node_pubkey == local_node);
+    let forwarding_enabled = local_policy.is_some();
+    let reserve_default =
+        !forwarding_enabled && bootstrap.as_ref().is_some_and(|list| !list.is_empty());
+    Ok(Some(PeerNodeConfig {
+        key_path,
+        listen_port: std::env::var("DLLMD_P2P_PORT")
+            .ok()
+            .map(|value| value.parse())
+            .transpose()?
+            .unwrap_or(7444),
+        bootstrap: bootstrap.unwrap_or_default(),
+        forwarding_enabled,
+        max_reservations: local_policy
+            .map(|policy| policy.max_reservations as usize)
+            .unwrap_or(0),
+        eligible_forwarders,
+        reserve_forwarding_path: env_bool("DLLMD_P2P_RESERVE", reserve_default)?,
+    }))
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
+    match std::env::var(name) {
+        Ok(value) => match value.as_str() {
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            _ => Err(format!("{name} must be true or false").into()),
+        },
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
 }
 
 fn has_management_access(

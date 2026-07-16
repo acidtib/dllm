@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 dllmd = { path = "../dllmd" }
+dllm-transport = { path = "../dllm-transport" }
 dllm-protocol = { path = "../dllm-protocol" }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 rand = "0.8"

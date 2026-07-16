@@ -21,6 +21,14 @@ pub struct NetworkState {
     pub transport_bindings: Vec<TransportEndpointBinding>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub transport_revocations: Vec<TransportEndpointRevocation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub forwarding_policy: Vec<ForwardingPolicy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ForwardingPolicy {
+    pub node_pubkey: [u8; 32],
+    pub max_reservations: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +212,12 @@ pub enum StateError {
     DuplicateTransportPeerId,
     #[error("a revoked or stale transport binding is active")]
     RevokedTransportBinding,
+    #[error("forwarding policy refers to a node outside the network")]
+    ForwardingNodeUnknown,
+    #[error("forwarding policy contains a duplicate node")]
+    DuplicateForwardingNode,
+    #[error("forwarding reservation limit must be non-zero")]
+    InvalidForwardingLimit,
     #[error("state generation {supplied} does not advance current generation {current}")]
     StaleStateGeneration { supplied: u64, current: u64 },
 }
@@ -297,6 +311,23 @@ fn validate_state(state: &NetworkState, signer: &[u8; 32]) -> Result<(), StateEr
             .is_err()
         {
             return Err(StateError::InvalidTransportPeerId);
+        }
+    }
+    let mut forwarding_nodes = std::collections::HashSet::new();
+    for policy in &state.forwarding_policy {
+        let known = policy.node_pubkey == state.owner_pubkey
+            || state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == policy.node_pubkey);
+        if !known {
+            return Err(StateError::ForwardingNodeUnknown);
+        }
+        if !forwarding_nodes.insert(policy.node_pubkey) {
+            return Err(StateError::DuplicateForwardingNode);
+        }
+        if policy.max_reservations == 0 {
+            return Err(StateError::InvalidForwardingLimit);
         }
     }
     Ok(())
@@ -407,6 +438,7 @@ mod tests {
             hardware_profiles: vec![],
             transport_bindings: vec![],
             transport_revocations: vec![],
+            forwarding_policy: vec![],
         }
     }
 

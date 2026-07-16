@@ -47,6 +47,8 @@ pub struct ApiState {
     pub replica_loads: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicU64>>>>,
     pub peer_nonces: Arc<Mutex<HashMap<String, u64>>>,
     pub peer_quota: Arc<Semaphore>,
+    pub peer_diagnostics:
+        Option<tokio::sync::watch::Receiver<dllm_transport::peer::PeerDiagnostics>>,
 }
 
 #[derive(Default)]
@@ -68,7 +70,6 @@ pub struct JoinRequest {
     pub token: SignedJoinToken,
     pub node_pubkey: Vec<u8>,
     pub node_endpoint: String,
-    pub relay_endpoint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,6 +96,12 @@ pub struct RevokeTransportRequest {
     pub node_pubkey: Vec<u8>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ForwardingPolicyRequest {
+    pub node_pubkey: Vec<u8>,
+    pub max_reservations: Option<u32>,
+}
+
 #[derive(Debug, Serialize)]
 struct MutationResponse {
     generation: u64,
@@ -110,6 +117,7 @@ struct CreateCredentialRequest {
 pub fn router(state: ApiState) -> Router {
     let mut viewer = Router::new()
         .route("/v1/status", get(status))
+        .route("/v1/peer-network/status", get(peer_network_status))
         .route("/v1/inference-policy", get(inference_policy))
         .route("/v1/placements/preview", post(preview_placement));
     let mut operator = Router::new()
@@ -124,6 +132,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/members/revoke", post(revoke))
         .route("/v1/transport-bindings", post(bind_transport))
         .route("/v1/transport-bindings/revoke", post(revoke_transport))
+        .route("/v1/forwarding-policy", post(set_forwarding_policy))
         .route(
             "/v1/management/credentials",
             get(list_credentials).post(create_credential),
@@ -196,6 +205,18 @@ async fn runtime_health(State(state): State<ApiState>) -> StatusCode {
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     }
+}
+
+async fn peer_network_status(
+    State(state): State<ApiState>,
+) -> Json<dllm_transport::peer::PeerDiagnostics> {
+    Json(
+        state
+            .peer_diagnostics
+            .as_ref()
+            .map(|diagnostics| diagnostics.borrow().clone())
+            .unwrap_or_default(),
+    )
 }
 
 async fn runtime_is_ready(state: &ApiState) -> bool {
@@ -511,14 +532,11 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
 async fn invite(
     State(state): State<ApiState>,
     Json(request): Json<InviteRequest>,
-) -> Json<SignedJoinToken> {
-    Json(
-        state
-            .store
-            .lock()
-            .await
-            .issue_join_token(state.public_url.clone(), request.expires_at_unix),
-    )
+) -> Result<Json<SignedJoinToken>, ApiError> {
+    Ok(Json(state.store.lock().await.try_issue_join_token(
+        state.public_url.clone(),
+        request.expires_at_unix,
+    )?))
 }
 
 async fn join(
@@ -527,12 +545,7 @@ async fn join(
 ) -> Result<Json<MutationResponse>, ApiError> {
     let node_pubkey = key_bytes(request.node_pubkey)?;
     let mut store = state.store.lock().await;
-    store.redeem_join_token_with_relay(
-        request.token,
-        node_pubkey,
-        request.node_endpoint,
-        request.relay_endpoint,
-    )?;
+    store.redeem_join_token(request.token, node_pubkey, request.node_endpoint)?;
     store.save(&state.state_path)?;
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
@@ -587,6 +600,22 @@ async fn revoke_transport(
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
         changed: true,
+    }))
+}
+
+async fn set_forwarding_policy(
+    State(state): State<ApiState>,
+    Json(request): Json<ForwardingPolicyRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.set_forwarding_policy(node_pubkey, request.max_reservations)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
     }))
 }
 
@@ -1036,12 +1065,7 @@ async fn resolve_member_transport(
     member: &dllm_protocol::Member,
     runtime: bool,
 ) -> Option<(String, TransportKind)> {
-    let mut candidates = vec![(member.endpoint.clone(), TransportKind::Direct)];
-    if let Some(relay) = &member.relay_endpoint {
-        if relay != &member.endpoint {
-            candidates.push((relay.clone(), TransportKind::Relay));
-        }
-    }
+    let candidates = vec![(member.endpoint.clone(), TransportKind::Direct)];
     let (network_id, caller) = {
         let store = state.store.lock().await;
         (
@@ -1213,6 +1237,7 @@ impl IntoResponse for ApiError {
                 StoreError::BindingNodeUnknown
                 | StoreError::InvalidBindingLifetime
                 | StoreError::TransportPeerIdInUse
+                | StoreError::ForwardingNodeUnknown
                 | StoreError::State(dllm_protocol::StateError::InvalidTransportPeerId),
             ) => (StatusCode::BAD_REQUEST, "transport binding rejected").into_response(),
             Self::Store(StoreError::StaleBindingGeneration { .. }) => (
@@ -1223,6 +1248,11 @@ impl IntoResponse for ApiError {
             Self::Store(StoreError::BindingNotFound) => {
                 (StatusCode::NOT_FOUND, "active transport binding not found").into_response()
             }
+            Self::Store(StoreError::OwnerAuthorityUnavailable) => (
+                StatusCode::FORBIDDEN,
+                "this node does not hold owner authority",
+            )
+                .into_response(),
             Self::Store(error) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }
@@ -1303,6 +1333,7 @@ mod tests {
             replica_loads: Arc::new(Mutex::new(HashMap::new())),
             peer_nonces: Arc::new(Mutex::new(HashMap::new())),
             peer_quota: Arc::new(Semaphore::new(1)),
+            peer_diagnostics: None,
         }
     }
 
@@ -1889,27 +1920,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn peer_identity_is_required_and_relay_is_selected_after_direct_failure() {
-        let relay = Router::new().route(
-            "/v1/peer/health/runtime",
-            get(|headers: HeaderMap| async move {
-                if headers
-                    .get(header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    == Some("Bearer peer-secret")
-                    && headers.get("x-dllm-network-id").is_some()
-                    && headers.get("x-dllm-node-key").is_some()
-                {
-                    StatusCode::OK
-                } else {
-                    StatusCode::UNAUTHORIZED
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let relay_endpoint = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-
+    async fn peer_identity_is_required_and_direct_failure_does_not_use_legacy_relay() {
         let mut api_state = state(None, None);
         api_state.peer_api_key = Some("peer-secret".into());
         let member_key = NetworkStore::random_node_key();
@@ -1917,19 +1928,13 @@ mod tests {
             let mut store = api_state.store.lock().await;
             let token = store.issue_join_token("http://owner".into(), None);
             store
-                .redeem_join_token_with_relay(
-                    token,
-                    member_key,
-                    "http://127.0.0.1:9".into(),
-                    Some(relay_endpoint.clone()),
-                )
+                .redeem_join_token(token, member_key, "http://127.0.0.1:9".into())
                 .unwrap();
             store.state.state.members[0].clone()
         };
-        let selected = resolve_member_transport(&api_state, &member, true)
+        assert!(resolve_member_transport(&api_state, &member, true)
             .await
-            .unwrap();
-        assert_eq!(selected, (relay_endpoint, TransportKind::Relay));
+            .is_none());
 
         let network = api_state.store.lock().await.state.state.clone();
         let app = router(api_state);

@@ -27,6 +27,8 @@ struct Cli {
     owner_key: PathBuf,
     #[arg(long, default_value = "dllm-node.key")]
     node_key: PathBuf,
+    #[arg(long, default_value = "dllm-transport.key")]
+    transport_key: PathBuf,
     #[arg(long)]
     credentials_path: Option<PathBuf>,
     #[arg(long, default_value = "http://127.0.0.1:7337")]
@@ -38,6 +40,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Init,
+    InitTransport,
     Create {
         name: String,
     },
@@ -53,8 +56,6 @@ enum Command {
     },
     Join {
         token_file: PathBuf,
-        #[arg(long)]
-        relay_endpoint: Option<String>,
     },
     Revoke {
         node_key: PathBuf,
@@ -70,6 +71,17 @@ enum Command {
         node_key: Option<PathBuf>,
     },
     RevokeTransport {
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
+    SetForwarder {
+        max_reservations: u32,
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
+    RemoveForwarder {
         #[arg(long)]
         owner: bool,
         node_key: Option<PathBuf>,
@@ -140,6 +152,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             write_private_key(&cli.node_key, &key.to_bytes())?;
             println!("created node identity {}", cli.node_key.display());
         }
+        Command::InitTransport => {
+            let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+            println!("{}", key.public().to_peer_id());
+        }
         Command::Create { name } => {
             let store = NetworkStore::create(name);
             store.save_owner_key(&cli.owner_key)?;
@@ -181,10 +197,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", String::from_utf8(encoded)?);
             }
         }
-        Command::Join {
-            token_file,
-            relay_endpoint,
-        } => {
+        Command::Join { token_file } => {
             let token: SignedJoinToken = serde_json::from_slice(&fs::read(token_file)?)?;
             token.verify(now_unix())?;
             let node_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
@@ -198,8 +211,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .json(&json!({
                         "token": token,
                         "node_pubkey": node_pubkey,
-                        "node_endpoint": cli.node_endpoint,
-                        "relay_endpoint": relay_endpoint
+                        "node_endpoint": cli.node_endpoint
                     })),
                 &None,
             ))?;
@@ -242,6 +254,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/transport-bindings/revoke", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::SetForwarder {
+            max_reservations,
+            owner,
+            node_key,
+        } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/forwarding-policy", cli.daemon))
+                    .json(&json!({
+                        "node_pubkey": node_pubkey,
+                        "max_reservations": max_reservations
+                    })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::RemoveForwarder { owner, node_key } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/forwarding-policy", cli.daemon))
+                    .json(&json!({
+                        "node_pubkey": node_pubkey,
+                        "max_reservations": null
+                    })),
                 &cli.management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
@@ -466,11 +508,10 @@ fn assignment_key(
 }
 
 fn read_key(path: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let bytes = fs::read(path)?;
-    if bytes.len() != 32 {
-        return Err("node key must contain exactly 32 bytes".into());
-    }
-    Ok(bytes)
+    Ok(NetworkStore::load_owner_key(path)?
+        .verifying_key()
+        .to_bytes()
+        .to_vec())
 }
 
 fn request_json(

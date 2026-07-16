@@ -1,7 +1,7 @@
 use dllm_protocol::{
-    HardwareProfile, Member, ModelAssignment, NetworkState, Placement, PlacementLifecycle,
-    SignedJoinToken, SignedState, StateError, TokenError, TransportEndpointBinding,
-    TransportEndpointRevocation, SCHEMA_VERSION,
+    ForwardingPolicy, HardwareProfile, Member, ModelAssignment, NetworkState, Placement,
+    PlacementLifecycle, SignedJoinToken, SignedState, StateError, TokenError,
+    TransportEndpointBinding, TransportEndpointRevocation, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -38,6 +38,8 @@ pub enum StoreError {
     InvalidOwnerKey,
     #[error("owner key does not match persisted network owner")]
     OwnerKeyMismatch,
+    #[error("this node does not hold the network owner authority")]
+    OwnerAuthorityUnavailable,
     #[error("model assignment node is not a network member")]
     AssignmentNodeUnknown,
     #[error("hardware profile node is not a network member")]
@@ -58,6 +60,8 @@ pub enum StoreError {
     TransportIdentityUnauthorized,
     #[error("transport binding expired at {0}")]
     TransportBindingExpired(u64),
+    #[error("forwarding policy node is not a network member")]
+    ForwardingNodeUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,7 +72,7 @@ pub struct PersistedState {
 }
 
 pub struct NetworkStore {
-    pub owner_key: SigningKey,
+    pub owner_key: Option<SigningKey>,
     pub state: SignedState,
     used_tokens: HashSet<Uuid>,
 }
@@ -76,7 +80,11 @@ pub struct NetworkStore {
 impl NetworkStore {
     pub fn save_owner_key(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
         let path = path.as_ref();
-        fs::write(path, self.owner_key.to_bytes())?;
+        let owner_key = self
+            .owner_key
+            .as_ref()
+            .ok_or(StoreError::OwnerAuthorityUnavailable)?;
+        fs::write(path, owner_key.to_bytes())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -105,10 +113,11 @@ impl NetworkStore {
             hardware_profiles: Vec::new(),
             transport_bindings: Vec::new(),
             transport_revocations: Vec::new(),
+            forwarding_policy: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
-            owner_key,
+            owner_key: Some(owner_key),
             state: signed,
             used_tokens: HashSet::new(),
         }
@@ -130,23 +139,52 @@ impl NetworkStore {
             return Err(StoreError::OwnerKeyMismatch);
         }
         Ok(Self {
-            owner_key,
+            owner_key: Some(owner_key),
             state: persisted.signed_state,
             used_tokens: persisted.redeemed_token_ids,
         })
     }
 
-    pub fn issue_join_token(
+    pub fn load_replica(state_path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let persisted: PersistedState = serde_json::from_slice(&fs::read(state_path)?)?;
+        if persisted.schema_version != SCHEMA_VERSION {
+            return Err(StoreError::State(StateError::SchemaVersion(
+                persisted.schema_version,
+            )));
+        }
+        persisted.signed_state.verify()?;
+        Ok(Self {
+            owner_key: None,
+            state: persisted.signed_state,
+            used_tokens: persisted.redeemed_token_ids,
+        })
+    }
+
+    #[cfg(test)]
+    fn issue_join_token(
         &self,
         owner_endpoint: String,
         expires_at_unix: Option<u64>,
     ) -> SignedJoinToken {
-        SignedJoinToken::issue(
+        self.try_issue_join_token(owner_endpoint, expires_at_unix)
+            .expect("only an owner store can issue join tokens")
+    }
+
+    pub fn try_issue_join_token(
+        &self,
+        owner_endpoint: String,
+        expires_at_unix: Option<u64>,
+    ) -> Result<SignedJoinToken, StoreError> {
+        let owner_key = self
+            .owner_key
+            .as_ref()
+            .ok_or(StoreError::OwnerAuthorityUnavailable)?;
+        Ok(SignedJoinToken::issue(
             self.state.state.network_id,
-            &self.owner_key,
+            owner_key,
             owner_endpoint,
             expires_at_unix,
-        )
+        ))
     }
 
     pub fn redeem_join_token(
@@ -154,16 +192,6 @@ impl NetworkStore {
         token: SignedJoinToken,
         node_pubkey: [u8; 32],
         node_endpoint: String,
-    ) -> Result<(), StoreError> {
-        self.redeem_join_token_with_relay(token, node_pubkey, node_endpoint, None)
-    }
-
-    pub fn redeem_join_token_with_relay(
-        &mut self,
-        token: SignedJoinToken,
-        node_pubkey: [u8; 32],
-        node_endpoint: String,
-        relay_endpoint: Option<String>,
     ) -> Result<(), StoreError> {
         token.verify(now_unix())?;
         if token.token.network_id != self.state.state.network_id
@@ -179,10 +207,10 @@ impl NetworkStore {
         next.members.push(Member {
             node_pubkey,
             endpoint: node_endpoint,
-            relay_endpoint,
+            relay_endpoint: None,
             joined_generation: next.generation,
         });
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(())
     }
 
@@ -217,7 +245,9 @@ impl NetworkStore {
         }
         next.transport_bindings
             .retain(|binding| binding.node_pubkey != node_pubkey);
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        next.forwarding_policy
+            .retain(|policy| policy.node_pubkey != node_pubkey);
+        self.state = self.sign(next)?;
         Ok(true)
     }
 
@@ -287,7 +317,7 @@ impl NetworkStore {
         next.transport_bindings
             .sort_by_key(|binding| binding.node_pubkey);
         next.generation += 1;
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(())
     }
 
@@ -313,7 +343,7 @@ impl NetworkStore {
             .retain(|candidate| candidate.node_pubkey != node_pubkey);
         next.transport_revocations.push(revocation.clone());
         next.generation += 1;
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(revocation)
     }
 
@@ -359,6 +389,49 @@ impl NetworkStore {
             .saturating_add(1)
     }
 
+    pub fn set_forwarding_policy(
+        &mut self,
+        node_pubkey: [u8; 32],
+        max_reservations: Option<u32>,
+    ) -> Result<bool, StoreError> {
+        let known = node_pubkey == self.state.state.owner_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == node_pubkey);
+        if !known {
+            return Err(StoreError::ForwardingNodeUnknown);
+        }
+        let mut next = self.state.state.clone();
+        let previous = next
+            .forwarding_policy
+            .iter()
+            .find(|policy| policy.node_pubkey == node_pubkey)
+            .cloned();
+        next.forwarding_policy
+            .retain(|policy| policy.node_pubkey != node_pubkey);
+        if let Some(max_reservations) = max_reservations {
+            next.forwarding_policy.push(ForwardingPolicy {
+                node_pubkey,
+                max_reservations,
+            });
+            next.forwarding_policy
+                .sort_by_key(|policy| policy.node_pubkey);
+        }
+        let current = next
+            .forwarding_policy
+            .iter()
+            .find(|policy| policy.node_pubkey == node_pubkey);
+        if previous.as_ref() == current {
+            return Ok(false);
+        }
+        next.generation += 1;
+        self.state = self.sign(next)?;
+        Ok(true)
+    }
+
     pub fn assign_model(
         &mut self,
         model: String,
@@ -396,7 +469,7 @@ impl NetworkStore {
             created_generation: next.generation,
             lifecycle: PlacementLifecycle::Ready,
         });
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(true)
     }
 
@@ -416,7 +489,7 @@ impl NetworkStore {
         next.placements
             .retain(|placement| placement.model != model || placement.node_pubkey != node_pubkey);
         next.generation += 1;
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(true)
     }
 
@@ -443,7 +516,7 @@ impl NetworkStore {
         }
         placement.lifecycle = lifecycle;
         next.generation += 1;
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(true)
     }
 
@@ -475,7 +548,7 @@ impl NetworkStore {
             joined_generation: next.generation,
         });
         self.state = SignedState::sign(next, &new_owner_key)?;
-        self.owner_key = new_owner_key;
+        self.owner_key = Some(new_owner_key);
         Ok(())
     }
 
@@ -509,7 +582,7 @@ impl NetworkStore {
         next.hardware_profiles
             .sort_by_key(|candidate| candidate.node_pubkey);
         next.generation += 1;
-        self.state = SignedState::sign(next, &self.owner_key)?;
+        self.state = self.sign(next)?;
         Ok(true)
     }
 
@@ -525,6 +598,14 @@ impl NetworkStore {
         fs::write(&temporary, bytes)?;
         fs::rename(temporary, path)?;
         Ok(())
+    }
+
+    fn sign(&self, state: NetworkState) -> Result<SignedState, StoreError> {
+        let owner_key = self
+            .owner_key
+            .as_ref()
+            .ok_or(StoreError::OwnerAuthorityUnavailable)?;
+        Ok(SignedState::sign(state, owner_key)?)
     }
 
     pub fn random_node_key() -> [u8; 32] {
@@ -666,6 +747,45 @@ mod tests {
     }
 
     #[test]
+    fn forwarding_eligibility_is_owner_signed_and_removed_with_membership() {
+        let mut store = NetworkStore::create("test");
+        let node = NetworkStore::random_node_key();
+        let token = store.issue_join_token("http://owner".into(), None);
+        store
+            .redeem_join_token(token, node, "http://member".into())
+            .unwrap();
+        let generation = store.state.state.generation;
+
+        assert!(store.set_forwarding_policy(node, Some(4)).unwrap());
+        assert_eq!(store.state.state.generation, generation + 1);
+        assert_eq!(store.state.state.forwarding_policy[0].max_reservations, 4);
+        assert!(store.state.verify().is_ok());
+        assert!(!store.set_forwarding_policy(node, Some(4)).unwrap());
+        assert!(store.revoke_member(node).unwrap());
+        assert!(store.state.state.forwarding_policy.is_empty());
+        assert!(store.state.verify().is_ok());
+    }
+
+    #[test]
+    fn signed_state_replica_verifies_without_owner_authority() {
+        let directory = std::env::temp_dir().join(format!("dllm-replica-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let state_path = directory.join("state.json");
+        let owner = NetworkStore::create("test");
+        owner.save(&state_path).unwrap();
+
+        let mut replica = NetworkStore::load_replica(&state_path).unwrap();
+        assert!(replica.owner_key.is_none());
+        assert!(replica.state.verify().is_ok());
+        assert!(matches!(
+            replica.set_forwarding_policy(replica.state.state.owner_pubkey, Some(1)),
+            Err(StoreError::OwnerAuthorityUnavailable)
+        ));
+        fs::remove_file(state_path).unwrap();
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
     fn revocation_advances_generation_and_is_idempotent() {
         let mut store = NetworkStore::create("test");
         let node = NetworkStore::random_node_key();
@@ -689,7 +809,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("dllmd-key-{}", Uuid::new_v4()));
         store.save_owner_key(&path).unwrap();
         let loaded = NetworkStore::load_owner_key(&path).unwrap();
-        assert_eq!(loaded.verifying_key(), store.owner_key.verifying_key());
+        assert_eq!(
+            loaded.verifying_key(),
+            store.owner_key.as_ref().unwrap().verifying_key()
+        );
         std::fs::remove_file(path).unwrap();
     }
 
@@ -785,6 +908,9 @@ mod tests {
             .iter()
             .any(|member| member.node_pubkey == new_owner));
         store.state.verify().unwrap();
-        assert_eq!(store.owner_key.verifying_key().to_bytes(), new_owner);
+        assert_eq!(
+            store.owner_key.as_ref().unwrap().verifying_key().to_bytes(),
+            new_owner
+        );
     }
 }

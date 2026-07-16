@@ -27,7 +27,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
   node-integrated forwarding, recovery, resource, and dependency validation.
 - [x] P4.1: add owner-signed bindings between DLLM node identities and rotating
   transport endpoint identities, including revocation and replay protection.
-- [ ] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
+- [x] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
   `dllmd`, prove automatic selection of an eligible participating node, and
   remove SSH and separately deployed relays from the supported peer path.
 - [ ] P4.3: carry authenticated health, inference streaming, cancellation, and
@@ -261,3 +261,53 @@ stale replay rejection, restart, and revocation. The same test passed on the
 ordinary Kansas VPS host with two actual libp2p peer IDs. The remote daemon,
 binaries, state, keys, and listener were removed afterward. Detailed evidence
 is in `results/phase4-results/p41-transport-bindings/summary.json`.
+
+## P4.2 embedded discovery and forwarding
+
+`dllmd` now starts the selected rust-libp2p stack in-process. Each enabled node
+runs encrypted TCP and QUIC transports, Noise authentication, Identify,
+Kademlia, AutoNAT, DCUtR, ping, and Circuit Relay v2 client and server
+behaviors. An ordinary node may bootstrap routing, publish forwarding
+capability, provide bounded forwarding, reserve a forwarded path, or combine
+those roles. There is no separate communication process.
+
+Forwarding eligibility is owner-signed state keyed by the DLLM node identity.
+The policy supplies a maximum reservation count. A node resolves eligible DLLM
+identities through their signed P4.1 libp2p bindings, queries the DHT for live
+providers, intersects the two sets, and selects deterministically. A provider
+record without signed eligibility is observable but cannot be selected. Member
+revocation also removes its forwarding policy.
+
+Member daemons can load a verified signed-state replica without the owner
+private key. Owner mutations on a replica fail closed. Local node identity,
+libp2p identity, and the owner identity remain distinct. Startup rejects a
+transport key unless its peer ID matches the active owner-signed binding for
+the configured local DLLM node.
+
+Operators initialize a transport identity with `dllm init-transport`, bind it
+with `dllm bind-transport`, and manage eligibility with `dllm set-forwarder`
+and `dllm remove-forwarder`. `GET /v1/peer-network/status` reports bootstrap
+peers, discovered providers, the selected forwarding member, reservation and
+path state, failures, reselections, errors, and listen addresses.
+
+The obsolete `dllm-relay` and `dllm-tunnel` executables were removed. Join no
+longer accepts a relay endpoint, and direct HTTP failure cannot select the
+legacy relay field retained only for signed-state decoding compatibility. SSH
+is not a peer transport.
+
+Automated tests run multiple ordinary peer nodes in one process. They prove
+that an unapproved DHT provider is not selected, a policy-approved provider
+receives the reservation, and loss of the selected provider automatically
+chooses another eligible node. A complete local `dllmd` topology additionally
+proved owner-key-free state replicas, daemon diagnostics, restart recovery,
+and replica mutation rejection.
+
+The physical topology used an ordinary owner/bootstrap node and an ordinary
+forwarding member in Kansas, a second ordinary forwarding member in New York,
+and a Colorado edge behind residential NAT. The edge discovered both eligible
+providers and initially reserved through Kansas. After Kansas forwarding was
+stopped, it selected New York and restored the forwarded path in 16.507
+seconds. Neither forwarding member held the owner key. SSH only deployed,
+administered, inspected, and removed the nodes. All services, binaries, keys,
+state, and listeners were removed after validation. Detailed evidence is in
+`results/phase4-results/p42-embedded-peer-network/summary.json`.
