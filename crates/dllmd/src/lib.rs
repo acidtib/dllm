@@ -128,6 +128,7 @@ impl NetworkStore {
         &mut self,
         token: SignedJoinToken,
         node_pubkey: [u8; 32],
+        node_endpoint: String,
     ) -> Result<(), StoreError> {
         token.verify(now_unix())?;
         if token.token.network_id != self.state.state.network_id
@@ -142,6 +143,7 @@ impl NetworkStore {
         next.generation += 1;
         next.members.push(Member {
             node_pubkey,
+            endpoint: node_endpoint,
             joined_generation: next.generation,
         });
         self.state = SignedState::sign(next, &self.owner_key)?;
@@ -262,12 +264,18 @@ mod tests {
         let mut store = NetworkStore::create("test");
         let token = store.issue_join_token("http://127.0.0.1:7337".into(), None);
         let node = NetworkStore::random_node_key();
-        store.redeem_join_token(token.clone(), node).unwrap();
+        store
+            .redeem_join_token(token.clone(), node, "http://node:7337".into())
+            .unwrap();
         assert_eq!(store.state.state.generation, 2);
         assert_eq!(store.state.state.members.len(), 1);
         assert!(store.state.verify().is_ok());
         assert!(matches!(
-            store.redeem_join_token(token, NetworkStore::random_node_key()),
+            store.redeem_join_token(
+                token,
+                NetworkStore::random_node_key(),
+                "http://node:7337".into()
+            ),
             Err(StoreError::TokenUsed)
         ));
     }
@@ -280,6 +288,7 @@ mod tests {
             .redeem_join_token(
                 store.issue_join_token("http://127.0.0.1:7337".into(), None),
                 node,
+                "http://node:7337".into(),
             )
             .unwrap();
         assert!(store.revoke_member(node).unwrap());
@@ -304,7 +313,11 @@ mod tests {
         let mut store = NetworkStore::create("test");
         let token = store.issue_join_token("http://127.0.0.1:7337".into(), None);
         store
-            .redeem_join_token(token.clone(), NetworkStore::random_node_key())
+            .redeem_join_token(
+                token.clone(),
+                NetworkStore::random_node_key(),
+                "http://node:7337".into(),
+            )
             .unwrap();
         let suffix = Uuid::new_v4();
         let state_path = std::env::temp_dir().join(format!("dllmd-state-{suffix}.json"));
@@ -313,7 +326,11 @@ mod tests {
         store.save_owner_key(&key_path).unwrap();
         let mut loaded = NetworkStore::load(&state_path, &key_path).unwrap();
         assert!(matches!(
-            loaded.redeem_join_token(token, NetworkStore::random_node_key()),
+            loaded.redeem_join_token(
+                token,
+                NetworkStore::random_node_key(),
+                "http://node:7337".into()
+            ),
             Err(StoreError::TokenUsed)
         ));
         std::fs::remove_file(state_path).unwrap();

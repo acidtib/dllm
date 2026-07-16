@@ -23,6 +23,8 @@
     <section><h2>Nodes</h2><div id="nodes"></div></section>
     <section><h2>Models and placements</h2><div id="placements"></div></section>
     <section><h2>Diagnostics</h2><div id="diagnostics"></div></section>
+    <section><h2>Invitation</h2><button id="invite">Generate invitation</button><pre id="invitation"></pre></section>
+    <section><h2>Assign owner model</h2><input id="model" placeholder="model ID"><button id="assign">Assign</button><p id="action"></p></section>
   </main>
   <script>
     const text = (value) => document.createTextNode(String(value));
@@ -30,21 +32,42 @@
       const root = document.getElementById(id); root.replaceChildren();
       for (const value of values) { const p = document.createElement('p'); p.append(text(value)); root.append(p); }
     };
+    let currentStatus;
+    const headers = () => {
+      const token = document.getElementById('token').value;
+      return {'content-type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {})};
+    };
+    async function mutate(path, method, body) {
+      const response = await fetch(path, {method, headers: headers(), body: JSON.stringify(body)});
+      if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+      await refresh(); return response.json();
+    }
     async function refresh() {
       try {
         const token = document.getElementById('token').value;
         localStorage.setItem('dllm-management-token', token);
-        const headers = token ? {Authorization: `Bearer ${token}`} : {};
-        const response = await fetch('/v1/status', {headers});
+        const response = await fetch('/v1/status', {headers: headers()});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const status = await response.json(); const network = status.network.state;
+        const status = await response.json(); currentStatus = status; const network = status.network.state;
         const summary = document.getElementById('summary'); summary.className = status.health; summary.textContent = `Health: ${status.health}`;
         set('network', [`Name: ${network.name}`, `Generation: ${network.generation}`, `ID: ${network.network_id}`]);
-        set('nodes', status.nodes.map((node) => `${node.owner ? 'Owner' : 'Member'}: ${node.health}`));
+        const nodes = document.getElementById('nodes'); nodes.replaceChildren();
+        for (const node of status.nodes) {
+          const p = document.createElement('p'); p.append(text(`${node.owner ? 'Owner' : 'Member'}: ${node.health} (${node.endpoint})`));
+          if (!node.owner) { const button = document.createElement('button'); button.textContent = 'Revoke'; button.onclick = () => mutate('/v1/members/revoke', 'POST', {node_pubkey: node.node_pubkey}).catch(showError); p.append(' ', button); }
+          nodes.append(p);
+        }
         set('placements', status.placements.length ? status.placements.map((p) => `${p.model}: ${p.health}`) : ['No model placements']);
         set('diagnostics', [`Workers: ${status.workers.length}`, `Members: ${network.members.length}`]);
       } catch (error) { document.getElementById('summary').textContent = `Status unavailable: ${error.message}`; }
     }
+    const showError = (error) => { document.getElementById('action').textContent = error.message; };
+    document.getElementById('invite').onclick = async () => {
+      try { const token = await mutate('/v1/invitations', 'POST', {expires_at_unix: null}); document.getElementById('invitation').textContent = JSON.stringify(token, null, 2); } catch (error) { showError(error); }
+    };
+    document.getElementById('assign').onclick = async () => {
+      try { const model = document.getElementById('model').value.trim(); if (!model) throw new Error('Model ID is required'); await mutate('/v1/assignments', 'POST', {model, node_pubkey: currentStatus.network.state.owner_pubkey}); document.getElementById('action').textContent = 'Model assigned'; } catch (error) { showError(error); }
+    };
     document.getElementById('token').value = localStorage.getItem('dllm-management-token') || '';
     document.getElementById('refresh').addEventListener('click', refresh); refresh();
   </script>

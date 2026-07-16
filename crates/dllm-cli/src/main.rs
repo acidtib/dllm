@@ -27,6 +27,8 @@ struct Cli {
     owner_key: PathBuf,
     #[arg(long, default_value = "dllm-node.key")]
     node_key: PathBuf,
+    #[arg(long, default_value = "http://127.0.0.1:7337")]
+    node_endpoint: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -128,7 +130,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = request_json(auth(
                 client
                     .post(format!("{owner_endpoint}/v1/members/join"))
-                    .json(&json!({ "token": token, "node_pubkey": node_pubkey })),
+                    .json(&json!({
+                        "token": token,
+                        "node_pubkey": node_pubkey,
+                        "node_endpoint": cli.node_endpoint
+                    })),
                 &None,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);

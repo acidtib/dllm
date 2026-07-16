@@ -1,3 +1,4 @@
+use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllmd::{api, NetworkStore};
 use std::time::Duration;
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
@@ -14,13 +15,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let owner_key_path =
         PathBuf::from(std::env::var("DLLMD_OWNER_KEY").unwrap_or_else(|_| "dllm-owner.key".into()));
     let network_name = std::env::var("DLLMD_NETWORK").unwrap_or_else(|_| "private".into());
-    let runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
+    let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
     let admission_limit = std::env::var("DLLMD_ADMISSION_LIMIT")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
     let management_token = std::env::var("DLLMD_MANAGEMENT_TOKEN").ok();
     let api_key = std::env::var("DLLMD_API_KEY").ok();
+    let peer_api_key = std::env::var("DLLMD_PEER_API_KEY").ok();
     let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
     let bind_address: SocketAddr = bind.parse()?;
     if !bind_address.ip().is_loopback() && management_token.is_none() {
@@ -34,16 +36,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.save(&state_path)?;
         store
     };
+    let mut runtime_worker = None;
+    if runtime_url.is_none() {
+        if let (Ok(binary), Ok(model)) = (
+            std::env::var("DLLMD_RUNTIME_BIN"),
+            std::env::var("DLLMD_MODEL_PATH"),
+        ) {
+            let config = LlamaCppConfig {
+                binary: binary.into(),
+                model: model.into(),
+                host: "127.0.0.1".into(),
+                port: std::env::var("DLLMD_RUNTIME_PORT")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(8081),
+                gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
+                context_size: std::env::var("DLLMD_CONTEXT_SIZE")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(2048),
+                extra_args: vec![],
+            };
+            let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
+            runtime_url = Some(worker.endpoint().to_owned());
+            runtime_worker = Some(worker);
+        }
+    }
     let app = api::router(api::ApiState {
         store: Arc::new(Mutex::new(store)),
         state_path,
         runtime_url,
         admission: Arc::new(Semaphore::new(admission_limit)),
-        client: reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .build()?,
+        client: reqwest::Client::new(),
         management_token,
         api_key,
+        peer_api_key,
         metrics: Arc::new(api::Metrics::default()),
         public_url,
     });
@@ -52,6 +79,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
+    if let Some(worker) = runtime_worker {
+        worker.shutdown().await?;
+    }
     Ok(())
 }
 

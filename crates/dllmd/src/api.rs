@@ -11,7 +11,7 @@ use axum::{
 use dllm_protocol::{
     HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken, WorkerStatus,
 };
-use futures_util::StreamExt;
+use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
@@ -19,6 +19,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
+    time::Duration,
 };
 use tokio::sync::{Mutex, Semaphore};
 
@@ -31,6 +32,7 @@ pub struct ApiState {
     pub client: reqwest::Client,
     pub management_token: Option<String>,
     pub api_key: Option<String>,
+    pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
     pub public_url: String,
 }
@@ -52,6 +54,7 @@ pub struct InviteRequest {
 pub struct JoinRequest {
     pub token: SignedJoinToken,
     pub node_pubkey: Vec<u8>,
+    pub node_endpoint: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -88,6 +91,7 @@ pub fn router(state: ApiState) -> Router {
     }
     Router::new()
         .route("/", get(ui))
+        .route("/health", get(|| async { StatusCode::OK }))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
         .merge(management)
@@ -140,29 +144,58 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
         Some(url) => state
             .client
             .get(format!("{url}/health"))
+            .timeout(Duration::from_secs(5))
             .send()
             .await
             .is_ok_and(|response| response.status().is_success()),
         None => false,
     };
-    let store = state.store.lock().await;
+    let network = state.store.lock().await.state.clone();
     let mut nodes = vec![NodeStatus {
-        node_pubkey: store.state.state.owner_pubkey,
+        node_pubkey: network.state.owner_pubkey,
+        endpoint: state.public_url.clone(),
         owner: true,
         health: HealthState::Ready,
     }];
-    nodes.extend(store.state.state.members.iter().map(|member| NodeStatus {
-        node_pubkey: member.node_pubkey,
-        owner: false,
-        health: HealthState::Unknown,
-    }));
-    let placement_health = if runtime_ready {
-        HealthState::Ready
-    } else {
-        HealthState::Unavailable
+    let probes = network.state.members.iter().map(|member| {
+        let client = state.client.clone();
+        let member = member.clone();
+        async move {
+            let ready = client
+                .get(format!("{}/health", member.endpoint))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success());
+            NodeStatus {
+                node_pubkey: member.node_pubkey,
+                endpoint: member.endpoint,
+                owner: false,
+                health: if ready {
+                    HealthState::Ready
+                } else {
+                    HealthState::Unavailable
+                },
+            }
+        }
+    });
+    nodes.extend(join_all(probes).await);
+    let placement_health = |node_pubkey: &[u8; 32]| {
+        if node_pubkey == &network.state.owner_pubkey {
+            if runtime_ready {
+                HealthState::Ready
+            } else {
+                HealthState::Unavailable
+            }
+        } else {
+            nodes
+                .iter()
+                .find(|node| &node.node_pubkey == node_pubkey)
+                .map(|node| node.health.clone())
+                .unwrap_or(HealthState::Unavailable)
+        }
     };
-    let workers = store
-        .state
+    let workers = network
         .state
         .placements
         .iter()
@@ -170,11 +203,10 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
             worker_id: placement.placement_id,
             node_pubkey: placement.node_pubkey,
             model: placement.model.clone(),
-            health: placement_health.clone(),
+            health: placement_health(&placement.node_pubkey),
         })
         .collect();
-    let placements = store
-        .state
+    let placements = network
         .state
         .placements
         .iter()
@@ -183,7 +215,7 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
             model: placement.model.clone(),
             generation: placement.created_generation,
             worker_ids: vec![placement.placement_id],
-            health: placement_health.clone(),
+            health: placement_health(&placement.node_pubkey),
         })
         .collect::<Vec<_>>();
     let health = if placements
@@ -195,7 +227,7 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
         HealthState::Ready
     };
     Json(ManagementStatus {
-        network: store.state.clone(),
+        network,
         nodes,
         workers,
         placements,
@@ -222,7 +254,7 @@ async fn join(
 ) -> Result<Json<MutationResponse>, ApiError> {
     let node_pubkey = key_bytes(request.node_pubkey)?;
     let mut store = state.store.lock().await;
-    store.redeem_join_token(request.token, node_pubkey)?;
+    store.redeem_join_token(request.token, node_pubkey, request.node_endpoint)?;
     store.save(&state.state_path)?;
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
@@ -278,15 +310,22 @@ async fn unassign(
     }))
 }
 
-async fn proxy_models(State(state): State<ApiState>) -> Result<Response, ApiError> {
-    proxy(
-        state,
-        reqwest::Method::GET,
-        "/v1/models",
-        HeaderMap::new(),
-        Bytes::new(),
-    )
-    .await
+async fn proxy_models(State(state): State<ApiState>) -> Json<serde_json::Value> {
+    let store = state.store.lock().await;
+    let data = store
+        .state
+        .state
+        .model_assignments
+        .iter()
+        .map(|assignment| {
+            serde_json::json!({
+                "id": assignment.model,
+                "object": "model",
+                "owned_by": "dllm"
+            })
+        })
+        .collect::<Vec<_>>();
+    Json(serde_json::json!({ "object": "list", "data": data }))
 }
 
 async fn proxy_chat(
@@ -294,8 +333,11 @@ async fn proxy_chat(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let (runtime_url, peer) = resolve_runtime(&state, &body).await?;
     proxy(
         state,
+        runtime_url,
+        peer,
         reqwest::Method::POST,
         "/v1/chat/completions",
         headers,
@@ -306,6 +348,8 @@ async fn proxy_chat(
 
 async fn proxy(
     state: ApiState,
+    runtime_url: String,
+    peer: bool,
     method: reqwest::Method,
     path: &str,
     headers: HeaderMap,
@@ -315,10 +359,6 @@ async fn proxy(
         .metrics
         .inference_requests
         .fetch_add(1, Ordering::Relaxed);
-    let runtime_url = state
-        .runtime_url
-        .as_ref()
-        .ok_or(ApiError::RuntimeUnavailable)?;
     let permit = state.admission.clone().try_acquire_owned().map_err(|_| {
         state
             .metrics
@@ -327,6 +367,11 @@ async fn proxy(
         ApiError::Saturated
     })?;
     let mut request = state.client.request(method, format!("{runtime_url}{path}"));
+    if peer {
+        if let Some(key) = &state.peer_api_key {
+            request = request.bearer_auth(key);
+        }
+    }
     if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
         request = request.header(header::CONTENT_TYPE, content_type);
     }
@@ -361,6 +406,38 @@ async fn proxy(
         .map_err(|_| ApiError::BadRequest("invalid upstream response"))
 }
 
+async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<(String, bool), ApiError> {
+    let request: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| ApiError::BadRequest("invalid JSON request"))?;
+    let model = request
+        .get("model")
+        .and_then(|value| value.as_str())
+        .ok_or(ApiError::BadRequest("model is required"))?;
+    let store = state.store.lock().await;
+    let placement = store
+        .state
+        .state
+        .placements
+        .iter()
+        .find(|placement| placement.model == model)
+        .ok_or(ApiError::ModelUnavailable)?;
+    if placement.node_pubkey == store.state.state.owner_pubkey {
+        return state
+            .runtime_url
+            .clone()
+            .map(|url| (url, false))
+            .ok_or(ApiError::RuntimeUnavailable);
+    }
+    store
+        .state
+        .state
+        .members
+        .iter()
+        .find(|member| member.node_pubkey == placement.node_pubkey)
+        .map(|member| (member.endpoint.clone(), true))
+        .ok_or(ApiError::ModelUnavailable)
+}
+
 fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
     bytes
         .try_into()
@@ -373,6 +450,7 @@ enum ApiError {
     RuntimeUnavailable,
     Saturated,
     Runtime(reqwest::Error),
+    ModelUnavailable,
 }
 
 impl From<StoreError> for ApiError {
@@ -407,6 +485,9 @@ impl IntoResponse for ApiError {
             )
                 .into_response(),
             Self::Runtime(error) => (StatusCode::BAD_GATEWAY, error.to_string()).into_response(),
+            Self::ModelUnavailable => {
+                (StatusCode::NOT_FOUND, "model has no available placement").into_response()
+            }
         }
     }
 }
@@ -427,6 +508,7 @@ mod tests {
             client: reqwest::Client::new(),
             management_token: management_token.map(str::to_owned),
             api_key: None,
+            peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
         }
@@ -454,48 +536,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_proxy_streams_and_counts_bytes() {
-        let upstream = Router::new().route(
-            "/v1/models",
-            get(|| async { Json(serde_json::json!({"object":"list","data":[]})) }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
-        let state = state(None, Some(format!("http://{address}")));
-        let metrics = state.metrics.clone();
+    async fn model_listing_reflects_assignments() {
+        let state = state(None, None);
+        let owner = state.store.lock().await.state.state.owner_pubkey;
+        state
+            .store
+            .lock()
+            .await
+            .assign_model("qwen".into(), owner)
+            .unwrap();
         let response = router(state)
             .oneshot(Request::get("/v1/models").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(body.starts_with(b"{"));
-        assert_eq!(metrics.inference_requests.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            metrics.response_bytes.load(Ordering::Relaxed),
-            body.len() as u64
-        );
+        assert!(body.windows(4).any(|window| window == b"qwen"));
     }
 
     #[tokio::test]
     async fn inference_api_key_and_saturation_are_enforced() {
         let mut state = state(None, Some("http://127.0.0.1:1".into()));
         state.api_key = Some("inference-secret".into());
+        let owner = state.store.lock().await.state.state.owner_pubkey;
+        state
+            .store
+            .lock()
+            .await
+            .assign_model("qwen".into(), owner)
+            .unwrap();
         let permit = state.admission.clone().acquire_owned().await.unwrap();
         let metrics = state.metrics.clone();
         let app = router(state);
         let unauthorized = app
             .clone()
-            .oneshot(Request::get("/v1/models").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .body(Body::from("{\"model\":\"qwen\"}"))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
         let saturated = app
             .oneshot(
-                Request::get("/v1/models")
+                Request::post("/v1/chat/completions")
                     .header(header::AUTHORIZATION, "Bearer inference-secret")
-                    .body(Body::empty())
+                    .body(Body::from("{\"model\":\"qwen\"}"))
                     .unwrap(),
             )
             .await
@@ -519,11 +606,19 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
-        let response = router(state(None, Some(format!("http://{address}"))))
+        let state = state(None, Some(format!("http://{address}")));
+        let owner = state.store.lock().await.state.state.owner_pubkey;
+        state
+            .store
+            .lock()
+            .await
+            .assign_model("qwen".into(), owner)
+            .unwrap();
+        let response = router(state)
             .oneshot(
                 Request::post("/v1/chat/completions")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from("{\"stream\":true}"))
+                    .body(Body::from("{\"model\":\"qwen\",\"stream\":true}"))
                     .unwrap(),
             )
             .await
@@ -535,5 +630,48 @@ mod tests {
         );
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(body.ends_with(b"data: [DONE]\n\n"));
+    }
+
+    #[tokio::test]
+    async fn chat_routes_to_assigned_member_with_peer_key() {
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(|headers: HeaderMap| async move {
+                if headers
+                    .get(header::AUTHORIZATION)
+                    .and_then(|value| value.to_str().ok())
+                    != Some("Bearer peer-secret")
+                {
+                    return StatusCode::UNAUTHORIZED.into_response();
+                }
+                Json(serde_json::json!({"choices":[{"message":{"content":"remote"}}]}))
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let mut state = state(None, None);
+        state.peer_api_key = Some("peer-secret".into());
+        let endpoint = format!("http://{address}");
+        let member = NetworkStore::random_node_key();
+        {
+            let mut store = state.store.lock().await;
+            let token = store.issue_join_token("http://owner".into(), None);
+            store.redeem_join_token(token, member, endpoint).unwrap();
+            store.assign_model("qwen".into(), member).unwrap();
+        }
+        let response = router(state)
+            .oneshot(
+                Request::post("/v1/chat/completions")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from("{\"model\":\"qwen\"}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(body.windows(6).any(|window| window == b"remote"));
     }
 }

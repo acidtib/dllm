@@ -1,0 +1,10 @@
+schema_version: 1
+id: qwen2.5-14b-instruct-q4_k_m
+architecture: qwen2
+quantization: Q4_K_M
+artifact_revision: b466e1f8c07172155743e8e1307507d8a4f91fbd
+artifact_sha256:
+  - a09ea5e7b1eafb1b30b241726c3cc3c905c96f14ad41e246ffa5f44e53904f68
+  - 21b9457d079680d284e90ef69607c4b2d8ef64a09d4729cb7b5e1357bdba41ae
+  - c8d37006760a387a35216e070e6664d7da927f10be8eb870fef2e3d4833d9976
+context_size: 2048

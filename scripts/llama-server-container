@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+image=${DLLM_LLAMA_IMAGE:-nvidia/cuda:12.9.1-devel-ubuntu24.04}
+source_dir=${DLLM_LLAMA_SOURCE:-/tmp/dllm-phase0-llama.cpp}
+model_dir=${DLLM_MODEL_DIR:-/tmp/dllm-phase0-model}
+gpu=${DLLM_GPU:-0}
+
+exec docker run --rm --gpus "device=${gpu}" --network host \
+  --volume "${source_dir}:/src:ro" \
+  --volume "${model_dir}:/model:ro" \
+  --workdir /src \
+  --env LD_LIBRARY_PATH=/src/build-phase0/bin \
+  "${image}" ./build-phase0/bin/llama-server "$@"

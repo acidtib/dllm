@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dllm-protocol", "crates/dllmd", "crates/dllm-cli"]
+members = ["crates/dllm-protocol", "crates/dllmd", "crates/dllm-cli", "crates/dllm-runtime"]
 
 [workspace.package]
 edition = "2021"

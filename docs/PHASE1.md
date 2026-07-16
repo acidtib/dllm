@@ -178,4 +178,51 @@ rejection, upstream failure, response byte, and available-permit counters.
 Integration tests cover management authentication, inference API keys, bounded
 admission, model proxying, byte accounting, and preservation of streaming SSE
 content through chat completions.
+
+## P1.4 whole-model runtime and placement routing
+
+The `dllm-runtime` crate defines the managed whole-model worker boundary. It
+builds a reproducible llama.cpp server command, starts the process, waits for
+`/health`, detects early process exit, and terminates the worker during daemon
+shutdown. `dllmd` can use an existing `DLLMD_RUNTIME_URL` or launch a worker from
+`DLLMD_RUNTIME_BIN` and `DLLMD_MODEL_PATH`.
+
+The versioned Qwen manifest at
+`manifests/qwen2.5-14b-instruct-q4_k_m.yaml` records the exact Phase 0 model
+revision, quantization, context target, and all three verified shard hashes. A
+manifest parsing test and a deterministic llama.cpp command test pass.
+
+Joined members now publish an endpoint in signed network state. Owner status
+probes member daemon health, and model routing follows the assigned placement.
+An owner-local placement uses the local runtime. A member placement forwards to
+the signed member endpoint and supplies the configured peer API key. Integration
+tests prove model listing from assignments and authenticated remote chat routing.
+
+The bundled UI now generates invitations, assigns a model to the owner, revokes
+members, and displays node endpoints and placement health.
+
+### Real Qwen validation
+
+The managed container launcher reused the pinned Phase 0 llama.cpp build, CUDA
+12.9.1 environment, exact three-shard Qwen model, and one GTX 1080 with 38 GPU
+layers. The daemon launched the runtime, observed readiness, and reported the
+signed placement as ready.
+
+- `GET /v1/models` returned the assigned `qwen2.5-14b-instruct-q4_k_m` model.
+- A non-streaming request returned exactly `DLLM works` with HTTP 200.
+- The non-streaming request completed in 2.465 seconds and reported 2.90 decode
+  tokens per second from the runtime.
+- A streaming request completed with HTTP 200, retained the connection for
+  7.721 seconds, emitted the terminal `data: [DONE]` event, and reported 2.26
+  decode tokens per second.
+- Status reported one ready worker, one ready placement, generation 2, and ready
+  aggregate health.
+- Metrics reported one completed streaming request, zero admission rejections,
+  zero upstream failures, 4,799 response bytes, and the admission permit returned
+  to the pool.
+
+The first streaming run exposed a five-second shared client timeout that cut off
+SSE responses. Health probes now carry their own five-second deadlines while
+inference streams have no fixed request deadline. The repeated real-model stream
+then completed normally with `[DONE]`.
 No Phase 2 work has started.

@@ -34,6 +34,7 @@ pub struct Placement {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Member {
     pub node_pubkey: [u8; 32],
+    pub endpoint: String,
     pub joined_generation: u64,
 }
 
@@ -49,6 +50,7 @@ pub enum HealthState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NodeStatus {
     pub node_pubkey: [u8; 32],
+    pub endpoint: String,
     pub owner: bool,
     pub health: HealthState,
 }
