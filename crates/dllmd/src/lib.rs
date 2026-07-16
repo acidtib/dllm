@@ -1,7 +1,15 @@
-use dllm_protocol::{JoinToken, Member, NetworkState, SignedState, StateError, SCHEMA_VERSION};
+use dllm_protocol::{
+    Member, NetworkState, SignedJoinToken, SignedState, StateError, TokenError, SCHEMA_VERSION,
+};
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
-use std::{collections::HashSet, fs, path::Path};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    fs,
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -15,12 +23,23 @@ pub enum StoreError {
     Storage(#[from] std::io::Error),
     #[error("state encoding error: {0}")]
     Encoding(#[from] serde_json::Error),
+    #[error("join token error: {0}")]
+    Token(#[from] TokenError),
     #[error("join token belongs to another network")]
     WrongNetwork,
     #[error("join token has already been redeemed")]
     TokenUsed,
     #[error("owner key must contain exactly 32 bytes")]
     InvalidOwnerKey,
+    #[error("owner key does not match persisted network owner")]
+    OwnerKeyMismatch,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PersistedState {
+    pub schema_version: u32,
+    pub signed_state: SignedState,
+    pub redeemed_token_ids: HashSet<Uuid>,
 }
 
 pub struct NetworkStore {
@@ -31,7 +50,13 @@ pub struct NetworkStore {
 
 impl NetworkStore {
     pub fn save_owner_key(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
+        let path = path.as_ref();
         fs::write(path, self.owner_key.to_bytes())?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
     }
 
@@ -59,25 +84,48 @@ impl NetworkStore {
         }
     }
 
-    pub fn issue_join_token(&self, expires_at_unix: Option<u64>) -> JoinToken {
-        JoinToken::new(
+    pub fn load(
+        state_path: impl AsRef<Path>,
+        owner_key_path: impl AsRef<Path>,
+    ) -> Result<Self, StoreError> {
+        let persisted: PersistedState = serde_json::from_slice(&fs::read(state_path)?)?;
+        if persisted.schema_version != SCHEMA_VERSION {
+            return Err(StoreError::State(StateError::SchemaVersion(
+                persisted.schema_version,
+            )));
+        }
+        persisted.signed_state.verify()?;
+        let owner_key = Self::load_owner_key(owner_key_path)?;
+        if owner_key.verifying_key().to_bytes() != persisted.signed_state.state.owner_pubkey {
+            return Err(StoreError::OwnerKeyMismatch);
+        }
+        Ok(Self {
+            owner_key,
+            state: persisted.signed_state,
+            used_tokens: persisted.redeemed_token_ids,
+        })
+    }
+
+    pub fn issue_join_token(&self, expires_at_unix: Option<u64>) -> SignedJoinToken {
+        SignedJoinToken::issue(
             self.state.state.network_id,
-            self.state.state.owner_pubkey,
+            &self.owner_key,
             expires_at_unix,
         )
     }
 
     pub fn redeem_join_token(
         &mut self,
-        token: JoinToken,
+        token: SignedJoinToken,
         node_pubkey: [u8; 32],
     ) -> Result<(), StoreError> {
-        if token.network_id != self.state.state.network_id
-            || token.owner_pubkey != self.state.state.owner_pubkey
+        token.verify(now_unix())?;
+        if token.token.network_id != self.state.state.network_id
+            || token.token.owner_pubkey != self.state.state.owner_pubkey
         {
             return Err(StoreError::WrongNetwork);
         }
-        if !self.used_tokens.insert(token.token_id) {
+        if !self.used_tokens.insert(token.token.token_id) {
             return Err(StoreError::TokenUsed);
         }
         let mut next = self.state.state.clone();
@@ -104,8 +152,16 @@ impl NetworkStore {
     }
 
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
-        let bytes = serde_json::to_vec_pretty(&self.state)?;
-        fs::write(path, bytes)?;
+        let path = path.as_ref();
+        let persisted = PersistedState {
+            schema_version: SCHEMA_VERSION,
+            signed_state: self.state.clone(),
+            redeemed_token_ids: self.used_tokens.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&persisted)?;
+        let temporary = path.with_extension("tmp");
+        fs::write(&temporary, bytes)?;
+        fs::rename(temporary, path)?;
         Ok(())
     }
 
@@ -114,6 +170,13 @@ impl NetworkStore {
         rand::thread_rng().fill_bytes(&mut key);
         key
     }
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -157,5 +220,26 @@ mod tests {
         let loaded = NetworkStore::load_owner_key(&path).unwrap();
         assert_eq!(loaded.verifying_key(), store.owner_key.verifying_key());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn persisted_redemption_survives_restart() {
+        let mut store = NetworkStore::create("test");
+        let token = store.issue_join_token(None);
+        store
+            .redeem_join_token(token.clone(), NetworkStore::random_node_key())
+            .unwrap();
+        let suffix = Uuid::new_v4();
+        let state_path = std::env::temp_dir().join(format!("dllmd-state-{suffix}.json"));
+        let key_path = std::env::temp_dir().join(format!("dllmd-key-{suffix}"));
+        store.save(&state_path).unwrap();
+        store.save_owner_key(&key_path).unwrap();
+        let mut loaded = NetworkStore::load(&state_path, &key_path).unwrap();
+        assert!(matches!(
+            loaded.redeem_join_token(token, NetworkStore::random_node_key()),
+            Err(StoreError::TokenUsed)
+        ));
+        std::fs::remove_file(state_path).unwrap();
+        std::fs::remove_file(key_path).unwrap();
     }
 }

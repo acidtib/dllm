@@ -22,6 +22,48 @@ pub struct Member {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthState {
+    Ready,
+    Unknown,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NodeStatus {
+    pub node_pubkey: [u8; 32],
+    pub owner: bool,
+    pub health: HealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkerStatus {
+    pub worker_id: Uuid,
+    pub node_pubkey: [u8; 32],
+    pub model: String,
+    pub health: HealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlacementStatus {
+    pub placement_id: Uuid,
+    pub model: String,
+    pub generation: u64,
+    pub worker_ids: Vec<Uuid>,
+    pub health: HealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ManagementStatus {
+    pub network: SignedState,
+    pub nodes: Vec<NodeStatus>,
+    pub workers: Vec<WorkerStatus>,
+    pub placements: Vec<PlacementStatus>,
+    pub health: HealthState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedState {
     pub state: NetworkState,
     pub signature: Vec<u8>,
@@ -82,6 +124,24 @@ pub struct JoinToken {
     pub single_use: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedJoinToken {
+    pub token: JoinToken,
+    pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TokenError {
+    #[error("unsupported schema version {0}")]
+    SchemaVersion(u32),
+    #[error("join token must be single-use")]
+    NotSingleUse,
+    #[error("invalid join token signature")]
+    InvalidSignature,
+    #[error("join token expired at {0}")]
+    Expired(u64),
+}
+
 impl JoinToken {
     pub fn new(network_id: Uuid, owner_pubkey: [u8; 32], expires_at_unix: Option<u64>) -> Self {
         Self {
@@ -92,6 +152,40 @@ impl JoinToken {
             expires_at_unix,
             single_use: true,
         }
+    }
+}
+
+impl SignedJoinToken {
+    pub fn issue(network_id: Uuid, owner_key: &SigningKey, expires_at_unix: Option<u64>) -> Self {
+        let token = JoinToken::new(
+            network_id,
+            owner_key.verifying_key().to_bytes(),
+            expires_at_unix,
+        );
+        let bytes = serde_json::to_vec(&token).expect("join token is serializable");
+        let signature = owner_key.sign(&bytes).to_bytes().to_vec();
+        Self { token, signature }
+    }
+
+    pub fn verify(&self, now_unix: u64) -> Result<(), TokenError> {
+        if self.token.schema_version != SCHEMA_VERSION {
+            return Err(TokenError::SchemaVersion(self.token.schema_version));
+        }
+        if !self.token.single_use {
+            return Err(TokenError::NotSingleUse);
+        }
+        if let Some(expires_at) = self.token.expires_at_unix {
+            if now_unix >= expires_at {
+                return Err(TokenError::Expired(expires_at));
+            }
+        }
+        let key = VerifyingKey::from_bytes(&self.token.owner_pubkey)
+            .map_err(|_| TokenError::InvalidSignature)?;
+        let bytes = serde_json::to_vec(&self.token).expect("join token is serializable");
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| TokenError::InvalidSignature)?;
+        key.verify(&bytes, &signature)
+            .map_err(|_| TokenError::InvalidSignature)
     }
 }
 
@@ -132,9 +226,19 @@ mod tests {
     #[test]
     fn join_tokens_are_scoped_and_single_use() {
         let key = SigningKey::generate(&mut rand::thread_rng());
-        let token = JoinToken::new(Uuid::new_v4(), key.verifying_key().to_bytes(), None);
-        assert_eq!(token.schema_version, SCHEMA_VERSION);
-        assert!(token.single_use);
-        assert_eq!(token.owner_pubkey, key.verifying_key().to_bytes());
+        let token = SignedJoinToken::issue(Uuid::new_v4(), &key, Some(100));
+        assert_eq!(token.token.schema_version, SCHEMA_VERSION);
+        assert!(token.token.single_use);
+        assert_eq!(token.token.owner_pubkey, key.verifying_key().to_bytes());
+        assert_eq!(token.verify(99), Ok(()));
+        assert_eq!(token.verify(100), Err(TokenError::Expired(100)));
+    }
+
+    #[test]
+    fn signed_join_token_detects_tampering() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut token = SignedJoinToken::issue(Uuid::new_v4(), &key, None);
+        token.token.network_id = Uuid::new_v4();
+        assert_eq!(token.verify(0), Err(TokenError::InvalidSignature));
     }
 }

@@ -106,8 +106,29 @@ A loopback smoke test started `dllmd`, issued an invitation through the API,
 joined one generated node, and read status back successfully. The response
 reported generation 2, one member, and a 64-byte state signature.
 
-The daemon currently creates fresh network state when started. Loading the
-existing owner identity, persisting token redemption records, and authenticating
-the local management API are required before this API is suitable for anything
-beyond local development.
+The daemon now loads existing signed state and its owner identity on restart.
+Owner key files are restricted to mode `0600` on Unix, state writes use a
+temporary file and atomic rename, and redeemed token IDs are persisted so a
+single-use invitation remains unusable after restart. Invitations are signed by
+the network owner, validated before redemption, and may carry an absolute Unix
+expiry.
+
+The `dllm` CLI now talks to the management API for status, invitation issuance,
+join, and revocation. `dllm status --json` returns network, node, worker,
+placement, and aggregate health fields. Worker and placement arrays remain empty
+until model assignment is implemented.
+
+The daemon exposes `/v1/models` and `/v1/chat/completions` as streaming-capable
+proxies to a configured whole-model runtime. Admission is bounded by
+`DLLMD_ADMISSION_LIMIT`; saturation returns HTTP 429, a missing runtime returns
+HTTP 503, and upstream connection failures return HTTP 502. The admission permit
+is retained until the upstream response stream ends.
+
+A restart smoke test confirmed that the network name and generation survive a
+daemon restart, the owner key is 32 bytes with mode `0600`, the full JSON status
+shape is available through the CLI, and an unconfigured model endpoint returns
+HTTP 503 explicitly.
+
+Management API authentication and remote node transport remain incomplete. The
+management listener still defaults to loopback and must not be exposed remotely.
 No Phase 2 work has started.
