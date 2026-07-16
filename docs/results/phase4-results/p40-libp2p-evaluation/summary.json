@@ -60,6 +60,14 @@
       "response": "physical-after-restart",
       "post_recovery_request_elapsed_ms": 630
     },
+    "dht_forwarding_discovery": {
+      "result": "pass",
+      "elapsed_ms": 301,
+      "bootstrap": "ordinary Kansas node that did not publish forwarding eligibility",
+      "provider": "ordinary New York node publishing /dllm/forwarding/v1",
+      "discoverer": "Colorado development machine behind residential NAT",
+      "discovered_peer": "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X"
+    },
     "release_binary_bytes": 15988904,
     "short_run_memory_bytes": {
       "kansas_forwarder": 2306048,
@@ -68,7 +76,7 @@
     "cleanup": "pass"
   },
   "open_validation": [
-    "DHT-based forwarding-node discovery and selection",
+    "automatic connection and policy selection among discovered forwarding providers",
     "DCUtR direct-path upgrade and path reporting",
     "automatic selection of a different forwarding node after loss",
     "address-change recovery",

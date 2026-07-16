@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::{error::Error, time::Duration};
 
 const DLLM_PROTOCOL: &str = "/dllm/peer/1";
+const FORWARDING_PROVIDER_KEY: &[u8] = b"/dllm/forwarding/v1";
 
 #[derive(Debug, Parser)]
 struct Args {
@@ -24,6 +25,12 @@ enum Command {
     Forwarder {
         seed: u8,
         port: u16,
+        bootstrap: Option<Multiaddr>,
+    },
+    Discover {
+        seed: u8,
+        port: u16,
+        bootstrap: Multiaddr,
     },
     Listen {
         seed: u8,
@@ -82,12 +89,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", key(*seed).public().to_peer_id());
         return Ok(());
     }
-    if let Command::Forwarder { seed, port } = &args.command {
-        return run_forwarder(*seed, *port).await;
+    if let Command::Forwarder {
+        seed,
+        port,
+        bootstrap,
+    } = &args.command
+    {
+        return run_forwarder(*seed, *port, bootstrap.clone()).await;
     }
 
     let (seed, port) = match &args.command {
-        Command::Forwarder { seed, port }
+        Command::Forwarder { seed, port, .. }
+        | Command::Discover { seed, port, .. }
         | Command::Listen { seed, port, .. }
         | Command::Dial { seed, port, .. } => (*seed, *port),
         Command::Id { .. } => unreachable!(),
@@ -131,8 +144,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{port}").parse()?)?;
     swarm.listen_on(format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?)?;
 
+    let mut discovering = false;
     let (allowed_peer, target, mut outbound_request, mut relay_action) = match args.command {
         Command::Forwarder { .. } => unreachable!(),
+        Command::Discover { bootstrap, .. } => {
+            discovering = true;
+            (None, None, None, Some(RelayAction::Listen(bootstrap)))
+        }
         Command::Listen {
             relay,
             allowed_peer: allowed,
@@ -158,6 +176,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
         libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
         _ => None,
     });
+    if let Some(peer) = relay_peer {
+        let mut routing_address = relay.clone();
+        if matches!(
+            routing_address.iter().last(),
+            Some(libp2p::multiaddr::Protocol::P2p(_))
+        ) {
+            routing_address.pop();
+        }
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer, routing_address);
+    }
     let desired_relay_action = relay_action.clone();
     let mut circuit_listener = None;
     let mut retry_relay = false;
@@ -259,10 +290,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 info,
                 ..
             })) => {
-                swarm
-                    .behaviour_mut()
-                    .kademlia
-                    .add_address(&peer_id, info.observed_addr.clone());
                 println!(
                     "identified peer_id={peer_id} observed={}",
                     info.observed_addr
@@ -273,6 +300,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 ..
             })) => {
                 if relay_peer == Some(peer_id) {
+                    if discovering {
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .get_providers(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY));
+                        relay_action = None;
+                        println!("discovery=query_started");
+                        continue;
+                    }
                     if let Some(action) = relay_action.take() {
                         match action {
                             RelayAction::Listen(relay) => {
@@ -293,13 +329,38 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                 }
             }
+            SwarmEvent::Behaviour(BehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result:
+                        kad::QueryResult::GetProviders(Ok(kad::GetProvidersOk::FoundProviders {
+                            providers,
+                            ..
+                        })),
+                    ..
+                },
+            )) if discovering => {
+                let providers = providers
+                    .into_iter()
+                    .map(|peer| peer.to_string())
+                    .collect::<Vec<_>>();
+                println!("discovery=providers_found peers={}", providers.join(","));
+                return if providers.is_empty() {
+                    Err("no forwarding-capable node discovered".into())
+                } else {
+                    Ok(())
+                };
+            }
             _ => {}
         }
     }
     Ok(())
 }
 
-async fn run_forwarder(seed: u8, port: u16) -> Result<(), Box<dyn Error>> {
+async fn run_forwarder(
+    seed: u8,
+    port: u16,
+    bootstrap: Option<Multiaddr>,
+) -> Result<(), Box<dyn Error>> {
     let local_key = key(seed);
     let local_peer = local_key.public().to_peer_id();
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key)
@@ -335,6 +396,26 @@ async fn run_forwarder(seed: u8, port: u16) -> Result<(), Box<dyn Error>> {
         .set_mode(Some(kad::Mode::Server));
     swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{port}").parse()?)?;
     swarm.listen_on(format!("/ip4/0.0.0.0/udp/{port}/quic-v1").parse()?)?;
+    let bootstrap_peer = bootstrap.as_ref().and_then(|address| {
+        address.iter().find_map(|part| match part {
+            libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
+            _ => None,
+        })
+    });
+    if let (Some(peer), Some(address)) = (bootstrap_peer, bootstrap.as_ref()) {
+        let mut routing_address = address.clone();
+        if matches!(
+            routing_address.iter().last(),
+            Some(libp2p::multiaddr::Protocol::P2p(_))
+        ) {
+            routing_address.pop();
+        }
+        swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer, routing_address);
+        swarm.dial(address.clone())?;
+    }
     println!("node_ready peer_id={local_peer} forwarding_enabled=true");
 
     while let Some(event) = swarm.next().await {
@@ -357,6 +438,22 @@ async fn run_forwarder(seed: u8, port: u16) -> Result<(), Box<dyn Error>> {
                     info.observed_addr
                 );
             }
+            SwarmEvent::Behaviour(ForwardBehaviourEvent::Identify(identify::Event::Sent {
+                peer_id,
+                ..
+            })) if bootstrap_peer == Some(peer_id) => {
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))?;
+                println!("discovery=forwarding_capability_published");
+            }
+            SwarmEvent::Behaviour(ForwardBehaviourEvent::Kademlia(
+                kad::Event::OutboundQueryProgressed {
+                    result: kad::QueryResult::StartProviding(result),
+                    ..
+                },
+            )) => println!("discovery=publication_result result={result:?}"),
             _ => {}
         }
     }

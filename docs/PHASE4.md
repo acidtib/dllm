@@ -161,9 +161,19 @@ reported 2,306,048 bytes for Kansas and 2,609,152 bytes for New York. Both
 remote services, deployed binaries, and temporary firewall rules were removed
 after the test.
 
+A subsequent DHT slice separated bootstrap from forwarding eligibility. An
+ordinary Kansas node provided only the initial Kademlia route. An ordinary New
+York node joined through Kansas and published the
+`/dllm/forwarding/v1` provider key. Colorado queried Kansas and discovered only
+the New York forwarding peer in 301 ms. The bootstrap node did not implicitly
+become eligible. This proves capability discovery, but the probe still needs to
+connect to the discovered address and apply signed policy when multiple
+providers are returned.
+
 This result validates the proposed deployment shape, not the complete
-transport selection. DHT-based forwarding-node selection, replacement-node
-recovery, direct-path upgrade and reporting, address-change recovery,
-sustained resource measurements, and the streaming matrix remain open.
+transport selection. Automatic connection and policy selection among
+discovered providers, replacement-node recovery, direct-path upgrade and
+reporting, address-change recovery, sustained resource measurements, and the
+streaming matrix remain open.
 Evidence is in
 `results/phase4-results/p40-libp2p-evaluation/summary.json`.
