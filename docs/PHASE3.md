@@ -50,7 +50,7 @@ distributed dense layer stages without a new feasibility decision.
 
 - [x] P3.0: establish scope, acceptance criteria, threat boundaries, and
   implementation order.
-- [ ] P3.1: implement remote-management roles, scoped credentials, credential
+- [x] P3.1: implement remote-management roles, scoped credentials, credential
   rotation, and audit-safe status surfaces.
 - [ ] P3.2: implement authenticated peer transport, NAT traversal, and relay
   fallback with explicit direct-versus-relayed state.
@@ -115,7 +115,20 @@ tokens never authorize a request. Additional-network configuration accepts the
 same `management_credentials` array. Startup rejects a non-loopback listener if
 the primary or any additional network lacks a non-empty management credential.
 
-Automated coverage proves a viewer can read status but cannot mutate an
-assignment, an operator cannot issue an invitation, and an admin can issue an
-invitation. Credential persistence, live rotation, credential identifiers, and
-an audit-safe access-status surface remain before P3.1 can be marked complete.
+Dynamic credentials are persisted separately from signed network state when
+`DLLMD_MANAGEMENT_CREDENTIALS_PATH` is configured. The file contains SHA-256
+token digests rather than bearer secrets and is written with mode `0600` on
+Unix. `POST /v1/management/credentials` creates a named credential and returns
+its randomly generated 256-bit token once. `GET /v1/management/credentials`
+lists credential ID, label, role, creation time, and revocability without the
+token or digest. `DELETE /v1/management/credentials/{credential-id}` revokes a
+persisted credential immediately. Configured and legacy credentials are marked
+non-revocable because configuration remains their source of truth. Revocation
+refuses to remove the last admin credential.
+
+The CLI exposes these operations as `dllm credentials`,
+`dllm create-credential LABEL ROLE`, and
+`dllm revoke-credential CREDENTIAL_ID`. Automated coverage proves the role
+matrix, one-time secret exposure, digest-only persistence, mode `0600`, live
+revocation, and persistent revocation after registry reload. This completes
+P3.1.

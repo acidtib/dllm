@@ -15,6 +15,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod api;
+pub mod credentials;
 
 #[derive(Debug, Error)]
 pub enum StoreError {

@@ -1,6 +1,10 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
-use dllmd::{api, api::ManagementCredential, NetworkStore};
+use dllmd::{
+    api,
+    credentials::{CredentialRegistry, ManagementCredential},
+    NetworkStore,
+};
 use serde::Deserialize;
 use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -17,6 +21,7 @@ struct AdditionalNetworkConfig {
     management_token: Option<String>,
     #[serde(default)]
     management_credentials: Vec<ManagementCredential>,
+    management_credentials_path: Option<PathBuf>,
     api_key: String,
     public_url: Option<String>,
 }
@@ -41,6 +46,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| serde_json::from_str::<Vec<ManagementCredential>>(&value))
         .transpose()?
         .unwrap_or_default();
+    let management_credentials_path = std::env::var("DLLMD_MANAGEMENT_CREDENTIALS_PATH")
+        .ok()
+        .map(PathBuf::from);
     let api_key = std::env::var("DLLMD_API_KEY").ok();
     let peer_api_key = std::env::var("DLLMD_PEER_API_KEY").ok();
     let tls_cert = std::env::var("DLLMD_TLS_CERT").ok();
@@ -98,8 +106,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         runtime_url: runtime_url.clone(),
         admission: Arc::new(Semaphore::new(admission_limit)),
         client: reqwest::Client::new(),
-        management_token: management_token.clone(),
-        management_credentials,
+        management_credentials: Arc::new(tokio::sync::RwLock::new(CredentialRegistry::load(
+            management_credentials,
+            management_token.clone(),
+            management_credentials_path,
+        )?)),
         api_key: api_key.clone(),
         peer_api_key: peer_api_key.clone(),
         metrics: Arc::new(api::Metrics::default()),
@@ -141,8 +152,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 runtime_url: runtime_url.clone(),
                 admission: Arc::new(Semaphore::new(admission_limit)),
                 client: reqwest::Client::new(),
-                management_token: config.management_token,
-                management_credentials: config.management_credentials,
+                management_credentials: Arc::new(tokio::sync::RwLock::new(
+                    CredentialRegistry::load(
+                        config.management_credentials,
+                        config.management_token,
+                        config.management_credentials_path,
+                    )?,
+                )),
                 api_key: Some(config.api_key),
                 peer_api_key: peer_api_key.clone(),
                 metrics: Arc::new(api::Metrics::default()),

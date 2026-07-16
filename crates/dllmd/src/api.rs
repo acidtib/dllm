@@ -1,7 +1,12 @@
-use crate::{NetworkStore, StoreError};
+use crate::{
+    credentials::{
+        CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
+    },
+    now_unix, NetworkStore, StoreError,
+};
 use axum::{
     body::{Body, Bytes},
-    extract::{Request, State},
+    extract::{Path, Request, State},
     http::{header, HeaderMap, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -23,21 +28,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{Mutex, Semaphore};
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagementRole {
-    Viewer,
-    Operator,
-    Admin,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ManagementCredential {
-    pub token: String,
-    pub role: ManagementRole,
-}
+use tokio::sync::{Mutex, RwLock, Semaphore};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -46,8 +37,7 @@ pub struct ApiState {
     pub runtime_url: Option<String>,
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
-    pub management_token: Option<String>,
-    pub management_credentials: Vec<ManagementCredential>,
+    pub management_credentials: Arc<RwLock<CredentialRegistry>>,
     pub api_key: Option<String>,
     pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
@@ -93,6 +83,12 @@ struct MutationResponse {
     changed: bool,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateCredentialRequest {
+    label: String,
+    role: ManagementRole,
+}
+
 pub fn router(state: ApiState) -> Router {
     let mut viewer = Router::new()
         .route("/v1/status", get(status))
@@ -102,9 +98,21 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/hardware-profiles", post(publish_hardware_profile));
     let mut admin = Router::new()
         .route("/v1/invitations", post(invite))
-        .route("/v1/members/revoke", post(revoke));
-    let credentials = management_credentials(&state);
-    if !credentials.is_empty() {
+        .route("/v1/members/revoke", post(revoke))
+        .route(
+            "/v1/management/credentials",
+            get(list_credentials).post(create_credential),
+        )
+        .route(
+            "/v1/management/credentials/{credential_id}",
+            axum::routing::delete(revoke_credential),
+        );
+    let credentials = state.management_credentials.clone();
+    if !credentials
+        .try_read()
+        .expect("credential registry is not locked during router construction")
+        .is_empty()
+    {
         viewer = viewer.route_layer(middleware::from_fn_with_state(
             (credentials.clone(), ManagementRole::Viewer),
             require_management_role,
@@ -211,29 +219,8 @@ async fn require_bearer(
     Ok(next.run(request).await)
 }
 
-fn management_credentials(state: &ApiState) -> Vec<ManagementCredential> {
-    let mut by_token = HashMap::new();
-    for credential in &state.management_credentials {
-        if !credential.token.is_empty() {
-            by_token
-                .entry(credential.token.clone())
-                .and_modify(|role: &mut ManagementRole| *role = (*role).max(credential.role))
-                .or_insert(credential.role);
-        }
-    }
-    if let Some(token) = &state.management_token {
-        if !token.is_empty() {
-            by_token.insert(token.clone(), ManagementRole::Admin);
-        }
-    }
-    by_token
-        .into_iter()
-        .map(|(token, role)| ManagementCredential { token, role })
-        .collect()
-}
-
 async fn require_management_role(
-    State((credentials, required)): State<(Vec<ManagementCredential>, ManagementRole)>,
+    State((credentials, required)): State<(Arc<RwLock<CredentialRegistry>>, ManagementRole)>,
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
@@ -241,18 +228,46 @@ async fn require_management_role(
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let Some(credential) = supplied.and_then(|token| {
-        credentials
-            .iter()
-            .find(|credential| credential.token == token)
-    }) else {
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(str::to_owned);
+    let Some(token) = supplied else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    if credential.role < required {
+    let Some(authorized) = credentials.read().await.authorize(&token, required) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    if !authorized {
         return Err(StatusCode::FORBIDDEN);
     }
     Ok(next.run(request).await)
+}
+
+async fn list_credentials(State(state): State<ApiState>) -> Json<Vec<CredentialSummary>> {
+    Json(state.management_credentials.read().await.list())
+}
+
+async fn create_credential(
+    State(state): State<ApiState>,
+    Json(request): Json<CreateCredentialRequest>,
+) -> Result<Json<CreatedCredential>, ApiError> {
+    let created = state.management_credentials.write().await.create(
+        request.label,
+        request.role,
+        now_unix(),
+    )?;
+    Ok(Json(created))
+}
+
+async fn revoke_credential(
+    State(state): State<ApiState>,
+    Path(credential_id): Path<uuid::Uuid>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .management_credentials
+        .write()
+        .await
+        .revoke(credential_id)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ui() -> impl IntoResponse {
@@ -785,11 +800,18 @@ enum ApiError {
     Saturated,
     Runtime(reqwest::Error),
     ModelUnavailable,
+    Credential(CredentialError),
 }
 
 impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         Self::Store(error)
+    }
+}
+
+impl From<CredentialError> for ApiError {
+    fn from(error: CredentialError) -> Self {
+        Self::Credential(error)
     }
 }
 
@@ -827,6 +849,29 @@ impl IntoResponse for ApiError {
             Self::ModelUnavailable => {
                 (StatusCode::NOT_FOUND, "model has no available placement").into_response()
             }
+            Self::Credential(CredentialError::EmptyLabel) => (
+                StatusCode::BAD_REQUEST,
+                "credential label must not be empty",
+            )
+                .into_response(),
+            Self::Credential(CredentialError::PersistenceDisabled) => (
+                StatusCode::CONFLICT,
+                "credential persistence is not configured",
+            )
+                .into_response(),
+            Self::Credential(CredentialError::NotRevocable) => (
+                StatusCode::NOT_FOUND,
+                "credential not found or not revocable",
+            )
+                .into_response(),
+            Self::Credential(CredentialError::LastAdmin) => (
+                StatusCode::CONFLICT,
+                "the last admin credential cannot be revoked",
+            )
+                .into_response(),
+            Self::Credential(error) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            }
         }
     }
 }
@@ -848,8 +893,10 @@ mod tests {
             runtime_url,
             admission: Arc::new(Semaphore::new(1)),
             client: reqwest::Client::new(),
-            management_token: management_token.map(str::to_owned),
-            management_credentials: Vec::new(),
+            management_credentials: Arc::new(RwLock::new(
+                CredentialRegistry::load(Vec::new(), management_token.map(str::to_owned), None)
+                    .unwrap(),
+            )),
             api_key: None,
             peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
@@ -919,20 +966,27 @@ mod tests {
     #[tokio::test]
     async fn management_roles_enforce_least_privilege() {
         let mut api_state = state(None, None);
-        api_state.management_credentials = vec![
-            ManagementCredential {
-                token: "viewer-secret".into(),
-                role: ManagementRole::Viewer,
-            },
-            ManagementCredential {
-                token: "operator-secret".into(),
-                role: ManagementRole::Operator,
-            },
-            ManagementCredential {
-                token: "admin-secret".into(),
-                role: ManagementRole::Admin,
-            },
-        ];
+        api_state.management_credentials = Arc::new(RwLock::new(
+            CredentialRegistry::load(
+                vec![
+                    crate::credentials::ManagementCredential {
+                        token: "viewer-secret".into(),
+                        role: ManagementRole::Viewer,
+                    },
+                    crate::credentials::ManagementCredential {
+                        token: "operator-secret".into(),
+                        role: ManagementRole::Operator,
+                    },
+                    crate::credentials::ManagementCredential {
+                        token: "admin-secret".into(),
+                        role: ManagementRole::Admin,
+                    },
+                ],
+                None,
+                None,
+            )
+            .unwrap(),
+        ));
         let app = router(api_state);
 
         let viewer_status = app
@@ -991,6 +1045,117 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(admin_invite.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn management_credentials_rotate_without_exposing_secrets() {
+        let path =
+            std::env::temp_dir().join(format!("dllmd-credentials-{}.json", uuid::Uuid::new_v4()));
+        let mut api_state = state(None, None);
+        api_state.management_credentials = Arc::new(RwLock::new(
+            CredentialRegistry::load(
+                vec![crate::credentials::ManagementCredential {
+                    token: "bootstrap-admin".into(),
+                    role: ManagementRole::Admin,
+                }],
+                None,
+                Some(path.clone()),
+            )
+            .unwrap(),
+        ));
+        let app = router(api_state);
+
+        let created = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/management/credentials")
+                    .header(header::AUTHORIZATION, "Bearer bootstrap-admin")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"label":"monitoring","role":"viewer"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.status(), StatusCode::OK);
+        let created: serde_json::Value =
+            serde_json::from_slice(&created.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        let credential_id = created["credential"]["id"].as_str().unwrap();
+        let token = created["token"].as_str().unwrap();
+
+        let viewer_status = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(viewer_status.status(), StatusCode::OK);
+
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/management/credentials")
+                    .header(header::AUTHORIZATION, "Bearer bootstrap-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed = listed.into_body().collect().await.unwrap().to_bytes();
+        assert!(!String::from_utf8_lossy(&listed).contains(token));
+        assert!(!String::from_utf8_lossy(&std::fs::read(&path).unwrap()).contains(token));
+
+        let revoked = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/v1/management/credentials/{credential_id}"))
+                    .header(header::AUTHORIZATION, "Bearer bootstrap-admin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked.status(), StatusCode::NO_CONTENT);
+
+        let revoked_status = app
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/status")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoked_status.status(), StatusCode::UNAUTHORIZED);
+
+        let reloaded = CredentialRegistry::load(
+            Vec::new(),
+            Some("bootstrap-admin".into()),
+            Some(path.clone()),
+        )
+        .unwrap();
+        assert_eq!(reloaded.authorize(token, ManagementRole::Viewer), None);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]

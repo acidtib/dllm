@@ -79,6 +79,15 @@ enum Command {
         #[arg(long, value_delimiter = ',')]
         backends: Vec<String>,
     },
+    Credentials,
+    CreateCredential {
+        label: String,
+        #[arg(value_parser = ["viewer", "operator", "admin"])]
+        role: String,
+    },
+    RevokeCredential {
+        credential_id: String,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -225,6 +234,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
+        Command::Credentials => {
+            let response = request_json(auth(
+                client.get(format!("{}/v1/management/credentials", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::CreateCredential { label, role } => {
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/management/credentials", cli.daemon))
+                    .json(&json!({ "label": label, "role": role })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::RevokeCredential { credential_id } => {
+            request_empty(auth(
+                client.delete(format!(
+                    "{}/v1/management/credentials/{credential_id}",
+                    cli.daemon
+                )),
+                &cli.management_token,
+            ))?;
+            println!("revoked credential {credential_id}");
+        }
     }
     Ok(())
 }
@@ -304,4 +339,11 @@ fn request_json(
 ) -> Result<Value, Box<dyn std::error::Error>> {
     let response = builder.send()?.error_for_status()?;
     Ok(response.json()?)
+}
+
+fn request_empty(
+    builder: reqwest::blocking::RequestBuilder,
+) -> Result<(), Box<dyn std::error::Error>> {
+    builder.send()?.error_for_status()?;
+    Ok(())
 }
