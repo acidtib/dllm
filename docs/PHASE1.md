@@ -243,10 +243,10 @@ integration test proves a request routed to an authenticated member succeeds
 before revocation and a new request for the same model receives HTTP 404 after
 revocation.
 
-The physical laptop at `192.168.1.189` was probed for the two-machine acceptance
-run, but SSH timed out on 2026-07-15. The local daemon, signed endpoint, peer
-routing, authentication, revocation, and runtime paths are ready for that run.
-No physical two-machine Phase 1 claim is made while the laptop is unreachable.
+An interrupted managed-runtime startup exposed an orphaned Docker container.
+Worker termination now sends SIGTERM and waits before escalating, while the
+container launcher traps termination and stops the container identified by its
+CID file. The repeated shutdown left no worker container or listening socket.
 
 Machine-readable security results are stored in
 `phase1-results/p15-security/summary.json`.
@@ -266,7 +266,64 @@ server, so the 2.04 versus 1.9 comparison is contextual and is not presented as
 a controlled speedup.
 
 The consolidated benchmark record is
-`phase1-results/benchmark-summary.json`. Its status remains partial until the
-physical two-machine run supplies LAN traffic and failure measurements.
+`phase1-results/benchmark-summary.json`.
+
+## P1.6 physical two-machine acceptance
+
+The owner was `ergot` at `192.168.1.73`. The second machine was the CPU-only
+laptop `acidito` at `192.168.1.189`. Prebuilt x86_64 DLLM binaries were deployed
+because the laptop had no Rust toolchain. Both daemons bound to loopback and
+authenticated SSH forwarding carried control and health traffic without exposing
+plaintext management services on the LAN.
+
+The owner generated a signed single-use invitation carrying its endpoint. The
+laptop verified that token locally, used its mode-`0600` node identity, contacted
+the token-carried owner endpoint, and advertised its endpoint. The owner advanced
+to generation 2 and reported both physical nodes ready.
+
+The validated Qwen model was assigned to the owner's managed GTX 1080 worker at
+generation 3. Streaming inference completed with HTTP 200, a 1.053-second first
+SSE event, 2.927 seconds total, 1,692 response bytes, a terminal `[DONE]`, and
+2.14 decode tokens per second reported by llama.cpp.
+
+The owner placement was then removed and the same model was assigned to the
+laptop at generation 5. The laptop daemon remained ready, but its placement was
+correctly unavailable because it had no model runtime. Aggregate health became
+degraded. Revoking the laptop advanced generation 6, removed the member and its
+placement, restored aggregate health to ready, and caused a new request for the
+unplaced model to return HTTP 404.
+
+Twenty ICMP samples had zero loss, 3.126 ms minimum, 62.6 ms median, 76.847 ms
+mean, and 206.110 ms maximum RTT. Three 16 MiB SSH transfers measured median
+throughput of 51.23 Mbit/s from desktop to laptop and 93.86 Mbit/s from laptop to
+desktop.
+
+The laptop had no local model runtime, so this run validates physical membership,
+signed endpoint exchange, health separation, placement degradation, revocation,
+and owner-hosted inference. It does not claim remote inference execution on the
+laptop. The physical run used SSH forwarding; direct TLS serving was validated
+separately with the same credential enforcement.
+
+Machine-readable results are stored in
+`phase1-results/p16-two-machine/summary.json`.
+
+## Phase 1 conclusion
+
+Phase 1 is complete. All four MVP success criteria are satisfied:
+
+1. A private network was created, a signed scoped token joined a second physical
+   machine, the validated model was assigned, and streaming inference completed.
+2. Revocation removed the second node and its placement safely, with explicit
+   degraded and unavailable state before removal and HTTP 404 after removal.
+3. `dllm status --json` exposed network, node, worker, placement, generation, and
+   health state.
+4. Benchmarks recorded first-token latency, decode rate, request and response
+   traffic, LAN latency and throughput, failure behavior, and the Phase 0
+   single-node fallback comparison.
+
+The consolidated machine-readable decision is
+`phase1-results/final-summary.json`. Distributed layer-stage inference remains
+excluded by the Phase 0 decision. The documented limitations belong to later
+hardening and orchestration phases.
 
 No Phase 2 work has started.

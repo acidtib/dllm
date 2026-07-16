@@ -1,5 +1,5 @@
 {
-  "status": "partial_pending_two_machine_run",
+  "status": "complete",
   "date": "2026-07-15",
   "exact_model": "qwen2.5-14b-instruct-q4_k_m",
   "managed_dllm_path": {
@@ -22,7 +22,16 @@
   },
   "comparison_note": "The managed probe and Phase 0 fallback use the same model, quantization, GPU-layer count, and hardware. Prompt and process-lifetime methodology differ, so the observed 2.04 versus 1.9 tokens per second is contextual rather than a controlled speedup claim.",
   "two_machine": {
-    "status": "not_run",
-    "blocker": "ssh_timeout_to_192.168.1.189"
+    "status": "complete",
+    "control_transport": "authenticated_ssh_forwarding",
+    "packet_loss_percent": 0.0,
+    "rtt_median_ms": 62.6,
+    "rtt_mean_ms": 76.847,
+    "desktop_to_laptop_median_mbit_per_second": 51.23,
+    "laptop_to_desktop_median_mbit_per_second": 93.86,
+    "owner_placement_first_sse_seconds": 1.052782,
+    "owner_placement_total_seconds": 2.92693,
+    "owner_placement_decode_tokens_per_second": 2.14,
+    "owner_placement_response_bytes": 1692
   }
 }

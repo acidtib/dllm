@@ -93,11 +93,33 @@ pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/", get(ui))
         .route("/health", get(|| async { StatusCode::OK }))
+        .route("/health/runtime", get(runtime_health))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
         .merge(management)
         .merge(inference)
         .with_state(state)
+}
+
+async fn runtime_health(State(state): State<ApiState>) -> StatusCode {
+    if runtime_is_ready(&state).await {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    }
+}
+
+async fn runtime_is_ready(state: &ApiState) -> bool {
+    match state.runtime_url.as_ref() {
+        Some(url) => state
+            .client
+            .get(format!("{url}/health"))
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+            .is_ok_and(|response| response.status().is_success()),
+        None => false,
+    }
 }
 
 async fn metrics(State(state): State<ApiState>) -> String {
@@ -143,16 +165,7 @@ async fn ui() -> impl IntoResponse {
 }
 
 async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
-    let runtime_ready = match state.runtime_url.as_ref() {
-        Some(url) => state
-            .client
-            .get(format!("{url}/health"))
-            .timeout(Duration::from_secs(5))
-            .send()
-            .await
-            .is_ok_and(|response| response.status().is_success()),
-        None => false,
-    };
+    let runtime_ready = runtime_is_ready(&state).await;
     let network = state.store.lock().await.state.clone();
     let mut nodes = vec![NodeStatus {
         node_pubkey: network.state.owner_pubkey,
@@ -183,6 +196,20 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
         }
     });
     nodes.extend(join_all(probes).await);
+    let runtime_probes = network.state.members.iter().map(|member| {
+        let client = state.client.clone();
+        let member = member.clone();
+        async move {
+            let ready = client
+                .get(format!("{}/health/runtime", member.endpoint))
+                .timeout(Duration::from_secs(5))
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success());
+            (member.node_pubkey, ready)
+        }
+    });
+    let member_runtime_health = join_all(runtime_probes).await;
     let placement_health = |node_pubkey: &[u8; 32]| {
         if node_pubkey == &network.state.owner_pubkey {
             if runtime_ready {
@@ -191,10 +218,16 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
                 HealthState::Unavailable
             }
         } else {
-            nodes
+            member_runtime_health
                 .iter()
-                .find(|node| &node.node_pubkey == node_pubkey)
-                .map(|node| node.health.clone())
+                .find(|(candidate, _)| candidate == node_pubkey)
+                .map(|(_, ready)| {
+                    if *ready {
+                        HealthState::Ready
+                    } else {
+                        HealthState::Unavailable
+                    }
+                })
                 .unwrap_or(HealthState::Unavailable)
         }
     };

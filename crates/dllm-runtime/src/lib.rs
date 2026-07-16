@@ -76,7 +76,10 @@ impl RuntimeWorker {
             child,
             endpoint: config.endpoint(),
         };
-        worker.wait_ready(timeout).await?;
+        if let Err(error) = worker.wait_ready(timeout).await {
+            let _ = worker.terminate().await;
+            return Err(error);
+        }
         Ok(worker)
     }
 
@@ -85,8 +88,7 @@ impl RuntimeWorker {
     }
 
     pub async fn shutdown(mut self) -> Result<(), RuntimeError> {
-        self.child.kill().await?;
-        Ok(())
+        self.terminate().await
     }
 
     async fn wait_ready(&mut self, timeout: Duration) -> Result<(), RuntimeError> {
@@ -107,6 +109,22 @@ impl RuntimeWorker {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         Err(RuntimeError::ReadinessTimeout(timeout))
+    }
+
+    async fn terminate(&mut self) -> Result<(), RuntimeError> {
+        if let Some(pid) = self.child.id() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        self.child.kill().await?;
+        Ok(())
     }
 }
 

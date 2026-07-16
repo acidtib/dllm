@@ -1,0 +1,60 @@
+{
+  "status": "complete",
+  "date": "2026-07-15",
+  "owner": {
+    "hostname": "ergot",
+    "address": "192.168.1.73",
+    "runtime": "managed llama.cpp on one GTX 1080 with 38 GPU layers"
+  },
+  "member": {
+    "hostname": "acidito",
+    "address": "192.168.1.189",
+    "runtime": "none",
+    "memory_gib": 15
+  },
+  "transport": {
+    "control_and_health": "authenticated SSH forwarding with daemon endpoints bound to loopback",
+    "direct_plaintext_lan_exposure": false,
+    "ping_samples": 20,
+    "packet_loss_percent": 0.0,
+    "rtt_min_ms": 3.126,
+    "rtt_median_ms": 62.6,
+    "rtt_mean_ms": 76.847,
+    "rtt_max_ms": 206.11,
+    "desktop_to_laptop_median_mbit_per_second": 51.23,
+    "laptop_to_desktop_median_mbit_per_second": 93.86
+  },
+  "onboarding": {
+    "token_carried_owner_endpoint": true,
+    "single_use_signed_token": true,
+    "joined_generation": 2,
+    "owner_health": "ready",
+    "member_health": "ready"
+  },
+  "owner_placement_inference": {
+    "assigned_generation": 3,
+    "http_status": 200,
+    "first_sse_seconds": 1.052782,
+    "total_seconds": 2.92693,
+    "response_bytes": 1692,
+    "terminal_done_event": true,
+    "runtime_decode_tokens_per_second": 2.14
+  },
+  "member_placement_without_runtime": {
+    "assigned_generation": 5,
+    "node_health": "ready",
+    "placement_health": "unavailable",
+    "aggregate_health": "degraded"
+  },
+  "revocation": {
+    "generation": 6,
+    "members_after": 0,
+    "placements_after": 0,
+    "aggregate_health_after": "ready",
+    "new_request_http_status": 404
+  },
+  "limitations": [
+    "the member had no local model runtime, so remote whole-model inference was not claimed",
+    "the physical run used SSH forwarding rather than independently provisioned LAN TLS certificates"
+  ]
+}
