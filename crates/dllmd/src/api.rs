@@ -833,22 +833,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_listing_reflects_assignments() {
+    async fn model_listing_supports_multiple_models_and_deduplicates_replicas() {
         let state = state(None, None);
         let owner = state.store.lock().await.state.state.owner_pubkey;
-        state
-            .store
-            .lock()
-            .await
-            .assign_model("qwen".into(), owner)
-            .unwrap();
+        let member = NetworkStore::random_node_key();
+        {
+            let mut store = state.store.lock().await;
+            let token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token(token, member, "http://member".into())
+                .unwrap();
+            store.assign_model("qwen".into(), owner).unwrap();
+            store.assign_model("qwen".into(), member).unwrap();
+            store.assign_model("gemma".into(), owner).unwrap();
+        }
         let response = router(state)
             .oneshot(Request::get("/v1/models").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(body.windows(4).any(|window| window == b"qwen"));
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let models = body["data"].as_array().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0]["id"], "gemma");
+        assert_eq!(models[1]["id"], "qwen");
     }
 
     #[tokio::test]

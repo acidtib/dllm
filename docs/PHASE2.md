@@ -62,9 +62,8 @@ of distributed dense layer stages without a new feasibility decision.
   tracked separately in P2.7.
 - [x] P2.4: benchmark the laptop Vulkan and CPU runtime candidates, select the
   exact backend, and validate CPU-only streaming and non-streaming inference.
-- [ ] P2.5: add and validate a dense Gemma manifest and serve at least two model
-  IDs without duplicate logical entries. The Gemma manifest and physical
-  runtime are validated. A two-model DLLM placement remains.
+- [x] P2.5: add and validate a dense Gemma manifest and serve at least two model
+  IDs without duplicate logical entries.
 - [ ] P2.6: manage two isolated networks in one daemon with independent state,
   credentials, membership, assignments, and status.
 - [ ] P2.7: expose replicas, placement preview, compatibility, and capacity in
@@ -170,3 +169,8 @@ decode tok/s. Streaming produced the same text, emitted `[DONE]`, transferred
 2,086 bytes, and completed in 0.443 seconds at 21.07 decode tok/s. The runtime
 was stopped after validation. Machine-readable evidence is in
 `phase2-results/p24-laptop-runtime/summary.json`.
+
+The exact Gemma manifest is parsed by the runtime test suite. A management API
+test places Qwen and Gemma simultaneously, adds a second Qwen replica, and
+proves `/v1/models` returns exactly two sorted logical model IDs. Together with
+the physical Gemma server validation, this completes P2.5.
