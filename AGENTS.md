@@ -33,14 +33,36 @@
   identity bindings, rotation, and revocation.
 - Keep DLLM node identity keys separate from libp2p transport identity keys.
 
+## Workspace crates
+
+```
+crates/dllm-protocol  — Shared types: network state, membership, identity,
+                          policy, signed tokens, transport identity bindings
+crates/dllmd           — Node daemon: API server, credentials, inference
+                          registry, network store
+crates/dllm-cli        — CLI client (binary name: dllm)
+crates/dllm-runtime    — Inference runtime: manages llama.cpp child processes
+crates/dllm-transport  — libp2p peer transport layer
+```
+
+## Key directories
+
+```
+docs/        — Phase plans and milestone evidence
+manifests/   — Model manifest files (GGUF quantization specs)
+scripts/     — Container and helper scripts
+web/         — Web UI
+```
+
 ## Phase workflow
 
-- Use the milestone checklist in `docs/PHASE4.md` as the active implementation
-  sequence.
+- Each phase has an engineering log at `docs/PHASE<N>.md` with acceptance
+  criteria and a milestone checklist. Use the current phase's log as the
+  active implementation sequence.
 - A milestone is complete only after its implementation, automated coverage,
   applicable physical validation, diagnostics, evidence, and cleanup pass.
 - Store structured milestone evidence under
-  `docs/results/phase4-results/<milestone>/summary.json`.
+  `docs/results/phase<N>-results/<milestone>/summary.json`.
 - Physical validation may use SSH for deployment, administration, inspection,
   and cleanup only.
 - Remove remote test services, binaries, temporary state, keys, firewall rules,
@@ -55,4 +77,11 @@ cargo fmt --all
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 git diff --check
+```
+
+Build and run:
+
+```sh
+cargo build --release
+cargo run --release --bin dllmd -- --help
 ```
