@@ -326,6 +326,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "dllmd",
+ "ed25519-dalek",
  "reqwest",
  "serde_json",
 ]

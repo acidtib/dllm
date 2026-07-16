@@ -131,4 +131,24 @@ HTTP 503 explicitly.
 
 Management API authentication and remote node transport remain incomplete. The
 management listener still defaults to loopback and must not be exposed remotely.
+
+## P1.2 whole-model placement state
+
+Model assignments and whole-model placements are now part of the signed network
+generation. Assigning a model to the owner or a joined member creates one
+whole-model placement and advances the generation. Repeating the same assignment
+is idempotent. Unassignment and member revocation remove affected placements and
+advance signed state safely.
+
+The management API exposes assignment creation and removal, and the CLI provides
+`assign` and `unassign` commands. The explicit `--owner` target derives the owner
+public key from the protected owner key file, avoiding ambiguity between secret
+key bytes and node public-key files.
+
+Status now derives worker and placement records from signed placement state. A
+placement is `ready` when a whole-model runtime is configured and `unavailable`
+otherwise. Any unavailable placement makes aggregate health `degraded`. A smoke
+test assigned the validated Qwen model to the owner, advanced the generation from
+1 to 2, and reported one unavailable worker and placement because the test daemon
+had no runtime configured.
 No Phase 2 work has started.

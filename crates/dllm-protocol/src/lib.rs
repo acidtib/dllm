@@ -13,6 +13,22 @@ pub struct NetworkState {
     pub owner_pubkey: [u8; 32],
     pub generation: u64,
     pub members: Vec<Member>,
+    pub model_assignments: Vec<ModelAssignment>,
+    pub placements: Vec<Placement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelAssignment {
+    pub model: String,
+    pub node_pubkey: [u8; 32],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Placement {
+    pub placement_id: Uuid,
+    pub model: String,
+    pub node_pubkey: [u8; 32],
+    pub created_generation: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,6 +217,8 @@ mod tests {
             owner_pubkey: key.verifying_key().to_bytes(),
             generation: 1,
             members: vec![],
+            model_assignments: vec![],
+            placements: vec![],
         }
     }
 

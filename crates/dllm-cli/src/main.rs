@@ -41,6 +41,18 @@ enum Command {
     Revoke {
         node_key: PathBuf,
     },
+    Assign {
+        model: String,
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
+    Unassign {
+        model: String,
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -97,8 +109,57 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
+        Command::Assign {
+            model,
+            owner,
+            node_key,
+        } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = assignment_request(&client, &cli.daemon, "POST", model, node_pubkey)?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::Unassign {
+            model,
+            owner,
+            node_key,
+        } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = assignment_request(&client, &cli.daemon, "DELETE", model, node_pubkey)?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
     }
     Ok(())
+}
+
+fn assignment_request(
+    client: &Client,
+    daemon: &str,
+    method: &str,
+    model: String,
+    node_pubkey: Vec<u8>,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let url = format!("{daemon}/v1/assignments");
+    let builder = if method == "POST" {
+        client.post(url)
+    } else {
+        client.delete(url)
+    };
+    request_json(builder.json(&json!({ "model": model, "node_pubkey": node_pubkey })))
+}
+
+fn assignment_key(
+    owner: bool,
+    node_key: Option<PathBuf>,
+    owner_key: &PathBuf,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match (owner, node_key) {
+        (true, None) => Ok(NetworkStore::load_owner_key(owner_key)?
+            .verifying_key()
+            .to_bytes()
+            .to_vec()),
+        (false, Some(path)) => read_key(path),
+        _ => Err("select exactly one assignment target: --owner or NODE_KEY".into()),
+    }
 }
 
 fn read_key(path: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {

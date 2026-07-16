@@ -7,7 +7,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use dllm_protocol::{HealthState, ManagementStatus, NodeStatus, SignedJoinToken};
+use dllm_protocol::{
+    HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken, WorkerStatus,
+};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
@@ -38,6 +40,12 @@ pub struct RevokeRequest {
     pub node_pubkey: Vec<u8>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct AssignmentRequest {
+    pub model: String,
+    pub node_pubkey: Vec<u8>,
+}
+
 #[derive(Debug, Serialize)]
 struct MutationResponse {
     generation: u64,
@@ -50,6 +58,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/invitations", post(invite))
         .route("/v1/members/join", post(join))
         .route("/v1/members/revoke", post(revoke))
+        .route("/v1/assignments", post(assign).delete(unassign))
         .route("/v1/models", get(proxy_models))
         .route("/v1/chat/completions", post(proxy_chat))
         .with_state(state)
@@ -67,12 +76,50 @@ async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
         owner: false,
         health: HealthState::Unknown,
     }));
+    let placement_health = if state.runtime_url.is_some() {
+        HealthState::Ready
+    } else {
+        HealthState::Unavailable
+    };
+    let workers = store
+        .state
+        .state
+        .placements
+        .iter()
+        .map(|placement| WorkerStatus {
+            worker_id: placement.placement_id,
+            node_pubkey: placement.node_pubkey,
+            model: placement.model.clone(),
+            health: placement_health.clone(),
+        })
+        .collect();
+    let placements = store
+        .state
+        .state
+        .placements
+        .iter()
+        .map(|placement| PlacementStatus {
+            placement_id: placement.placement_id,
+            model: placement.model.clone(),
+            generation: placement.created_generation,
+            worker_ids: vec![placement.placement_id],
+            health: placement_health.clone(),
+        })
+        .collect::<Vec<_>>();
+    let health = if placements
+        .iter()
+        .any(|placement| placement.health == HealthState::Unavailable)
+    {
+        HealthState::Degraded
+    } else {
+        HealthState::Ready
+    };
     Json(ManagementStatus {
         network: store.state.clone(),
         nodes,
-        workers: vec![],
-        placements: vec![],
-        health: HealthState::Ready,
+        workers,
+        placements,
+        health,
     })
 }
 
@@ -110,6 +157,38 @@ async fn revoke(
     let node_pubkey = key_bytes(request.node_pubkey)?;
     let mut store = state.store.lock().await;
     let changed = store.revoke_member(node_pubkey)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn assign(
+    State(state): State<ApiState>,
+    Json(request): Json<AssignmentRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.assign_model(request.model, node_pubkey)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn unassign(
+    State(state): State<ApiState>,
+    Json(request): Json<AssignmentRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.unassign_model(&request.model, node_pubkey)?;
     if changed {
         store.save(&state.state_path)?;
     }
@@ -211,6 +290,11 @@ impl IntoResponse for ApiError {
             Self::Store(
                 StoreError::WrongNetwork | StoreError::TokenUsed | StoreError::Token(_),
             ) => (StatusCode::CONFLICT, "join token rejected").into_response(),
+            Self::Store(StoreError::AssignmentNodeUnknown) => (
+                StatusCode::BAD_REQUEST,
+                "assignment node is not a network member",
+            )
+                .into_response(),
             Self::Store(error) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }

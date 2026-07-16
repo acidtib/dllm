@@ -1,5 +1,6 @@
 use dllm_protocol::{
-    Member, NetworkState, SignedJoinToken, SignedState, StateError, TokenError, SCHEMA_VERSION,
+    Member, ModelAssignment, NetworkState, Placement, SignedJoinToken, SignedState, StateError,
+    TokenError, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -33,6 +34,8 @@ pub enum StoreError {
     InvalidOwnerKey,
     #[error("owner key does not match persisted network owner")]
     OwnerKeyMismatch,
+    #[error("model assignment node is not a network member")]
+    AssignmentNodeUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +78,8 @@ impl NetworkStore {
             owner_pubkey: owner_key.verifying_key().to_bytes(),
             generation: 1,
             members: Vec::new(),
+            model_assignments: Vec::new(),
+            placements: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
@@ -146,6 +151,70 @@ impl NetworkStore {
         if next.members.len() == before {
             return Ok(false);
         }
+        next.generation += 1;
+        next.model_assignments
+            .retain(|assignment| assignment.node_pubkey != node_pubkey);
+        next.placements
+            .retain(|placement| placement.node_pubkey != node_pubkey);
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(true)
+    }
+
+    pub fn assign_model(
+        &mut self,
+        model: String,
+        node_pubkey: [u8; 32],
+    ) -> Result<bool, StoreError> {
+        let owner = node_pubkey == self.state.state.owner_pubkey;
+        let member = self
+            .state
+            .state
+            .members
+            .iter()
+            .any(|candidate| candidate.node_pubkey == node_pubkey);
+        if !owner && !member {
+            return Err(StoreError::AssignmentNodeUnknown);
+        }
+        if self
+            .state
+            .state
+            .model_assignments
+            .iter()
+            .any(|assignment| assignment.model == model && assignment.node_pubkey == node_pubkey)
+        {
+            return Ok(false);
+        }
+        let mut next = self.state.state.clone();
+        next.generation += 1;
+        next.model_assignments.push(ModelAssignment {
+            model: model.clone(),
+            node_pubkey,
+        });
+        next.placements.push(Placement {
+            placement_id: Uuid::new_v4(),
+            model,
+            node_pubkey,
+            created_generation: next.generation,
+        });
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(true)
+    }
+
+    pub fn unassign_model(
+        &mut self,
+        model: &str,
+        node_pubkey: [u8; 32],
+    ) -> Result<bool, StoreError> {
+        let mut next = self.state.state.clone();
+        let before = next.model_assignments.len();
+        next.model_assignments.retain(|assignment| {
+            assignment.model != model || assignment.node_pubkey != node_pubkey
+        });
+        if next.model_assignments.len() == before {
+            return Ok(false);
+        }
+        next.placements
+            .retain(|placement| placement.model != model || placement.node_pubkey != node_pubkey);
         next.generation += 1;
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
@@ -241,5 +310,20 @@ mod tests {
         ));
         std::fs::remove_file(state_path).unwrap();
         std::fs::remove_file(key_path).unwrap();
+    }
+
+    #[test]
+    fn model_assignment_creates_and_removes_placement() {
+        let mut store = NetworkStore::create("test");
+        let owner = store.state.state.owner_pubkey;
+        assert!(store.assign_model("qwen".into(), owner).unwrap());
+        assert_eq!(store.state.state.generation, 2);
+        assert_eq!(store.state.state.model_assignments.len(), 1);
+        assert_eq!(store.state.state.placements.len(), 1);
+        assert!(!store.assign_model("qwen".into(), owner).unwrap());
+        assert!(store.unassign_model("qwen", owner).unwrap());
+        assert_eq!(store.state.state.generation, 3);
+        assert!(store.state.state.placements.is_empty());
+        assert!(store.state.verify().is_ok());
     }
 }
