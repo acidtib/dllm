@@ -251,4 +251,22 @@ No physical two-machine Phase 1 claim is made while the laptop is unreachable.
 Machine-readable security results are stored in
 `phase1-results/p15-security/summary.json`.
 
+## Phase 1 benchmark status
+
+A dedicated managed-path streaming probe measured 1.088 seconds to the first SSE
+event and 3.049 seconds total for a four-token completion. The runtime reported
+2.04 decode tokens per second. DLLM counted 161 request bytes and 1,688 response
+bytes, zero admission rejections, zero upstream failures, and a returned
+admission permit. The stream ended with `[DONE]`.
+
+The directly relevant Phase 0 fallback used the same model, quantization,
+hardware, and 38-layer offload. Its median was 1.9 tokens per second across five
+measured runs. The Phase 1 probe used a different prompt and a persistent loaded
+server, so the 2.04 versus 1.9 comparison is contextual and is not presented as
+a controlled speedup.
+
+The consolidated benchmark record is
+`phase1-results/benchmark-summary.json`. Its status remains partial until the
+physical two-machine run supplies LAN traffic and failure measurements.
+
 No Phase 2 work has started.

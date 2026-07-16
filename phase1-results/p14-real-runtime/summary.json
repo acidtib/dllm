@@ -21,6 +21,15 @@
     "decode_tokens_per_second": 2.2626867715939887,
     "response_bytes": 4799
   },
+  "benchmark_probe": {
+    "first_sse_seconds": 1.087553,
+    "total_seconds": 3.049346,
+    "completion_tokens": 4,
+    "decode_tokens_per_second": 2.04,
+    "request_bytes": 161,
+    "response_bytes": 1688,
+    "terminal_done_event": true
+  },
   "placement": {
     "generation": 2,
     "worker_health": "ready",

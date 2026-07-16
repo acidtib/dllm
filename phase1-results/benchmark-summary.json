@@ -1,0 +1,28 @@
+{
+  "status": "partial_pending_two_machine_run",
+  "date": "2026-07-15",
+  "exact_model": "qwen2.5-14b-instruct-q4_k_m",
+  "managed_dllm_path": {
+    "hardware": "one GTX 1080 with 38 GPU layers and CPU offload",
+    "transport": "loopback HTTP from dllmd to managed llama.cpp",
+    "first_sse_seconds": 1.087553,
+    "total_seconds": 3.049346,
+    "decode_tokens_per_second": 2.04,
+    "request_bytes": 161,
+    "response_bytes": 1688,
+    "failure_rate": 0.0,
+    "terminal_done_event": true
+  },
+  "phase_0_single_node_fallback": {
+    "hardware": "one GTX 1080 with 38 GPU layers and CPU offload",
+    "median_generation_tokens_per_second": 1.9,
+    "generation_range": [1.7, 1.9],
+    "median_decode_interval_ms": 589.645,
+    "median_total_process_seconds_including_load": 18.253
+  },
+  "comparison_note": "The managed probe and Phase 0 fallback use the same model, quantization, GPU-layer count, and hardware. Prompt and process-lifetime methodology differ, so the observed 2.04 versus 1.9 tokens per second is contextual rather than a controlled speedup claim.",
+  "two_machine": {
+    "status": "not_run",
+    "blocker": "ssh_timeout_to_192.168.1.189"
+  }
+}
