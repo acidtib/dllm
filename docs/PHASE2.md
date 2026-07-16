@@ -49,6 +49,31 @@ of distributed dense layer stages without a new feasibility decision.
 7. The CLI and UI expose replica state, placement preview, compatibility, and
    capacity information.
 
+## Milestones
+
+- [x] P2.0: establish scope, acceptance criteria, and implementation order.
+- [ ] P2.1: complete replica routing and physical concurrent-replica evidence.
+  The routing core and automated tests are complete. Physical evidence remains.
+- [ ] P2.2: publish signed hardware profiles for the desktop and laptop. The
+  laptop source and device probe and profile protocol are complete. Publishing
+  measured physical profiles for both machines remains.
+- [x] P2.3: implement placement preview, compatibility explanations, and
+  capacity recommendations in the management API and CLI. Web UI exposure is
+  tracked separately in P2.7.
+- [x] P2.4: benchmark the laptop Vulkan and CPU runtime candidates, select the
+  exact backend, and validate CPU-only streaming and non-streaming inference.
+- [ ] P2.5: add and validate a dense Gemma manifest and serve at least two model
+  IDs without duplicate logical entries. The Gemma manifest and physical
+  runtime are validated. A two-model DLLM placement remains.
+- [ ] P2.6: manage two isolated networks in one daemon with independent state,
+  credentials, membership, assignments, and status.
+- [ ] P2.7: expose replicas, placement preview, compatibility, and capacity in
+  the Web UI, then run the complete Phase 2 acceptance suite.
+
+Milestones are marked complete only when their implementation and required
+evidence are recorded here. A partially complete milestone keeps an unchecked
+box and states what remains.
+
 ## P2.0 kickoff
 
 Phase 2 begins with replica semantics and hardware discovery. Existing Phase 1
@@ -97,3 +122,51 @@ runtime. The exact backend candidates are therefore llama.cpp Vulkan for the
 UHD 620 and llama.cpp AVX2 CPU as the portable fallback. Final selection remains
 pending until both paths build and run a controlled benchmark. The probe record
 is `phase2-results/p20-hardware-probes/laptop.json`.
+
+## P2.3 signed profiles and placement preview
+
+Signed network state now carries at most one current hardware profile per node.
+A profile records CPU topology and features, system and available memory,
+accelerators, runtime revision and backend compatibility, and integer-scaled
+prefill and decode benchmark measurements. Publishing a changed profile advances
+and re-signs the network generation. Identical publication is idempotent, and
+member revocation removes its profile.
+
+The management API accepts profiles at `POST /v1/hardware-profiles` and provides
+read-only recommendations at `POST /v1/placements/preview`. Preview filters by
+architecture, backend, and available memory, then ranks compatible nodes by
+measured decode rate, memory headroom, and node key. Every incompatible result
+states the missing runtime support or exact memory deficit. Preview returns the
+generation it evaluated and does not mutate signed state.
+
+The CLI exposes the same operations as `dllm publish-profile PROFILE_FILE` and
+`dllm preview`. Automated coverage proves profile publication advances the
+generation, a compatible measured backend is selected, and preview leaves the
+generation unchanged.
+
+## P2.4 laptop runtime selection and Gemma validation
+
+The pinned llama.cpp revision was built with its Vulkan and AVX2 CPU backends,
+copied to the laptop with its shared libraries, and executed successfully. It
+identified the UHD 620 as `Vulkan0` through the Intel Mesa driver. The selected
+Gemma artifact is `ggml-org/gemma-3-1b-it-GGUF` Q4_K_M at revision
+`f9c28bcd85737ffc5aef028638d3341d49869c27`, with SHA-256
+`8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135`.
+
+Five repetitions with 128 prompt tokens and 64 generated tokens measured:
+
+| Backend | Prompt tok/s | Decode tok/s |
+|---|---:|---:|
+| AVX2 CPU, 4 threads | 72.75 | 18.65 |
+| UHD 620 Vulkan, all layers | 78.25 | 6.74 |
+
+Vulkan improved prompt throughput by 7.56 percent but reduced decode throughput
+by 63.87 percent. DLLM therefore selects the AVX2 CPU backend for this laptop and
+model. This is a whole-model CPU worker, not a heterogeneous pipeline.
+
+The CPU server returned HTTP 200 for streaming and non-streaming chat
+completions. Non-streaming produced `DLLM CPU works.` in 0.891 seconds at 20.55
+decode tok/s. Streaming produced the same text, emitted `[DONE]`, transferred
+2,086 bytes, and completed in 0.443 seconds at 21.07 decode tok/s. The runtime
+was stopped after validation. Machine-readable evidence is in
+`phase2-results/p24-laptop-runtime/summary.json`.

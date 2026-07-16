@@ -67,6 +67,18 @@ enum Command {
         owner: bool,
         node_key: Option<PathBuf>,
     },
+    PublishProfile {
+        profile_file: PathBuf,
+    },
+    Preview {
+        model: String,
+        #[arg(long)]
+        architecture: String,
+        #[arg(long)]
+        required_memory_bytes: u64,
+        #[arg(long, value_delimiter = ',')]
+        backends: Vec<String>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -179,6 +191,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 model,
                 node_pubkey,
             )?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::PublishProfile { profile_file } => {
+            let profile: Value = serde_json::from_slice(&fs::read(profile_file)?)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/hardware-profiles", cli.daemon))
+                    .json(&profile),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::Preview {
+            model,
+            architecture,
+            required_memory_bytes,
+            backends,
+        } => {
+            if backends.is_empty() {
+                return Err("at least one --backends value is required".into());
+            }
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/placements/preview", cli.daemon))
+                    .json(&json!({
+                        "model": model,
+                        "architecture": architecture,
+                        "required_memory_bytes": required_memory_bytes,
+                        "compatible_backends": backends
+                    })),
+                &cli.management_token,
+            ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
     }

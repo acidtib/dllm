@@ -174,4 +174,15 @@ mod tests {
         assert_eq!(manifest.quantization, "Q4_K_M");
         assert_eq!(manifest.artifact_sha256.len(), 3);
     }
+
+    #[test]
+    fn phase_two_gemma_manifest_parses() {
+        let manifest: ModelManifest =
+            serde_yaml::from_str(include_str!("../../../manifests/gemma-3-1b-it-q4_k_m.yaml"))
+                .unwrap();
+        assert_eq!(manifest.schema_version, 1);
+        assert_eq!(manifest.architecture, "gemma3");
+        assert_eq!(manifest.quantization, "Q4_K_M");
+        assert_eq!(manifest.artifact_sha256.len(), 1);
+    }
 }

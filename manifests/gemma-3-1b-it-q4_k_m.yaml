@@ -1,0 +1,8 @@
+schema_version: 1
+id: gemma-3-1b-it-q4_k_m
+architecture: gemma3
+quantization: Q4_K_M
+artifact_revision: f9c28bcd85737ffc5aef028638d3341d49869c27
+artifact_sha256:
+  - 8ccc5cd1f1b3602548715ae25a66ed73fd5dc68a210412eea643eb20eb75a135
+context_size: 2048

@@ -9,7 +9,8 @@ use axum::{
     Json, Router,
 };
 use dllm_protocol::{
-    HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken, WorkerStatus,
+    HardwareProfile, HealthState, ManagementStatus, NodeStatus, PlacementStatus, SignedJoinToken,
+    WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -82,7 +83,9 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/invitations", post(invite))
         .route("/v1/members/revoke", post(revoke))
-        .route("/v1/assignments", post(assign).delete(unassign));
+        .route("/v1/assignments", post(assign).delete(unassign))
+        .route("/v1/hardware-profiles", post(publish_hardware_profile))
+        .route("/v1/placements/preview", post(preview_placement));
     if let Some(token) = state.management_token.clone() {
         management = management.route_layer(middleware::from_fn_with_state(token, require_bearer));
     }
@@ -358,6 +361,127 @@ async fn unassign(
     }))
 }
 
+async fn publish_hardware_profile(
+    State(state): State<ApiState>,
+    Json(profile): Json<HardwareProfile>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let mut store = state.store.lock().await;
+    let changed = store.publish_hardware_profile(profile)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct PlacementPreviewRequest {
+    model: String,
+    architecture: String,
+    required_memory_bytes: u64,
+    compatible_backends: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlacementPreview {
+    model: String,
+    generation: u64,
+    candidates: Vec<PlacementCandidate>,
+}
+
+#[derive(Debug, Serialize)]
+struct PlacementCandidate {
+    node_pubkey: [u8; 32],
+    compatible: bool,
+    backend: Option<String>,
+    memory_headroom_bytes: u64,
+    decode_tokens_per_second_milli: Option<u64>,
+    explanations: Vec<String>,
+}
+
+async fn preview_placement(
+    State(state): State<ApiState>,
+    Json(request): Json<PlacementPreviewRequest>,
+) -> Json<PlacementPreview> {
+    let store = state.store.lock().await;
+    let mut candidates = store
+        .state
+        .state
+        .hardware_profiles
+        .iter()
+        .map(|profile| preview_candidate(profile, &request))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        right
+            .compatible
+            .cmp(&left.compatible)
+            .then_with(|| {
+                right
+                    .decode_tokens_per_second_milli
+                    .cmp(&left.decode_tokens_per_second_milli)
+            })
+            .then_with(|| right.memory_headroom_bytes.cmp(&left.memory_headroom_bytes))
+            .then_with(|| left.node_pubkey.cmp(&right.node_pubkey))
+    });
+    Json(PlacementPreview {
+        model: request.model,
+        generation: store.state.state.generation,
+        candidates,
+    })
+}
+
+fn preview_candidate(
+    profile: &HardwareProfile,
+    request: &PlacementPreviewRequest,
+) -> PlacementCandidate {
+    let runtime = profile.runtimes.iter().find(|runtime| {
+        request.compatible_backends.contains(&runtime.backend)
+            && runtime
+                .architectures
+                .iter()
+                .any(|architecture| architecture == &request.architecture)
+    });
+    let enough_memory = profile.available_memory_bytes >= request.required_memory_bytes;
+    let mut explanations = Vec::new();
+    if runtime.is_none() {
+        explanations.push(format!(
+            "no runtime supports architecture {} on backends {}",
+            request.architecture,
+            request.compatible_backends.join(", ")
+        ));
+    }
+    if !enough_memory {
+        explanations.push(format!(
+            "requires {} bytes but only {} bytes are available",
+            request.required_memory_bytes, profile.available_memory_bytes
+        ));
+    }
+    if runtime.is_some() && enough_memory {
+        explanations.push("runtime and memory requirements satisfied".into());
+    }
+    let backend = runtime.map(|runtime| runtime.backend.clone());
+    let decode_tokens_per_second_milli = backend.as_ref().and_then(|backend| {
+        profile
+            .benchmarks
+            .iter()
+            .filter(|benchmark| benchmark.model == request.model && &benchmark.backend == backend)
+            .map(|benchmark| benchmark.decode_tokens_per_second_milli)
+            .max()
+    });
+    PlacementCandidate {
+        node_pubkey: profile.node_pubkey,
+        compatible: runtime.is_some() && enough_memory,
+        backend,
+        memory_headroom_bytes: profile
+            .available_memory_bytes
+            .saturating_sub(request.required_memory_bytes),
+        decode_tokens_per_second_milli,
+        explanations,
+    }
+}
+
 async fn proxy_models(State(state): State<ApiState>) -> Json<serde_json::Value> {
     let store = state.store.lock().await;
     let mut models = store
@@ -598,6 +722,11 @@ impl IntoResponse for ApiError {
                 "assignment node is not a network member",
             )
                 .into_response(),
+            Self::Store(StoreError::ProfileNodeUnknown) => (
+                StatusCode::BAD_REQUEST,
+                "hardware profile node is not a network member",
+            )
+                .into_response(),
             Self::Store(error) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }
@@ -623,6 +752,9 @@ impl IntoResponse for ApiError {
 mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
+    use dllm_protocol::{
+        AcceleratorCapability, CpuCapability, HardwareBenchmark, RuntimeCapability,
+    };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -639,6 +771,43 @@ mod tests {
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
             replica_loads: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn hardware_profile(node_pubkey: [u8; 32]) -> HardwareProfile {
+        HardwareProfile {
+            node_pubkey,
+            observed_at_unix: 1,
+            cpu: CpuCapability {
+                model: "test cpu".into(),
+                physical_cores: 4,
+                logical_cores: 8,
+                features: vec!["avx2".into()],
+            },
+            system_memory_bytes: 16_000_000_000,
+            available_memory_bytes: 12_000_000_000,
+            accelerators: vec![AcceleratorCapability {
+                backend: "vulkan".into(),
+                device_name: "test gpu".into(),
+                device_id: "8086:5917".into(),
+                driver: "mesa".into(),
+                memory_bytes: None,
+            }],
+            runtimes: vec![RuntimeCapability {
+                runtime: "llama.cpp".into(),
+                revision: "505b1ed".into(),
+                backend: "vulkan".into(),
+                architectures: vec!["gemma3".into()],
+            }],
+            benchmarks: vec![HardwareBenchmark {
+                model: "gemma".into(),
+                backend: "vulkan".into(),
+                context_size: 2048,
+                concurrency: 1,
+                prompt_tokens_per_second_milli: 10_000,
+                decode_tokens_per_second_milli: 5_000,
+                peak_memory_bytes: 2_000_000_000,
+            }],
         }
     }
 
@@ -893,5 +1062,56 @@ mod tests {
             .unwrap();
         assert_eq!(selected.runtime_url, ready_endpoint);
         assert!(selected.peer);
+    }
+
+    #[tokio::test]
+    async fn hardware_profile_drives_read_only_placement_preview() {
+        let state = state(None, None);
+        let owner = state.store.lock().await.state.state.owner_pubkey;
+        let app = router(state);
+        let published = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/hardware-profiles")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&hardware_profile(owner)).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(published.status(), StatusCode::OK);
+        let preview = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/placements/preview")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"model":"gemma","architecture":"gemma3","required_memory_bytes":2000000000,"compatible_backends":["vulkan","cpu"]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&preview.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["generation"], 2);
+        assert_eq!(body["candidates"][0]["compatible"], true);
+        assert_eq!(body["candidates"][0]["backend"], "vulkan");
+        assert_eq!(
+            body["candidates"][0]["decode_tokens_per_second_milli"],
+            5_000
+        );
+        let status = app
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body: serde_json::Value =
+            serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["network"]["state"]["generation"], 2);
     }
 }

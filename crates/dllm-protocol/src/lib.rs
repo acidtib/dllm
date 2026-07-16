@@ -15,6 +15,56 @@ pub struct NetworkState {
     pub members: Vec<Member>,
     pub model_assignments: Vec<ModelAssignment>,
     pub placements: Vec<Placement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hardware_profiles: Vec<HardwareProfile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardwareProfile {
+    pub node_pubkey: [u8; 32],
+    pub observed_at_unix: u64,
+    pub cpu: CpuCapability,
+    pub system_memory_bytes: u64,
+    pub available_memory_bytes: u64,
+    pub accelerators: Vec<AcceleratorCapability>,
+    pub runtimes: Vec<RuntimeCapability>,
+    pub benchmarks: Vec<HardwareBenchmark>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CpuCapability {
+    pub model: String,
+    pub physical_cores: u32,
+    pub logical_cores: u32,
+    pub features: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AcceleratorCapability {
+    pub backend: String,
+    pub device_name: String,
+    pub device_id: String,
+    pub driver: String,
+    pub memory_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeCapability {
+    pub runtime: String,
+    pub revision: String,
+    pub backend: String,
+    pub architectures: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HardwareBenchmark {
+    pub model: String,
+    pub backend: String,
+    pub context_size: u32,
+    pub concurrency: u32,
+    pub prompt_tokens_per_second_milli: u64,
+    pub decode_tokens_per_second_milli: u64,
+    pub peak_memory_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -234,6 +284,7 @@ mod tests {
             members: vec![],
             model_assignments: vec![],
             placements: vec![],
+            hardware_profiles: vec![],
         }
     }
 

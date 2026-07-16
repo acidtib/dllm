@@ -1,6 +1,6 @@
 use dllm_protocol::{
-    Member, ModelAssignment, NetworkState, Placement, SignedJoinToken, SignedState, StateError,
-    TokenError, SCHEMA_VERSION,
+    HardwareProfile, Member, ModelAssignment, NetworkState, Placement, SignedJoinToken,
+    SignedState, StateError, TokenError, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -36,6 +36,8 @@ pub enum StoreError {
     OwnerKeyMismatch,
     #[error("model assignment node is not a network member")]
     AssignmentNodeUnknown,
+    #[error("hardware profile node is not a network member")]
+    ProfileNodeUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +82,7 @@ impl NetworkStore {
             members: Vec::new(),
             model_assignments: Vec::new(),
             placements: Vec::new(),
+            hardware_profiles: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
@@ -163,6 +166,8 @@ impl NetworkStore {
             .retain(|assignment| assignment.node_pubkey != node_pubkey);
         next.placements
             .retain(|placement| placement.node_pubkey != node_pubkey);
+        next.hardware_profiles
+            .retain(|profile| profile.node_pubkey != node_pubkey);
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
     }
@@ -222,6 +227,40 @@ impl NetworkStore {
         }
         next.placements
             .retain(|placement| placement.model != model || placement.node_pubkey != node_pubkey);
+        next.generation += 1;
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(true)
+    }
+
+    pub fn publish_hardware_profile(
+        &mut self,
+        profile: HardwareProfile,
+    ) -> Result<bool, StoreError> {
+        let known = profile.node_pubkey == self.state.state.owner_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == profile.node_pubkey);
+        if !known {
+            return Err(StoreError::ProfileNodeUnknown);
+        }
+        if self
+            .state
+            .state
+            .hardware_profiles
+            .iter()
+            .any(|candidate| candidate == &profile)
+        {
+            return Ok(false);
+        }
+        let mut next = self.state.state.clone();
+        next.hardware_profiles
+            .retain(|candidate| candidate.node_pubkey != profile.node_pubkey);
+        next.hardware_profiles.push(profile);
+        next.hardware_profiles
+            .sort_by_key(|candidate| candidate.node_pubkey);
         next.generation += 1;
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
