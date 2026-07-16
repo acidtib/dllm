@@ -82,6 +82,19 @@ pub struct AssignmentRequest {
     pub node_pubkey: Vec<u8>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BindTransportRequest {
+    pub node_pubkey: Vec<u8>,
+    pub transport_peer_id: String,
+    pub binding_generation: u64,
+    pub expires_at_unix: u64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RevokeTransportRequest {
+    pub node_pubkey: Vec<u8>,
+}
+
 #[derive(Debug, Serialize)]
 struct MutationResponse {
     generation: u64,
@@ -109,6 +122,8 @@ pub fn router(state: ApiState) -> Router {
     let mut admin = Router::new()
         .route("/v1/invitations", post(invite))
         .route("/v1/members/revoke", post(revoke))
+        .route("/v1/transport-bindings", post(bind_transport))
+        .route("/v1/transport-bindings/revoke", post(revoke_transport))
         .route(
             "/v1/management/credentials",
             get(list_credentials).post(create_credential),
@@ -538,6 +553,40 @@ async fn revoke(
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
         changed,
+    }))
+}
+
+async fn bind_transport(
+    State(state): State<ApiState>,
+    Json(request): Json<BindTransportRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    store.bind_transport_endpoint(
+        node_pubkey,
+        request.transport_peer_id,
+        request.binding_generation,
+        now_unix(),
+        request.expires_at_unix,
+    )?;
+    store.save(&state.state_path)?;
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
+    }))
+}
+
+async fn revoke_transport(
+    State(state): State<ApiState>,
+    Json(request): Json<RevokeTransportRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    store.revoke_transport_endpoint(node_pubkey, now_unix())?;
+    store.save(&state.state_path)?;
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
     }))
 }
 
@@ -1160,6 +1209,20 @@ impl IntoResponse for ApiError {
                 "hardware profile node is not a network member",
             )
                 .into_response(),
+            Self::Store(
+                StoreError::BindingNodeUnknown
+                | StoreError::InvalidBindingLifetime
+                | StoreError::TransportPeerIdInUse
+                | StoreError::State(dllm_protocol::StateError::InvalidTransportPeerId),
+            ) => (StatusCode::BAD_REQUEST, "transport binding rejected").into_response(),
+            Self::Store(StoreError::StaleBindingGeneration { .. }) => (
+                StatusCode::CONFLICT,
+                "transport binding generation is stale",
+            )
+                .into_response(),
+            Self::Store(StoreError::BindingNotFound) => {
+                (StatusCode::NOT_FOUND, "active transport binding not found").into_response()
+            }
             Self::Store(error) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
             }
@@ -1218,6 +1281,9 @@ mod tests {
     };
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+
+    const PEER_A: &str = "12D3KooWSahP5pFRCEfaziPEba7urXGeif6T1y8jmodzdFUvzBHj";
+    const PEER_B: &str = "12D3KooWR2KSRQWyanR1dPvnZkXt296xgf3FFn8135szya3zYYwY";
 
     fn state(management_token: Option<&str>, runtime_url: Option<String>) -> ApiState {
         ApiState {
@@ -1296,6 +1362,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(authorized.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn transport_binding_api_persists_rotation_and_rejects_replay() {
+        let api_state = state(Some("secret"), None);
+        let store = api_state.store.clone();
+        let owner = store.lock().await.state.state.owner_pubkey;
+        let app = router(api_state);
+        let request = |peer: &str, generation: u64| {
+            Request::builder()
+                .method("POST")
+                .uri("/v1/transport-bindings")
+                .header(header::AUTHORIZATION, "Bearer secret")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "node_pubkey": owner,
+                        "transport_peer_id": peer,
+                        "binding_generation": generation,
+                        "expires_at_unix": u64::MAX
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap()
+        };
+
+        assert_eq!(
+            app.clone()
+                .oneshot(request(PEER_A, 1))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(PEER_B, 2))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            app.clone()
+                .oneshot(request(PEER_A, 1))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::CONFLICT
+        );
+        assert!(store
+            .lock()
+            .await
+            .authorize_transport_endpoint(owner, PEER_B, now_unix())
+            .is_ok());
+
+        let revoke = Request::builder()
+            .method("POST")
+            .uri("/v1/transport-bindings/revoke")
+            .header(header::AUTHORIZATION, "Bearer secret")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "node_pubkey": owner })).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(app.oneshot(revoke).await.unwrap().status(), StatusCode::OK);
+        let store = store.lock().await;
+        assert!(store.state.state.transport_bindings.is_empty());
+        assert_eq!(store.state.state.transport_revocations.len(), 2);
+        assert!(store.state.verify().is_ok());
     }
 
     #[tokio::test]

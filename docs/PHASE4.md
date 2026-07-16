@@ -25,7 +25,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
 
 - [x] P4.0: select the embedded peer transport after local, separate-NAT,
   node-integrated forwarding, recovery, resource, and dependency validation.
-- [ ] P4.1: add owner-signed bindings between DLLM node identities and rotating
+- [x] P4.1: add owner-signed bindings between DLLM node identities and rotating
   transport endpoint identities, including revocation and replay protection.
 - [ ] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
   `dllmd`, prove automatic selection of an eligible participating node, and
@@ -228,3 +228,36 @@ were removed after validation. Detailed evidence is in
 `results/phase4-results/p40-libp2p-evaluation/summary.json`. P4.0 is complete;
 P4.1 will turn the validated signed binding and policy model into persisted
 owner-signed DLLM state.
+
+## P4.1 persisted transport identity bindings
+
+The signed network state now carries one active libp2p peer ID per DLLM node
+and durable revocation tombstones. Each binding records its own monotonically
+increasing generation, server-assigned issue time, and expiry. The state
+validator rejects malformed libp2p peer IDs, invalid lifetimes, unknown nodes,
+duplicate node or endpoint bindings, and any active binding superseded by a
+tombstone.
+
+Binding rotation is an owner-authorized control-plane mutation. It requires the
+exact next binding generation, tombstones the previous endpoint, advances the
+network state generation, and signs the complete state with the owner key. A
+stale or skipped binding generation fails closed, and a tombstoned endpoint
+cannot be rebound to any node. Explicit endpoint revocation
+also advances and signs the state while retaining the endpoint and generation
+as a tombstone. Member revocation automatically tombstones that member's active
+transport identity before removing it.
+
+`dllm bind-transport` and `dllm revoke-transport` expose these mutations through
+admin-only daemon routes. Transport authorization accepts an endpoint only when
+the presented libp2p peer ID matches the current binding and has not expired.
+Signed-state consumers can require a generation newer than their cached state,
+which rejects replay of an otherwise valid older owner signature.
+
+Automated tests cover signing, malformed state, rotation, expiry, endpoint
+mismatch, explicit revocation, member revocation, stale binding generations,
+stale signed-state generations, persistence, daemon restart, and admin routing.
+An end-to-end CLI and daemon test passed bind, rotation,
+stale replay rejection, restart, and revocation. The same test passed on the
+ordinary Kansas VPS host with two actual libp2p peer IDs. The remote daemon,
+binaries, state, keys, and listener were removed afterward. Detailed evidence
+is in `results/phase4-results/p41-transport-bindings/summary.json`.

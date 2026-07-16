@@ -59,6 +59,21 @@ enum Command {
     Revoke {
         node_key: PathBuf,
     },
+    BindTransport {
+        transport_peer_id: String,
+        #[arg(long)]
+        binding_generation: u64,
+        #[arg(long)]
+        expires_at_unix: u64,
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
+    RevokeTransport {
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+    },
     Assign {
         model: String,
         #[arg(long)]
@@ -195,6 +210,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/members/revoke", cli.daemon))
+                    .json(&json!({ "node_pubkey": node_pubkey })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::BindTransport {
+            transport_peer_id,
+            binding_generation,
+            expires_at_unix,
+            owner,
+            node_key,
+        } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/transport-bindings", cli.daemon))
+                    .json(&json!({
+                        "node_pubkey": node_pubkey,
+                        "transport_peer_id": transport_peer_id,
+                        "binding_generation": binding_generation,
+                        "expires_at_unix": expires_at_unix
+                    })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::RevokeTransport { owner, node_key } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/transport-bindings/revoke", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
                 &cli.management_token,
             ))?;

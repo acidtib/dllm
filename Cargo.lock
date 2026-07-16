@@ -811,6 +811,7 @@ name = "dllm-protocol"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "libp2p-identity",
  "rand 0.8.7",
  "serde",
  "serde_json",
@@ -1461,7 +1462,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tokio",
  "tower-service",
  "tracing",
@@ -2766,7 +2767,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2805,7 +2806,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.5.10",
+ "socket2 0.6.5",
  "tracing",
  "windows-sys 0.61.2",
 ]

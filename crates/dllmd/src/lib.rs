@@ -1,6 +1,7 @@
 use dllm_protocol::{
     HardwareProfile, Member, ModelAssignment, NetworkState, Placement, PlacementLifecycle,
-    SignedJoinToken, SignedState, StateError, TokenError, SCHEMA_VERSION,
+    SignedJoinToken, SignedState, StateError, TokenError, TransportEndpointBinding,
+    TransportEndpointRevocation, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -43,6 +44,20 @@ pub enum StoreError {
     ProfileNodeUnknown,
     #[error("new owner must be a current network member")]
     TransferTargetUnknown,
+    #[error("transport binding node is not a network member")]
+    BindingNodeUnknown,
+    #[error("transport binding generation {supplied} is stale; next generation is {next}")]
+    StaleBindingGeneration { supplied: u64, next: u64 },
+    #[error("transport endpoint identity is already bound to another node")]
+    TransportPeerIdInUse,
+    #[error("transport binding expiry must be later than its issue time")]
+    InvalidBindingLifetime,
+    #[error("node has no active transport binding")]
+    BindingNotFound,
+    #[error("transport identity is not authorized for this node")]
+    TransportIdentityUnauthorized,
+    #[error("transport binding expired at {0}")]
+    TransportBindingExpired(u64),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +103,8 @@ impl NetworkStore {
             model_assignments: Vec::new(),
             placements: Vec::new(),
             hardware_profiles: Vec::new(),
+            transport_bindings: Vec::new(),
+            transport_revocations: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
@@ -184,8 +201,162 @@ impl NetworkStore {
             .retain(|placement| placement.node_pubkey != node_pubkey);
         next.hardware_profiles
             .retain(|profile| profile.node_pubkey != node_pubkey);
+        if let Some(binding) = next
+            .transport_bindings
+            .iter()
+            .find(|binding| binding.node_pubkey == node_pubkey)
+            .cloned()
+        {
+            next.transport_revocations
+                .push(TransportEndpointRevocation {
+                    node_pubkey,
+                    transport_peer_id: binding.transport_peer_id,
+                    binding_generation: binding.binding_generation,
+                    revoked_at_unix: now_unix(),
+                });
+        }
+        next.transport_bindings
+            .retain(|binding| binding.node_pubkey != node_pubkey);
         self.state = SignedState::sign(next, &self.owner_key)?;
         Ok(true)
+    }
+
+    pub fn bind_transport_endpoint(
+        &mut self,
+        node_pubkey: [u8; 32],
+        transport_peer_id: String,
+        binding_generation: u64,
+        issued_at_unix: u64,
+        expires_at_unix: u64,
+    ) -> Result<(), StoreError> {
+        let known = node_pubkey == self.state.state.owner_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == node_pubkey);
+        if !known {
+            return Err(StoreError::BindingNodeUnknown);
+        }
+        if expires_at_unix <= issued_at_unix {
+            return Err(StoreError::InvalidBindingLifetime);
+        }
+        let next_generation = self.next_binding_generation(node_pubkey);
+        if binding_generation != next_generation {
+            return Err(StoreError::StaleBindingGeneration {
+                supplied: binding_generation,
+                next: next_generation,
+            });
+        }
+        if self.state.state.transport_bindings.iter().any(|binding| {
+            binding.transport_peer_id == transport_peer_id && binding.node_pubkey != node_pubkey
+        }) || self
+            .state
+            .state
+            .transport_revocations
+            .iter()
+            .any(|revocation| revocation.transport_peer_id == transport_peer_id)
+        {
+            return Err(StoreError::TransportPeerIdInUse);
+        }
+        let mut next = self.state.state.clone();
+        if let Some(previous) = next
+            .transport_bindings
+            .iter()
+            .find(|binding| binding.node_pubkey == node_pubkey)
+            .cloned()
+        {
+            next.transport_revocations
+                .push(TransportEndpointRevocation {
+                    node_pubkey,
+                    transport_peer_id: previous.transport_peer_id,
+                    binding_generation: previous.binding_generation,
+                    revoked_at_unix: issued_at_unix,
+                });
+        }
+        next.transport_bindings
+            .retain(|binding| binding.node_pubkey != node_pubkey);
+        next.transport_bindings.push(TransportEndpointBinding {
+            node_pubkey,
+            transport_peer_id,
+            binding_generation,
+            issued_at_unix,
+            expires_at_unix,
+        });
+        next.transport_bindings
+            .sort_by_key(|binding| binding.node_pubkey);
+        next.generation += 1;
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(())
+    }
+
+    pub fn revoke_transport_endpoint(
+        &mut self,
+        node_pubkey: [u8; 32],
+        revoked_at_unix: u64,
+    ) -> Result<TransportEndpointRevocation, StoreError> {
+        let mut next = self.state.state.clone();
+        let binding = next
+            .transport_bindings
+            .iter()
+            .find(|binding| binding.node_pubkey == node_pubkey)
+            .cloned()
+            .ok_or(StoreError::BindingNotFound)?;
+        let revocation = TransportEndpointRevocation {
+            node_pubkey,
+            transport_peer_id: binding.transport_peer_id,
+            binding_generation: binding.binding_generation,
+            revoked_at_unix,
+        };
+        next.transport_bindings
+            .retain(|candidate| candidate.node_pubkey != node_pubkey);
+        next.transport_revocations.push(revocation.clone());
+        next.generation += 1;
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(revocation)
+    }
+
+    pub fn authorize_transport_endpoint(
+        &self,
+        node_pubkey: [u8; 32],
+        transport_peer_id: &str,
+        now_unix: u64,
+    ) -> Result<&TransportEndpointBinding, StoreError> {
+        let binding = self
+            .state
+            .state
+            .transport_bindings
+            .iter()
+            .find(|binding| binding.node_pubkey == node_pubkey)
+            .ok_or(StoreError::TransportIdentityUnauthorized)?;
+        if binding.transport_peer_id != transport_peer_id {
+            return Err(StoreError::TransportIdentityUnauthorized);
+        }
+        if now_unix >= binding.expires_at_unix {
+            return Err(StoreError::TransportBindingExpired(binding.expires_at_unix));
+        }
+        Ok(binding)
+    }
+
+    pub fn next_binding_generation(&self, node_pubkey: [u8; 32]) -> u64 {
+        self.state
+            .state
+            .transport_bindings
+            .iter()
+            .filter(|binding| binding.node_pubkey == node_pubkey)
+            .map(|binding| binding.binding_generation)
+            .chain(
+                self.state
+                    .state
+                    .transport_revocations
+                    .iter()
+                    .filter(|revocation| revocation.node_pubkey == node_pubkey)
+                    .map(|revocation| revocation.binding_generation),
+            )
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
     }
 
     pub fn assign_model(
@@ -374,6 +545,9 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
 
+    const PEER_A: &str = "12D3KooWSahP5pFRCEfaziPEba7urXGeif6T1y8jmodzdFUvzBHj";
+    const PEER_B: &str = "12D3KooWR2KSRQWyanR1dPvnZkXt296xgf3FFn8135szya3zYYwY";
+
     #[test]
     fn redemption_advances_signed_generation_and_is_single_use() {
         let mut store = NetworkStore::create("test");
@@ -393,6 +567,102 @@ mod tests {
             ),
             Err(StoreError::TokenUsed)
         ));
+    }
+
+    #[test]
+    fn transport_bindings_rotate_revoke_expire_and_reject_replay() {
+        let mut store = NetworkStore::create("test");
+        let node = store.state.state.owner_pubkey;
+        store
+            .bind_transport_endpoint(node, PEER_A.into(), 1, 100, 200)
+            .unwrap();
+        assert!(store
+            .authorize_transport_endpoint(node, PEER_A, 199)
+            .is_ok());
+        assert!(matches!(
+            store.authorize_transport_endpoint(node, PEER_A, 200),
+            Err(StoreError::TransportBindingExpired(200))
+        ));
+
+        store
+            .bind_transport_endpoint(node, PEER_B.into(), 2, 150, 300)
+            .unwrap();
+        assert!(matches!(
+            store.authorize_transport_endpoint(node, PEER_A, 175),
+            Err(StoreError::TransportIdentityUnauthorized)
+        ));
+        assert!(matches!(
+            store.bind_transport_endpoint(node, PEER_A.into(), 1, 175, 400),
+            Err(StoreError::StaleBindingGeneration {
+                supplied: 1,
+                next: 3
+            })
+        ));
+        assert!(matches!(
+            store.bind_transport_endpoint(node, PEER_A.into(), 3, 175, 400),
+            Err(StoreError::TransportPeerIdInUse)
+        ));
+
+        let revocation = store.revoke_transport_endpoint(node, 180).unwrap();
+        assert_eq!(revocation.transport_peer_id, PEER_B);
+        assert_eq!(store.next_binding_generation(node), 3);
+        assert!(matches!(
+            store.authorize_transport_endpoint(node, PEER_B, 181),
+            Err(StoreError::TransportIdentityUnauthorized)
+        ));
+        assert!(store.state.verify().is_ok());
+    }
+
+    #[test]
+    fn transport_binding_tombstones_survive_persistence() {
+        let directory = std::env::temp_dir().join(format!("dllm-binding-{}", Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let state_path = directory.join("state.json");
+        let key_path = directory.join("owner.key");
+        let mut store = NetworkStore::create("test");
+        let node = store.state.state.owner_pubkey;
+        store
+            .bind_transport_endpoint(node, PEER_A.into(), 1, 100, 200)
+            .unwrap();
+        store.revoke_transport_endpoint(node, 150).unwrap();
+        store.save_owner_key(&key_path).unwrap();
+        store.save(&state_path).unwrap();
+
+        let mut loaded = NetworkStore::load(&state_path, &key_path).unwrap();
+        assert_eq!(loaded.next_binding_generation(node), 2);
+        assert!(matches!(
+            loaded.bind_transport_endpoint(node, PEER_A.into(), 1, 160, 300),
+            Err(StoreError::StaleBindingGeneration {
+                supplied: 1,
+                next: 2
+            })
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn member_revocation_tombstones_its_transport_binding() {
+        let mut store = NetworkStore::create("test");
+        let node = NetworkStore::random_node_key();
+        let token = store.issue_join_token("http://owner".into(), None);
+        store
+            .redeem_join_token(token, node, "http://member".into())
+            .unwrap();
+        store
+            .bind_transport_endpoint(node, PEER_A.into(), 1, 100, 200)
+            .unwrap();
+
+        assert!(store.revoke_member(node).unwrap());
+        assert!(store.state.state.transport_bindings.is_empty());
+        assert!(store
+            .state
+            .state
+            .transport_revocations
+            .iter()
+            .any(|revocation| {
+                revocation.node_pubkey == node && revocation.transport_peer_id == PEER_A
+            }));
+        assert!(store.state.verify().is_ok());
     }
 
     #[test]
