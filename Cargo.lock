@@ -325,8 +325,10 @@ name = "dllm"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dllm-protocol",
  "dllmd",
  "ed25519-dalek",
+ "rand 0.8.7",
  "reqwest",
  "serde_json",
 ]
@@ -351,12 +353,14 @@ dependencies = [
  "dllm-protocol",
  "ed25519-dalek",
  "futures-util",
+ "http-body-util",
  "rand 0.8.7",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tower",
  "uuid",
 ]
 

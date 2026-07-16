@@ -151,4 +151,31 @@ otherwise. Any unavailable placement makes aggregate health `degraded`. A smoke
 test assigned the validated Qwen model to the owner, advanced the generation from
 1 to 2, and reported one unavailable worker and placement because the test daemon
 had no runtime configured.
+
+## P1.3 authenticated management and onboarding
+
+The daemon now refuses a non-loopback bind unless `DLLMD_MANAGEMENT_TOKEN` is
+configured. Management and inference use separate bearer credentials, with the
+inference credential supplied through `DLLMD_API_KEY`. Integration tests prove
+that missing credentials receive HTTP 401. The invitation-backed join endpoint
+is intentionally outside management authentication because the signed,
+single-use, expiring invitation is its authorization credential.
+
+Invitations now carry an owner endpoint covered by the owner's signature. The
+CLI can initialize a mode-`0600` node identity, verify an invitation locally,
+and contact the signed owner endpoint without a separately configured peer
+address. An end-to-end loopback onboarding test created an invitation file,
+created a second node identity, joined through the token endpoint, advanced the
+network to generation 2, and reported two nodes.
+
+The bundled dashboard is served at `/` and displays network generation, nodes,
+placements, workers, and aggregate health. It accepts an optional management
+token and stores it in browser local storage for subsequent local requests.
+
+Runtime readiness now requires a successful `/health` probe rather than the
+presence of a configured URL. `/metrics` exports inference request, admission
+rejection, upstream failure, response byte, and available-permit counters.
+Integration tests cover management authentication, inference API keys, bounded
+admission, model proxying, byte accounting, and preservation of streaming SSE
+content through chat completions.
 No Phase 2 work has started.

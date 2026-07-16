@@ -1,8 +1,14 @@
 use clap::{Parser, Subcommand};
+use dllm_protocol::SignedJoinToken;
 use dllmd::NetworkStore;
+use ed25519_dalek::SigningKey;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[derive(Parser)]
 #[command(
@@ -13,16 +19,21 @@ use std::{fs, path::PathBuf};
 struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:7337")]
     daemon: String,
+    #[arg(long)]
+    management_token: Option<String>,
     #[arg(long, default_value = "dllm-state.json")]
     state: PathBuf,
     #[arg(long, default_value = "dllm-owner.key")]
     owner_key: PathBuf,
+    #[arg(long, default_value = "dllm-node.key")]
+    node_key: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
+    Init,
     Create {
         name: String,
     },
@@ -33,10 +44,11 @@ enum Command {
     Invite {
         #[arg(long)]
         expires_at_unix: Option<u64>,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     Join {
         token_file: PathBuf,
-        node_key: PathBuf,
     },
     Revoke {
         node_key: PathBuf,
@@ -59,6 +71,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let client = Client::new();
     match cli.command {
+        Command::Init => {
+            let key = SigningKey::generate(&mut rand::thread_rng());
+            write_private_key(&cli.node_key, &key.to_bytes())?;
+            println!("created node identity {}", cli.node_key.display());
+        }
         Command::Create { name } => {
             let store = NetworkStore::create(name);
             store.save_owner_key(&cli.owner_key)?;
@@ -66,7 +83,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("created network {}", store.state.state.network_id);
         }
         Command::Status { json } => {
-            let state = request_json(client.get(format!("{}/v1/status", cli.daemon)))?;
+            let state = request_json(auth(
+                client.get(format!("{}/v1/status", cli.daemon)),
+                &cli.management_token,
+            ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&state)?);
             } else {
@@ -79,34 +99,48 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
-        Command::Invite { expires_at_unix } => {
-            let token = request_json(
+        Command::Invite {
+            expires_at_unix,
+            output,
+        } => {
+            let token = request_json(auth(
                 client
                     .post(format!("{}/v1/invitations", cli.daemon))
                     .json(&json!({ "expires_at_unix": expires_at_unix })),
-            )?;
-            println!("{}", serde_json::to_string_pretty(&token)?);
+                &cli.management_token,
+            ))?;
+            let encoded = serde_json::to_vec_pretty(&token)?;
+            if let Some(path) = output {
+                fs::write(&path, encoded)?;
+                println!("wrote invitation {}", path.display());
+            } else {
+                println!("{}", String::from_utf8(encoded)?);
+            }
         }
-        Command::Join {
-            token_file,
-            node_key,
-        } => {
-            let token: Value = serde_json::from_slice(&fs::read(token_file)?)?;
-            let node_pubkey = read_key(node_key)?;
-            let response = request_json(
+        Command::Join { token_file } => {
+            let token: SignedJoinToken = serde_json::from_slice(&fs::read(token_file)?)?;
+            token.verify(now_unix())?;
+            let node_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
+                .verifying_key()
+                .to_bytes()
+                .to_vec();
+            let owner_endpoint = token.token.owner_endpoint.clone();
+            let response = request_json(auth(
                 client
-                    .post(format!("{}/v1/members/join", cli.daemon))
+                    .post(format!("{owner_endpoint}/v1/members/join"))
                     .json(&json!({ "token": token, "node_pubkey": node_pubkey })),
-            )?;
+                &None,
+            ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Revoke { node_key } => {
             let node_pubkey = read_key(node_key)?;
-            let response = request_json(
+            let response = request_json(auth(
                 client
                     .post(format!("{}/v1/members/revoke", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-            )?;
+                &cli.management_token,
+            ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Assign {
@@ -115,7 +149,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             node_key,
         } => {
             let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
-            let response = assignment_request(&client, &cli.daemon, "POST", model, node_pubkey)?;
+            let response = assignment_request(
+                &client,
+                &cli.daemon,
+                &cli.management_token,
+                "POST",
+                model,
+                node_pubkey,
+            )?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Unassign {
@@ -124,16 +165,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             node_key,
         } => {
             let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
-            let response = assignment_request(&client, &cli.daemon, "DELETE", model, node_pubkey)?;
+            let response = assignment_request(
+                &client,
+                &cli.daemon,
+                &cli.management_token,
+                "DELETE",
+                model,
+                node_pubkey,
+            )?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
     }
     Ok(())
 }
 
+fn write_private_key(path: &PathBuf, bytes: &[u8; 32]) -> Result<(), Box<dyn std::error::Error>> {
+    fs::write(path, bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before Unix epoch")
+        .as_secs()
+}
+
 fn assignment_request(
     client: &Client,
     daemon: &str,
+    management_token: &Option<String>,
     method: &str,
     model: String,
     node_pubkey: Vec<u8>,
@@ -144,7 +210,20 @@ fn assignment_request(
     } else {
         client.delete(url)
     };
-    request_json(builder.json(&json!({ "model": model, "node_pubkey": node_pubkey })))
+    request_json(auth(
+        builder.json(&json!({ "model": model, "node_pubkey": node_pubkey })),
+        management_token,
+    ))
+}
+
+fn auth(
+    builder: reqwest::blocking::RequestBuilder,
+    token: &Option<String>,
+) -> reqwest::blocking::RequestBuilder {
+    match token {
+        Some(token) => builder.bearer_auth(token),
+        None => builder,
+    }
 }
 
 fn assignment_key(

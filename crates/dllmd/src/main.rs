@@ -1,5 +1,6 @@
 use dllmd::{api, NetworkStore};
-use std::{path::PathBuf, sync::Arc};
+use std::time::Duration;
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, Semaphore},
@@ -18,6 +19,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
+    let management_token = std::env::var("DLLMD_MANAGEMENT_TOKEN").ok();
+    let api_key = std::env::var("DLLMD_API_KEY").ok();
+    let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
+    let bind_address: SocketAddr = bind.parse()?;
+    if !bind_address.ip().is_loopback() && management_token.is_none() {
+        return Err("DLLMD_MANAGEMENT_TOKEN is required for a non-loopback bind".into());
+    }
     let store = if state_path.exists() {
         NetworkStore::load(&state_path, &owner_key_path)?
     } else {
@@ -31,9 +39,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state_path,
         runtime_url,
         admission: Arc::new(Semaphore::new(admission_limit)),
-        client: reqwest::Client::new(),
+        client: reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()?,
+        management_token,
+        api_key,
+        metrics: Arc::new(api::Metrics::default()),
+        public_url,
     });
-    let listener = TcpListener::bind(&bind).await?;
+    let listener = TcpListener::bind(bind_address).await?;
     println!("dllmd listening on {bind}");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())

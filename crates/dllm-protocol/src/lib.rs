@@ -136,6 +136,7 @@ pub struct JoinToken {
     pub network_id: Uuid,
     pub token_id: Uuid,
     pub owner_pubkey: [u8; 32],
+    pub owner_endpoint: String,
     pub expires_at_unix: Option<u64>,
     pub single_use: bool,
 }
@@ -159,12 +160,18 @@ pub enum TokenError {
 }
 
 impl JoinToken {
-    pub fn new(network_id: Uuid, owner_pubkey: [u8; 32], expires_at_unix: Option<u64>) -> Self {
+    pub fn new(
+        network_id: Uuid,
+        owner_pubkey: [u8; 32],
+        owner_endpoint: String,
+        expires_at_unix: Option<u64>,
+    ) -> Self {
         Self {
             schema_version: SCHEMA_VERSION,
             network_id,
             token_id: Uuid::new_v4(),
             owner_pubkey,
+            owner_endpoint,
             expires_at_unix,
             single_use: true,
         }
@@ -172,10 +179,16 @@ impl JoinToken {
 }
 
 impl SignedJoinToken {
-    pub fn issue(network_id: Uuid, owner_key: &SigningKey, expires_at_unix: Option<u64>) -> Self {
+    pub fn issue(
+        network_id: Uuid,
+        owner_key: &SigningKey,
+        owner_endpoint: String,
+        expires_at_unix: Option<u64>,
+    ) -> Self {
         let token = JoinToken::new(
             network_id,
             owner_key.verifying_key().to_bytes(),
+            owner_endpoint,
             expires_at_unix,
         );
         let bytes = serde_json::to_vec(&token).expect("join token is serializable");
@@ -244,7 +257,12 @@ mod tests {
     #[test]
     fn join_tokens_are_scoped_and_single_use() {
         let key = SigningKey::generate(&mut rand::thread_rng());
-        let token = SignedJoinToken::issue(Uuid::new_v4(), &key, Some(100));
+        let token = SignedJoinToken::issue(
+            Uuid::new_v4(),
+            &key,
+            "http://127.0.0.1:7337".into(),
+            Some(100),
+        );
         assert_eq!(token.token.schema_version, SCHEMA_VERSION);
         assert!(token.token.single_use);
         assert_eq!(token.token.owner_pubkey, key.verifying_key().to_bytes());
@@ -255,7 +273,8 @@ mod tests {
     #[test]
     fn signed_join_token_detects_tampering() {
         let key = SigningKey::generate(&mut rand::thread_rng());
-        let mut token = SignedJoinToken::issue(Uuid::new_v4(), &key, None);
+        let mut token =
+            SignedJoinToken::issue(Uuid::new_v4(), &key, "http://127.0.0.1:7337".into(), None);
         token.token.network_id = Uuid::new_v4();
         assert_eq!(token.verify(0), Err(TokenError::InvalidSignature));
     }

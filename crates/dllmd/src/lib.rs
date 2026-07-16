@@ -111,10 +111,15 @@ impl NetworkStore {
         })
     }
 
-    pub fn issue_join_token(&self, expires_at_unix: Option<u64>) -> SignedJoinToken {
+    pub fn issue_join_token(
+        &self,
+        owner_endpoint: String,
+        expires_at_unix: Option<u64>,
+    ) -> SignedJoinToken {
         SignedJoinToken::issue(
             self.state.state.network_id,
             &self.owner_key,
+            owner_endpoint,
             expires_at_unix,
         )
     }
@@ -255,7 +260,7 @@ mod tests {
     #[test]
     fn redemption_advances_signed_generation_and_is_single_use() {
         let mut store = NetworkStore::create("test");
-        let token = store.issue_join_token(None);
+        let token = store.issue_join_token("http://127.0.0.1:7337".into(), None);
         let node = NetworkStore::random_node_key();
         store.redeem_join_token(token.clone(), node).unwrap();
         assert_eq!(store.state.state.generation, 2);
@@ -272,7 +277,10 @@ mod tests {
         let mut store = NetworkStore::create("test");
         let node = NetworkStore::random_node_key();
         store
-            .redeem_join_token(store.issue_join_token(None), node)
+            .redeem_join_token(
+                store.issue_join_token("http://127.0.0.1:7337".into(), None),
+                node,
+            )
             .unwrap();
         assert!(store.revoke_member(node).unwrap());
         assert_eq!(store.state.state.generation, 3);
@@ -294,7 +302,7 @@ mod tests {
     #[test]
     fn persisted_redemption_survives_restart() {
         let mut store = NetworkStore::create("test");
-        let token = store.issue_join_token(None);
+        let token = store.issue_join_token("http://127.0.0.1:7337".into(), None);
         store
             .redeem_join_token(token.clone(), NetworkStore::random_node_key())
             .unwrap();

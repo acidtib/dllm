@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>DLLM</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #111827; color: #e5e7eb; }
+    body { max-width: 1000px; margin: 0 auto; padding: 2rem; }
+    header { display: flex; align-items: center; justify-content: space-between; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 1rem; }
+    section { background: #1f2937; border: 1px solid #374151; border-radius: .6rem; padding: 1rem; }
+    .ready { color: #86efac; } .degraded, .unavailable { color: #fca5a5; }
+    code { overflow-wrap: anywhere; } button { padding: .5rem .8rem; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <header><h1>DLLM</h1><button id="refresh">Refresh</button></header>
+  <p><label>Management token <input id="token" type="password" autocomplete="off"></label></p>
+  <p id="summary">Loading local daemon status...</p>
+  <main class="grid">
+    <section><h2>Network</h2><div id="network"></div></section>
+    <section><h2>Nodes</h2><div id="nodes"></div></section>
+    <section><h2>Models and placements</h2><div id="placements"></div></section>
+    <section><h2>Diagnostics</h2><div id="diagnostics"></div></section>
+  </main>
+  <script>
+    const text = (value) => document.createTextNode(String(value));
+    const set = (id, values) => {
+      const root = document.getElementById(id); root.replaceChildren();
+      for (const value of values) { const p = document.createElement('p'); p.append(text(value)); root.append(p); }
+    };
+    async function refresh() {
+      try {
+        const token = document.getElementById('token').value;
+        localStorage.setItem('dllm-management-token', token);
+        const headers = token ? {Authorization: `Bearer ${token}`} : {};
+        const response = await fetch('/v1/status', {headers});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const status = await response.json(); const network = status.network.state;
+        const summary = document.getElementById('summary'); summary.className = status.health; summary.textContent = `Health: ${status.health}`;
+        set('network', [`Name: ${network.name}`, `Generation: ${network.generation}`, `ID: ${network.network_id}`]);
+        set('nodes', status.nodes.map((node) => `${node.owner ? 'Owner' : 'Member'}: ${node.health}`));
+        set('placements', status.placements.length ? status.placements.map((p) => `${p.model}: ${p.health}`) : ['No model placements']);
+        set('diagnostics', [`Workers: ${status.workers.length}`, `Members: ${network.members.length}`]);
+      } catch (error) { document.getElementById('summary').textContent = `Status unavailable: ${error.message}`; }
+    }
+    document.getElementById('token').value = localStorage.getItem('dllm-management-token') || '';
+    document.getElementById('refresh').addEventListener('click', refresh); refresh();
+  </script>
+</body>
+</html>

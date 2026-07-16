@@ -20,3 +20,7 @@ uuid = { version = "1", features = ["v4"] }
 [[bin]]
 name = "dllmd"
 path = "src/main.rs"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
