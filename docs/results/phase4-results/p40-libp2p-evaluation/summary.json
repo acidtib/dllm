@@ -1,7 +1,7 @@
 {
   "date": "2026-07-16",
   "candidate": "rust-libp2p 0.56.0",
-  "status": "local_node_integrated_shape_validated",
+  "status": "physical_node_integrated_forwarding_validated",
   "deployment_shape": {
     "separate_relay_service": false,
     "ssh_data_path": false,
@@ -36,17 +36,42 @@
       "client_exit_code": 1
     },
     "forwarder_restart": {
-      "result": "fail",
+      "result": "pass",
       "request_before_restart": "pass",
-      "request_after_restart": "timeout",
-      "required_change": "restore or reselect the reservation after forwarding-node loss"
+      "request_after_restart": "pass",
+      "duplicate_recovered_reservations": false
     }
+  },
+  "physical_tests": {
+    "topology": {
+      "dialer": "Colorado development machine behind residential NAT",
+      "forwarding_node": "ordinary node process in Kansas",
+      "listener": "ordinary node process in New York"
+    },
+    "forwarded_request": {
+      "result": "pass",
+      "response": "physical-through-node",
+      "elapsed_ms": 626
+    },
+    "forwarder_restart": {
+      "result": "pass",
+      "outage_injected_ms": 2000,
+      "recovery_observation_ms": 5715,
+      "response": "physical-after-restart",
+      "post_recovery_request_elapsed_ms": 630
+    },
+    "release_binary_bytes": 15988904,
+    "short_run_memory_bytes": {
+      "kansas_forwarder": 2306048,
+      "new_york_listener": 2609152
+    },
+    "cleanup": "pass"
   },
   "open_validation": [
     "DHT-based forwarding-node discovery and selection",
-    "separate-NAT physical forwarding",
     "DCUtR direct-path upgrade and path reporting",
-    "forwarding-node loss and address-change recovery",
+    "automatic selection of a different forwarding node after loss",
+    "address-change recovery",
     "streaming, cancellation, deadlines, and concurrency",
     "release size, startup time, memory, and sustained resource limits"
   ]

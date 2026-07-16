@@ -49,6 +49,7 @@ struct PeerResponse {
     body: String,
 }
 
+#[derive(Clone)]
 enum RelayAction {
     Listen(Multiaddr),
     Dial(Multiaddr, PeerId),
@@ -151,18 +152,56 @@ async fn main() -> Result<(), Box<dyn Error>> {
         Command::Id { .. } => unreachable!(),
     };
     let relay = match relay_action.as_ref().expect("relay action is configured") {
-        RelayAction::Listen(relay) | RelayAction::Dial(relay, _) => relay,
+        RelayAction::Listen(relay) | RelayAction::Dial(relay, _) => relay.clone(),
     };
     let relay_peer = relay.iter().find_map(|part| match part {
         libp2p::multiaddr::Protocol::P2p(peer) => Some(peer),
         _ => None,
     });
+    let desired_relay_action = relay_action.clone();
+    let mut circuit_listener = None;
+    let mut retry_relay = false;
+    let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
+    retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     swarm.dial(relay.clone())?;
 
     println!("node_ready peer_id={local_peer} forwarding_enabled=false");
-    while let Some(event) = swarm.next().await {
+    loop {
+        let event = tokio::select! {
+            _ = retry_timer.tick(), if retry_relay => {
+                if !relay_peer.is_some_and(|peer| swarm.is_connected(&peer)) {
+                    if let Err(error) = swarm.dial(relay.clone()) {
+                        println!("relay_recovery=dial_deferred error={error}");
+                    }
+                }
+                continue;
+            }
+            event = swarm.next() => match event {
+                Some(event) => event,
+                None => break,
+            },
+        };
         match event {
             SwarmEvent::NewListenAddr { address, .. } => println!("listen={address}"),
+            SwarmEvent::ListenerClosed {
+                listener_id,
+                reason,
+                ..
+            } if circuit_listener == Some(listener_id) => {
+                println!("relay_recovery=listener_closed reason={reason:?}");
+                circuit_listener = None;
+                relay_action = desired_relay_action.clone();
+                retry_relay = true;
+            }
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. }
+                if relay_peer == Some(peer_id)
+                    && matches!(desired_relay_action, Some(RelayAction::Listen(_))) =>
+            {
+                println!("relay_recovery=forwarder_disconnected cause={cause:?}");
+                circuit_listener = None;
+                relay_action = desired_relay_action.clone();
+                retry_relay = true;
+            }
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
@@ -237,9 +276,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     if let Some(action) = relay_action.take() {
                         match action {
                             RelayAction::Listen(relay) => {
-                                swarm.listen_on(
+                                circuit_listener = Some(swarm.listen_on(
                                     relay.with(libp2p::multiaddr::Protocol::P2pCircuit),
-                                )?;
+                                )?);
+                                retry_relay = false;
+                                println!("relay_recovery=reservation_requested");
                             }
                             RelayAction::Dial(relay, target_peer) => {
                                 swarm.dial(

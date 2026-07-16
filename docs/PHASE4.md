@@ -140,15 +140,30 @@ the authorized peer received `hello-through-node`. A fourth peer could create
 a transport circuit but was rejected by the DLLM application identity check.
 Transport reachability therefore did not grant DLLM membership.
 
-The spike also found two integration constraints. A forwarding node must add
-its observed address as an external address after Identify, otherwise clients
-cannot retain the reservation. Also, the current prototype does not restore a
-listener reservation after the forwarding process restarts. The pre-restart
-request passed, but the post-restart request timed out. Automatic reselection
-and reservation recovery remain required before P4.0 can pass.
+The spike found that a forwarding node must add its observed address as an
+external address after Identify, otherwise clients cannot retain the
+reservation. The first restart test also exposed missing listener recovery.
+The edge node now detects forwarding connection loss, retries the node, and
+recreates its circuit reservation after a new Identify exchange. A repeated
+local test passed before and after restart without duplicate recovered
+reservations.
 
-The local result validates the proposed deployment shape, not the complete
-transport selection. Separate-NAT testing, DHT-based forwarding-node
-selection, direct-path upgrade, recovery, resource measurements, and the
-streaming matrix remain open. Evidence is in
+The same executable then passed the separate-network test with Colorado as the
+dialer, an ordinary forwarding-enabled node in Kansas, and an ordinary edge
+node in New York. The forwarded request completed in 626 ms. After stopping
+Kansas for two seconds, New York restored its reservation without restarting;
+recovery was observed within 5.715 seconds and the next request completed in
+630 ms. SSH only installed, started, inspected, and removed the processes. It
+did not carry peer traffic.
+
+The optimized binary is 15,988,904 bytes. Short-run systemd memory accounting
+reported 2,306,048 bytes for Kansas and 2,609,152 bytes for New York. Both
+remote services, deployed binaries, and temporary firewall rules were removed
+after the test.
+
+This result validates the proposed deployment shape, not the complete
+transport selection. DHT-based forwarding-node selection, replacement-node
+recovery, direct-path upgrade and reporting, address-change recovery,
+sustained resource measurements, and the streaming matrix remain open.
+Evidence is in
 `results/phase4-results/p40-libp2p-evaluation/summary.json`.
