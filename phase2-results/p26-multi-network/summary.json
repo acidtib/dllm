@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "configuration": "DLLMD_ADDITIONAL_NETWORKS",
+  "primary": {
+    "name": "primary",
+    "network_id": "0d8b50e8-28ed-4268-8ea7-0347df979dfc",
+    "route": "/v1/status",
+    "generation": 1,
+    "authorized_status": 200
+  },
+  "secondary": {
+    "name": "secondary",
+    "network_id": "9aa2d736-4e1f-4103-abd2-95d1759a58f6",
+    "route": "/networks/9aa2d736-4e1f-4103-abd2-95d1759a58f6/v1/status",
+    "generation": 1,
+    "authorized_status": 200,
+    "primary_credential_status": 401
+  },
+  "isolation": {
+    "separate_signed_state": true,
+    "separate_owner_keys": true,
+    "owner_key_mode": "0600",
+    "separate_management_credentials": true,
+    "separate_inference_credentials": true,
+    "network_ids_persisted_across_restart": true
+  }
+}

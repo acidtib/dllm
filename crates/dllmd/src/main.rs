@@ -1,12 +1,23 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllmd::{api, NetworkStore};
+use serde::Deserialize;
 use std::time::Duration;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::{
     net::TcpListener,
     sync::{Mutex, Semaphore},
 };
+
+#[derive(Deserialize)]
+struct AdditionalNetworkConfig {
+    name: String,
+    state_path: PathBuf,
+    owner_key_path: PathBuf,
+    management_token: String,
+    api_key: String,
+    public_url: Option<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,19 +85,56 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             runtime_worker = Some(worker);
         }
     }
-    let app = api::router(api::ApiState {
+    let primary_state = api::ApiState {
         store: Arc::new(Mutex::new(store)),
-        state_path,
-        runtime_url,
+        state_path: state_path.clone(),
+        runtime_url: runtime_url.clone(),
         admission: Arc::new(Semaphore::new(admission_limit)),
         client: reqwest::Client::new(),
-        management_token,
-        api_key,
-        peer_api_key,
+        management_token: management_token.clone(),
+        api_key: api_key.clone(),
+        peer_api_key: peer_api_key.clone(),
         metrics: Arc::new(api::Metrics::default()),
-        public_url,
+        public_url: public_url.clone(),
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
-    });
+    };
+    let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
+        .ok()
+        .map(|value| serde_json::from_str::<Vec<AdditionalNetworkConfig>>(&value))
+        .transpose()?
+        .unwrap_or_default();
+    let mut additional = Vec::with_capacity(additional_configs.len());
+    for config in additional_configs {
+        let store = if config.state_path.exists() {
+            NetworkStore::load(&config.state_path, &config.owner_key_path)?
+        } else {
+            let store = NetworkStore::create(config.name);
+            store.save_owner_key(&config.owner_key_path)?;
+            store.save(&config.state_path)?;
+            store
+        };
+        let network_id = store.state.state.network_id;
+        let network_public_url = config
+            .public_url
+            .unwrap_or_else(|| format!("{public_url}/networks/{network_id}"));
+        additional.push((
+            network_id,
+            api::ApiState {
+                store: Arc::new(Mutex::new(store)),
+                state_path: config.state_path,
+                runtime_url: runtime_url.clone(),
+                admission: Arc::new(Semaphore::new(admission_limit)),
+                client: reqwest::Client::new(),
+                management_token: Some(config.management_token),
+                api_key: Some(config.api_key),
+                peer_api_key: peer_api_key.clone(),
+                metrics: Arc::new(api::Metrics::default()),
+                public_url: network_public_url,
+                replica_loads: Arc::new(Mutex::new(HashMap::new())),
+            },
+        ));
+    }
+    let app = api::multi_network_router(primary_state, additional);
     println!("dllmd listening on {bind}");
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
         let config = RustlsConfig::from_pem_file(cert, key).await?;

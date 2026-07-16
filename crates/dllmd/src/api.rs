@@ -106,6 +106,14 @@ pub fn router(state: ApiState) -> Router {
         .with_state(state)
 }
 
+pub fn multi_network_router(primary: ApiState, additional: Vec<(uuid::Uuid, ApiState)>) -> Router {
+    additional
+        .into_iter()
+        .fold(router(primary), |app, (network_id, state)| {
+            app.nest(&format!("/networks/{network_id}"), router(state))
+        })
+}
+
 async fn runtime_health(State(state): State<ApiState>) -> StatusCode {
     if runtime_is_ready(&state).await {
         StatusCode::OK
@@ -1122,5 +1130,72 @@ mod tests {
             serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body["network"]["state"]["generation"], 2);
+    }
+
+    #[tokio::test]
+    async fn multiple_networks_keep_state_and_credentials_isolated() {
+        let primary = state(Some("primary-secret"), None);
+        let mut secondary = state(Some("secondary-secret"), None);
+        secondary.store = Arc::new(Mutex::new(NetworkStore::create("secondary")));
+        let secondary_id = secondary.store.lock().await.state.state.network_id;
+        let app = multi_network_router(primary, vec![(secondary_id, secondary)]);
+
+        let primary_status = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/status")
+                    .header(header::AUTHORIZATION, "Bearer primary-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(primary_status.status(), StatusCode::OK);
+        let wrong_credential = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/networks/{secondary_id}/v1/status"))
+                    .header(header::AUTHORIZATION, "Bearer primary-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wrong_credential.status(), StatusCode::UNAUTHORIZED);
+        let secondary_status = app
+            .oneshot(
+                Request::get(format!("/networks/{secondary_id}/v1/status"))
+                    .header(header::AUTHORIZATION, "Bearer secondary-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(secondary_status.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(
+            &secondary_status
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(body["network"]["state"]["name"], "secondary");
+    }
+
+    #[tokio::test]
+    async fn bundled_ui_exposes_phase_two_orchestration_controls() {
+        let response = router(state(None, None))
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let html = String::from_utf8(body.to_vec()).unwrap();
+        assert!(html.contains("Hardware capacity"));
+        assert!(html.contains("Placement preview"));
+        assert!(html.contains("replicas ready"));
+        assert!(html.contains("networkMatch"));
     }
 }

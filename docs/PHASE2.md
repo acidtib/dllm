@@ -64,10 +64,11 @@ of distributed dense layer stages without a new feasibility decision.
   exact backend, and validate CPU-only streaming and non-streaming inference.
 - [x] P2.5: add and validate a dense Gemma manifest and serve at least two model
   IDs without duplicate logical entries.
-- [ ] P2.6: manage two isolated networks in one daemon with independent state,
+- [x] P2.6: manage two isolated networks in one daemon with independent state,
   credentials, membership, assignments, and status.
 - [ ] P2.7: expose replicas, placement preview, compatibility, and capacity in
-  the Web UI, then run the complete Phase 2 acceptance suite.
+  the Web UI, then run the complete Phase 2 acceptance suite. UI exposure is
+  implemented. Final acceptance remains.
 
 Milestones are marked complete only when their implementation and required
 evidence are recorded here. A partially complete milestone keeps an unchecked
@@ -174,3 +175,33 @@ The exact Gemma manifest is parsed by the runtime test suite. A management API
 test places Qwen and Gemma simultaneously, adds a second Qwen replica, and
 proves `/v1/models` returns exactly two sorted logical model IDs. Together with
 the physical Gemma server validation, this completes P2.5.
+
+## P2.6 multiple networks per daemon
+
+`DLLMD_ADDITIONAL_NETWORKS` accepts a JSON array of additional network
+configurations. Each entry has its own state path, owner-key path, network name,
+management credential, inference credential, and optional public URL. The
+primary network retains the Phase 1 API paths. Additional networks are mounted
+at `/networks/{network-id}` so existing clients remain compatible and the CLI
+can select a network through its existing `--daemon` URL.
+
+Each mounted router owns an independent store, admission controller, metrics,
+replica-load map, and authentication middleware. Automated coverage proves a
+primary credential receives HTTP 401 from the secondary network and both status
+responses carry their own signed state.
+
+A real daemon smoke test created two networks, returned HTTP 200 from each with
+its own credential, rejected the primary credential on the secondary route,
+stored two different owner keys with mode `0600`, and retained both network IDs
+and names after restart. The evidence is
+`phase2-results/p26-multi-network/summary.json`.
+
+## P2.7 orchestration UI
+
+The dashboard groups placements by model and reports ready replicas against the
+replica count. It displays available memory and runtime backends from signed
+hardware profiles. Placement preview accepts model, architecture, memory, and
+backend requirements and renders compatibility, selected backend, memory
+headroom, measured decode rate, and explanations. The UI derives an additional
+network's route prefix from its URL, so the same bundled page works for primary
+and mounted networks.

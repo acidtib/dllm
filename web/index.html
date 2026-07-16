@@ -22,11 +22,23 @@
     <section><h2>Network</h2><div id="network"></div></section>
     <section><h2>Nodes</h2><div id="nodes"></div></section>
     <section><h2>Models and placements</h2><div id="placements"></div></section>
+    <section><h2>Hardware capacity</h2><div id="capacity"></div></section>
     <section><h2>Diagnostics</h2><div id="diagnostics"></div></section>
     <section><h2>Invitation</h2><button id="invite">Generate invitation</button><pre id="invitation"></pre></section>
     <section><h2>Assign owner model</h2><input id="model" placeholder="model ID"><button id="assign">Assign</button><p id="action"></p></section>
+    <section>
+      <h2>Placement preview</h2>
+      <p><input id="preview-model" placeholder="model ID"></p>
+      <p><input id="preview-architecture" placeholder="architecture, for example gemma3"></p>
+      <p><input id="preview-memory" type="number" min="1" placeholder="required bytes"></p>
+      <p><input id="preview-backends" value="cuda,vulkan,cpu" placeholder="comma-separated backends"></p>
+      <button id="preview">Preview</button>
+      <div id="preview-results"></div>
+    </section>
   </main>
   <script>
+    const networkMatch = location.pathname.match(/^\/networks\/[^/]+/);
+    const apiPath = (path) => `${networkMatch ? networkMatch[0] : ''}${path}`;
     const text = (value) => document.createTextNode(String(value));
     const set = (id, values) => {
       const root = document.getElementById(id); root.replaceChildren();
@@ -38,7 +50,7 @@
       return {'content-type': 'application/json', ...(token ? {Authorization: `Bearer ${token}`} : {})};
     };
     async function mutate(path, method, body) {
-      const response = await fetch(path, {method, headers: headers(), body: JSON.stringify(body)});
+      const response = await fetch(apiPath(path), {method, headers: headers(), body: JSON.stringify(body)});
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
       await refresh(); return response.json();
     }
@@ -46,7 +58,7 @@
       try {
         const token = document.getElementById('token').value;
         localStorage.setItem('dllm-management-token', token);
-        const response = await fetch('/v1/status', {headers: headers()});
+        const response = await fetch(apiPath('/v1/status'), {headers: headers()});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const status = await response.json(); currentStatus = status; const network = status.network.state;
         const summary = document.getElementById('summary'); summary.className = status.health; summary.textContent = `Health: ${status.health}`;
@@ -57,8 +69,22 @@
           if (!node.owner) { const button = document.createElement('button'); button.textContent = 'Revoke'; button.onclick = () => mutate('/v1/members/revoke', 'POST', {node_pubkey: node.node_pubkey}).catch(showError); p.append(' ', button); }
           nodes.append(p);
         }
-        set('placements', status.placements.length ? status.placements.map((p) => `${p.model}: ${p.health}`) : ['No model placements']);
-        set('diagnostics', [`Workers: ${status.workers.length}`, `Members: ${network.members.length}`]);
+        const replicas = new Map();
+        for (const placement of status.placements) {
+          const group = replicas.get(placement.model) || [];
+          group.push(placement); replicas.set(placement.model, group);
+        }
+        set('placements', replicas.size ? [...replicas].map(([model, group]) => {
+          const ready = group.filter((placement) => placement.health === 'ready').length;
+          return `${model}: ${ready}/${group.length} replicas ready`;
+        }) : ['No model placements']);
+        const profiles = network.hardware_profiles || [];
+        set('capacity', profiles.length ? profiles.map((profile) => {
+          const gib = (profile.available_memory_bytes / 1073741824).toFixed(1);
+          const backends = profile.runtimes.map((runtime) => runtime.backend).join(', ') || 'none';
+          return `${profile.cpu.model}: ${gib} GiB available, backends ${backends}`;
+        }) : ['No published hardware profiles']);
+        set('diagnostics', [`Workers: ${status.workers.length}`, `Members: ${network.members.length}`, `Hardware profiles: ${profiles.length}`]);
       } catch (error) { document.getElementById('summary').textContent = `Status unavailable: ${error.message}`; }
     }
     const showError = (error) => { document.getElementById('action').textContent = error.message; };
@@ -67,6 +93,23 @@
     };
     document.getElementById('assign').onclick = async () => {
       try { const model = document.getElementById('model').value.trim(); if (!model) throw new Error('Model ID is required'); await mutate('/v1/assignments', 'POST', {model, node_pubkey: currentStatus.network.state.owner_pubkey}); document.getElementById('action').textContent = 'Model assigned'; } catch (error) { showError(error); }
+    };
+    document.getElementById('preview').onclick = async () => {
+      try {
+        const model = document.getElementById('preview-model').value.trim();
+        const architecture = document.getElementById('preview-architecture').value.trim();
+        const requiredMemory = Number(document.getElementById('preview-memory').value);
+        const backends = document.getElementById('preview-backends').value.split(',').map((value) => value.trim()).filter(Boolean);
+        if (!model || !architecture || !Number.isSafeInteger(requiredMemory) || requiredMemory <= 0 || !backends.length) throw new Error('Complete all placement preview fields');
+        const response = await fetch(apiPath('/v1/placements/preview'), {method: 'POST', headers: headers(), body: JSON.stringify({model, architecture, required_memory_bytes: requiredMemory, compatible_backends: backends})});
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        const preview = await response.json();
+        set('preview-results', preview.candidates.length ? preview.candidates.map((candidate) => {
+          const memory = (candidate.memory_headroom_bytes / 1073741824).toFixed(1);
+          const rate = candidate.decode_tokens_per_second_milli == null ? 'unmeasured' : `${(candidate.decode_tokens_per_second_milli / 1000).toFixed(2)} tok/s`;
+          return `${candidate.compatible ? 'Compatible' : 'Incompatible'}: ${candidate.backend || 'no backend'}, ${memory} GiB headroom, ${rate}. ${candidate.explanations.join('; ')}`;
+        }) : ['No hardware profiles available']);
+      } catch (error) { showError(error); }
     };
     document.getElementById('token').value = localStorage.getItem('dllm-management-token') || '';
     document.getElementById('refresh').addEventListener('click', refresh); refresh();
