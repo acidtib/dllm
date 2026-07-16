@@ -58,6 +58,18 @@ impl NetworkStore {
         Ok(())
     }
 
+    pub fn revoke_member(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
+        let mut next = self.state.state.clone();
+        let before = next.members.len();
+        next.members.retain(|member| member.node_pubkey != node_pubkey);
+        if next.members.len() == before {
+            return Ok(false);
+        }
+        next.generation += 1;
+        self.state = SignedState::sign(next, &self.owner_key)?;
+        Ok(true)
+    }
+
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
         let bytes = serde_json::to_vec_pretty(&self.state)?;
         fs::write(path, bytes)?;
@@ -85,5 +97,17 @@ mod tests {
         assert_eq!(store.state.state.members.len(), 1);
         assert!(store.state.verify().is_ok());
         assert!(matches!(store.redeem_join_token(token, NetworkStore::random_node_key()), Err(StoreError::TokenUsed)));
+    }
+
+    #[test]
+    fn revocation_advances_generation_and_is_idempotent() {
+        let mut store = NetworkStore::create("test");
+        let node = NetworkStore::random_node_key();
+        store.redeem_join_token(store.issue_join_token(None), node).unwrap();
+        assert!(store.revoke_member(node).unwrap());
+        assert_eq!(store.state.state.generation, 3);
+        assert!(store.state.state.members.is_empty());
+        assert!(!store.revoke_member(node).unwrap());
+        assert!(store.state.verify().is_ok());
     }
 }
