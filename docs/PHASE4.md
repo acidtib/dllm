@@ -23,7 +23,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
 
 ## Milestones
 
-- [ ] P4.0: select the embedded peer transport after local, separate-NAT,
+- [x] P4.0: select the embedded peer transport after local, separate-NAT,
   node-integrated forwarding, recovery, resource, and dependency validation.
 - [ ] P4.1: add owner-signed bindings between DLLM node identities and rotating
   transport endpoint identities, including revocation and replay protection.
@@ -77,7 +77,7 @@ iroh currently brings a release-candidate Ed25519 dependency alongside DLLM's
 stable Ed25519 dependency. Binary size, compile time, dependency duplication,
 and upstream API stability must be measured before adoption.
 
-P4.0 remains incomplete until the evaluation proves:
+The P4.0 evaluation matrix requires and now proves:
 
 - discovery and forwarding using only ordinary participating `dllmd` nodes;
 - forwarded connectivity between nodes behind separate NATs without a
@@ -90,9 +90,8 @@ P4.0 remains incomplete until the evaluation proves:
 - transport-key rotation through an owner-signed endpoint binding; and
 - acceptable release binary size, startup time, memory, and compile cost.
 
-Iroh remains selected only if its components can support that embedded-node
-shape without relying on managed infrastructure. Otherwise, rust-libp2p is the
-next candidate because Hivemind and Petals demonstrate the relevant pattern:
+Iroh's standard relay shape did not satisfy the embedded-node requirement, so
+rust-libp2p was evaluated because Hivemind and Petals demonstrate the relevant pattern:
 each process runs the DHT and P2P stack, reachable full peers participate in
 routing, and NATed peers discover eligible forwarding peers automatically.
 Quinn alone is not a complete alternative because DLLM would need to build
@@ -120,9 +119,9 @@ bytes peak RSS in the short validation. These are acceptable initial figures,
 but sustained-load measurements remain open.
 
 The result remains useful as transport evidence, but it does not advance the
-node-integrated forwarding acceptance criterion. P4.0 remains incomplete. The
-next comparison must test an embedded `dllmd` forwarding role against
-rust-libp2p's DHT, AutoNAT, and Circuit Relay v2 composition. Detailed evidence
+node-integrated forwarding acceptance criterion. The rust-libp2p comparison
+below tests the required embedded `dllmd` forwarding role against its DHT,
+AutoNAT, DCUtR, and Circuit Relay v2 composition. Detailed evidence
 from the rejected experiment remains in
 `results/phase4-results/p40-iroh-evaluation/summary.json`.
 
@@ -183,11 +182,49 @@ an error and made no connection. This probe input models the decision boundary;
 it is not a substitute for the owner-signed forwarding policy required by
 P4.1 and P4.2.
 
-This result validates the proposed deployment shape, not the complete
-transport selection. The selected provider still needs to drive circuit
-reservation automatically, and the probe allowlist must be replaced with
-owner-signed policy. Replacement-node recovery, direct-path upgrade and
-reporting, address-change recovery, sustained resource measurements, and the
-streaming matrix also remain open.
-Evidence is in
-`results/phase4-results/p40-libp2p-evaluation/summary.json`.
+### P4.0 final decision
+
+Rust-libp2p 0.56.0 is selected for Phase 4. The final probe automatically
+discovers an eligible forwarding node through Kademlia, applies a fail-closed
+owner-policy boundary, resolves the selected peer by identity, reserves a
+Circuit Relay v2 path, exchanges the authenticated application request, and
+upgrades the path through DCUtR when direct QUIC succeeds. Diagnostics report
+the bootstrap peer, discovered providers, selected forwarding peer,
+reservation, forwarded path, direct path, failed connections, resource-limit
+rejections, and reselection events.
+
+The final physical topology used an ordinary bootstrap node and an ordinary
+forwarding-enabled node in Kansas, an ordinary edge node in New York, and the
+Colorado development machine behind residential NAT. The complete automatic
+path passed without carrying peer traffic over SSH or deploying a separate
+relay service. Blocking direct Colorado-to-New York UDP retained the forwarded
+path. Restoring it allowed DCUtR to report migration from `forwarded` to
+`direct`.
+
+Recovery passed for forwarding daemon restart, replacement by a different
+eligible forwarding peer, and the same peer identity returning on a different
+address. A live authorization change accepted a request before revocation and
+rejected the same transport identity afterward without restarting the edge
+node. Owner-signed endpoint-binding tests cover rotation, expiry, revocation,
+and stale-generation replay rejection.
+
+The stream evaluation defines explicit start, chunk, cancel, and end frames
+with deadline and concurrency enforcement. Ten sequential physical requests
+passed in 8.665 seconds. During the concurrent physical slice, five circuits
+were accepted and three excess circuits were rejected with
+`ResourceLimitExceeded`, demonstrating a bounded forwarding ceiling.
+
+The selected optimized probe is 15,900,416 bytes. After the load slice, peak
+cgroup memory was 3,350,528 bytes for the Kansas forwarding role and 3,403,776
+bytes for the New York listener; process RSS was approximately 14 MiB. Removing
+the rejected iroh candidate reduced the resolved transport tree from 1,308 to
+751 lines and duplicate dependency roots from 57 to 29. The combined-candidate
+clean release build took 230.864 seconds and used approximately 778 MiB of
+temporary build output; the selected-only clean build is recorded in the
+structured result at 101.190 seconds and 536,584,111 bytes of build output.
+
+All remote services, deployed probe binaries, and temporary firewall rules
+were removed after validation. Detailed evidence is in
+`results/phase4-results/p40-libp2p-evaluation/summary.json`. P4.0 is complete;
+P4.1 will turn the validated signed binding and policy model into persisted
+owner-signed DLLM state.

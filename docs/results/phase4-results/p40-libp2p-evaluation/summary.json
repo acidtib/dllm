@@ -1,97 +1,138 @@
 {
   "date": "2026-07-16",
   "candidate": "rust-libp2p 0.56.0",
-  "status": "physical_node_integrated_forwarding_validated",
+  "status": "p40_complete_selected",
+  "decision": {
+    "selected_transport": "rust-libp2p",
+    "rejected_candidate": "iroh 1.0.2 standard relay deployment",
+    "reason": "rust-libp2p embeds discovery, NAT traversal, direct upgrade, and forwarding in ordinary DLLM node processes without a separately deployed communication service"
+  },
   "deployment_shape": {
     "separate_relay_service": false,
+    "third_party_service_required": false,
     "ssh_data_path": false,
-    "forwarding_role": "ordinary node process with forwarding enabled",
-    "forwarder_behaviours": [
-      "circuit-relay-v2",
-      "identify",
+    "bootstrap_role": "ordinary participating node",
+    "forwarding_role": "ordinary participating node with signed eligibility",
+    "protocols": [
+      "noise",
+      "quic",
+      "tcp-yamux",
       "kademlia",
-      "ping",
-      "dllm-request-response"
-    ],
-    "edge_behaviours": [
-      "circuit-relay-v2-client",
-      "dcutr",
       "autonat",
+      "circuit-relay-v2",
+      "dcutr",
       "identify",
-      "kademlia",
-      "ping",
       "dllm-request-response"
     ]
   },
+  "acceptance_matrix": {
+    "node_integrated_discovery_and_forwarding": "pass",
+    "separate_nat_forwarding": "pass",
+    "forwarded_to_direct_migration": "pass",
+    "direct_and_forwarded_path_reporting": "pass",
+    "forwarded_fallback_when_direct_blocked": "pass",
+    "stream_framing": "pass",
+    "cancellation": "pass",
+    "deadlines": "pass",
+    "bounded_concurrency": "pass",
+    "unauthorized_identity_rejection": "pass",
+    "live_revocation": "pass",
+    "forwarding_node_restart": "pass",
+    "replacement_forwarding_node": "pass",
+    "address_change": "pass",
+    "owner_signed_transport_key_rotation": "pass",
+    "binding_replay_rejection": "pass",
+    "resource_and_dependency_validation": "pass",
+    "remote_cleanup": "pass"
+  },
   "local_tests": {
-    "authorized_forwarded_request": {
-      "result": "pass",
-      "response": "hello-through-node",
-      "forwarder_event": "CircuitReqAccepted"
+    "automatic_discovered_circuit": "pass",
+    "path_sequence": ["forwarded", "direct"],
+    "unauthorized_identity_exit_code": 1,
+    "live_revocation": {
+      "before": "accepted",
+      "after": "rejected_without_daemon_restart"
     },
-    "unauthorized_identity": {
+    "replacement_provider": {
       "result": "pass",
-      "transport_circuit_established": true,
-      "application_authorized": false,
-      "client_exit_code": 1
+      "old_provider": "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X",
+      "new_provider": "12D3KooWLJtG8fd2hkQzTn96MrLvThmnNQjTUFZwGEsLRz5EmSzc"
     },
-    "forwarder_restart": {
-      "result": "pass",
-      "request_before_restart": "pass",
-      "request_after_restart": "pass",
-      "duplicate_recovered_reservations": false
+    "same_identity_address_change": "pass",
+    "signed_binding_tests": {
+      "rotation": "pass",
+      "revocation": "pass",
+      "stale_generation_replay": "pass",
+      "expiry": "implemented"
+    },
+    "stream_budget_tests": {
+      "framing": "pass",
+      "max_concurrent": 2,
+      "capacity_rejection": "pass",
+      "cancellation": "pass",
+      "deadline_expiry": "pass"
     }
   },
   "physical_tests": {
     "topology": {
       "dialer": "Colorado development machine behind residential NAT",
-      "forwarding_node": "ordinary node process in Kansas",
-      "listener": "ordinary node process in New York"
+      "bootstrap": "ordinary Kansas node",
+      "forwarder": "ordinary Kansas node publishing /dllm/forwarding/v1",
+      "listener": "ordinary New York node"
     },
-    "forwarded_request": {
+    "automatic_discovery_reservation_and_request": {
       "result": "pass",
-      "response": "physical-through-node",
-      "elapsed_ms": 626
+      "response": "physical-auto-circuit",
+      "initial_path": "forwarded",
+      "upgraded_path": "direct"
     },
-    "forwarder_restart": {
+    "direct_blocked_fallback": {
+      "result": "pass",
+      "response": "physical-forwarded-fallback",
+      "path": "forwarded"
+    },
+    "provider_restart": {
       "result": "pass",
       "outage_injected_ms": 2000,
-      "recovery_observation_ms": 5715,
-      "response": "physical-after-restart",
-      "post_recovery_request_elapsed_ms": 630
+      "recovery_observation_ms": 12202,
+      "response": "physical-after-auto-recovery"
     },
-    "dht_forwarding_discovery": {
-      "result": "pass",
-      "discovery_elapsed_ms": 301,
-      "discovery_and_provider_connection_elapsed_ms": 354,
-      "bootstrap": "ordinary Kansas node that did not publish forwarding eligibility",
-      "provider": "ordinary New York node publishing /dllm/forwarding/v1",
-      "discoverer": "Colorado development machine behind residential NAT",
-      "discovered_peer": "12D3KooWPjceQrSwdWXPyLLeABRXmuqt69Rg3sBYbU1Nft9HyQ6X",
-      "provider_connection": "/ip4/161.35.1.120/udp/19146/quic-v1"
+    "sequential_load": {
+      "passed": 10,
+      "attempted": 10,
+      "elapsed_ms": 8665
     },
-    "forwarding_policy_filter": {
-      "result": "local_pass",
-      "providers_returned": 2,
-      "approved_provider_selected": true,
-      "unapproved_only_policy": "failed_closed",
-      "current_policy_source": "explicit probe allowlist",
-      "required_policy_source": "owner-signed DLLM state"
-    },
-    "release_binary_bytes": 15988904,
-    "short_run_memory_bytes": {
-      "kansas_forwarder": 2306048,
-      "new_york_listener": 2609152
-    },
-    "cleanup": "pass"
+    "concurrent_resource_bound": {
+      "accepted": 5,
+      "rejected_at_capacity": 3,
+      "rejection": "ResourceLimitExceeded"
+    }
   },
-  "open_validation": [
-    "use the selected provider automatically for circuit reservation and forwarding",
-    "replace the probe allowlist with owner-signed forwarding policy",
-    "DCUtR direct-path upgrade and path reporting",
-    "automatic selection of a different forwarding node after loss",
-    "address-change recovery",
-    "streaming, cancellation, deadlines, and concurrency",
-    "release size, startup time, memory, and sustained resource limits"
-  ]
+  "resources": {
+    "selected_release_binary_bytes": 15900416,
+    "selected_clean_build_ms": 101190,
+    "selected_clean_build_disk_bytes": 536584111,
+    "combined_candidate_clean_build_ms": 230864,
+    "combined_candidate_clean_build_disk_bytes": 845105671,
+    "selected_dependency_tree_lines": 751,
+    "selected_duplicate_dependency_roots": 29,
+    "physical_memory_peak_bytes": {
+      "kansas_bootstrap": 2908160,
+      "kansas_forwarder_before_load": 3063808,
+      "kansas_forwarder_after_load": 3350528,
+      "new_york_listener_before_load": 3268608,
+      "new_york_listener_after_load": 3403776
+    },
+    "physical_process_rss_kib_approx": {
+      "kansas_bootstrap": 12876,
+      "kansas_forwarder": 13604,
+      "new_york_listener": 13860
+    }
+  },
+  "cleanup": {
+    "services_removed": true,
+    "binaries_removed": true,
+    "temporary_firewall_rules_removed": true
+  },
+  "open_validation": []
 }

@@ -6,7 +6,11 @@ use libp2p::{
     tcp, yamux, Multiaddr, PeerId, StreamProtocol,
 };
 use serde::{Deserialize, Serialize};
-use std::{error::Error, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    time::Duration,
+};
 
 const DLLM_PROTOCOL: &str = "/dllm/peer/1";
 const FORWARDING_PROVIDER_KEY: &[u8] = b"/dllm/forwarding/v1";
@@ -32,6 +36,29 @@ enum Command {
         port: u16,
         bootstrap: Multiaddr,
         allowed_provider: Option<PeerId>,
+    },
+    DiscoverListen {
+        seed: u8,
+        port: u16,
+        bootstrap: Multiaddr,
+        allowed_provider: PeerId,
+        allowed_peer: PeerId,
+        revoke_after_ms: Option<u64>,
+    },
+    DiscoverListenAny {
+        seed: u8,
+        port: u16,
+        bootstrap: Multiaddr,
+        allowed_peer: PeerId,
+    },
+    DiscoverDial {
+        seed: u8,
+        port: u16,
+        bootstrap: Multiaddr,
+        allowed_provider: PeerId,
+        target_peer: PeerId,
+        message: String,
+        linger_ms: Option<u64>,
     },
     Listen {
         seed: u8,
@@ -61,6 +88,13 @@ struct PeerResponse {
 enum RelayAction {
     Listen(Multiaddr),
     Dial(Multiaddr, PeerId),
+}
+
+#[derive(Clone, Copy)]
+enum DiscoveryAction {
+    Connect,
+    Listen,
+    Dial,
 }
 
 #[derive(NetworkBehaviour)]
@@ -102,6 +136,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let (seed, port) = match &args.command {
         Command::Forwarder { seed, port, .. }
         | Command::Discover { seed, port, .. }
+        | Command::DiscoverListen { seed, port, .. }
+        | Command::DiscoverListenAny { seed, port, .. }
+        | Command::DiscoverDial { seed, port, .. }
         | Command::Listen { seed, port, .. }
         | Command::Dial { seed, port, .. } => (*seed, *port),
         Command::Id { .. } => unreachable!(),
@@ -147,8 +184,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut discovering = false;
     let mut discovered_provider = None;
+    let mut discovered_provider_address = None;
+    let mut connected_addresses = HashMap::new();
+    let mut failed_providers = HashSet::new();
     let mut allowed_provider = None;
-    let (allowed_peer, target, mut outbound_request, mut relay_action) = match args.command {
+    let mut discovery_action = None;
+    let mut linger_after_response = Duration::ZERO;
+    let mut revoke_at = None;
+    let (mut allowed_peer, target, mut outbound_request, mut relay_action) = match args.command {
         Command::Forwarder { .. } => unreachable!(),
         Command::Discover {
             bootstrap,
@@ -157,7 +200,60 @@ async fn main() -> Result<(), Box<dyn Error>> {
         } => {
             discovering = true;
             allowed_provider = allowed;
+            discovery_action = Some(DiscoveryAction::Connect);
             (None, None, None, Some(RelayAction::Listen(bootstrap)))
+        }
+        Command::DiscoverListen {
+            bootstrap,
+            allowed_provider: allowed,
+            allowed_peer,
+            revoke_after_ms,
+            ..
+        } => {
+            discovering = true;
+            allowed_provider = Some(allowed);
+            discovery_action = Some(DiscoveryAction::Listen);
+            revoke_at = revoke_after_ms
+                .map(|delay| tokio::time::Instant::now() + Duration::from_millis(delay));
+            (
+                Some(allowed_peer),
+                None,
+                None,
+                Some(RelayAction::Listen(bootstrap)),
+            )
+        }
+        Command::DiscoverListenAny {
+            bootstrap,
+            allowed_peer,
+            ..
+        } => {
+            discovering = true;
+            discovery_action = Some(DiscoveryAction::Listen);
+            (
+                Some(allowed_peer),
+                None,
+                None,
+                Some(RelayAction::Listen(bootstrap)),
+            )
+        }
+        Command::DiscoverDial {
+            bootstrap,
+            allowed_provider: allowed,
+            target_peer,
+            message,
+            linger_ms,
+            ..
+        } => {
+            discovering = true;
+            allowed_provider = Some(allowed);
+            discovery_action = Some(DiscoveryAction::Dial);
+            linger_after_response = Duration::from_millis(linger_ms.unwrap_or(0));
+            (
+                None,
+                Some(target_peer),
+                Some(message),
+                Some(RelayAction::Listen(bootstrap)),
+            )
         }
         Command::Listen {
             relay,
@@ -202,11 +298,30 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut retry_relay = false;
     let mut retry_timer = tokio::time::interval(Duration::from_secs(1));
     retry_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut response_exit_at = None;
+    let mut status_timer = tokio::time::interval(Duration::from_millis(50));
+    status_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut revoke_timer = tokio::time::interval(Duration::from_millis(50));
+    revoke_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     swarm.dial(relay.clone())?;
 
     println!("node_ready peer_id={local_peer} forwarding_enabled=false");
     loop {
         let event = tokio::select! {
+            _ = revoke_timer.tick(), if revoke_at.is_some() => {
+                if revoke_at.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    allowed_peer = None;
+                    revoke_at = None;
+                    println!("authorization=peer_revoked");
+                }
+                continue;
+            }
+            _ = status_timer.tick(), if response_exit_at.is_some() => {
+                if response_exit_at.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+                    return Ok(());
+                }
+                continue;
+            }
             _ = retry_timer.tick(), if retry_relay => {
                 if !relay_peer.is_some_and(|peer| swarm.is_connected(&peer)) {
                     if let Err(error) = swarm.dial(relay.clone()) {
@@ -241,18 +356,76 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 relay_action = desired_relay_action.clone();
                 retry_relay = true;
             }
+            SwarmEvent::ConnectionClosed { peer_id, cause, .. }
+                if discovered_provider == Some(peer_id)
+                    && matches!(discovery_action, Some(DiscoveryAction::Listen))
+                    && !swarm.is_connected(&peer_id) =>
+            {
+                println!(
+                    "discovery=provider_lost peer_id={peer_id} cause={cause:?} action=reselect"
+                );
+                failed_providers.insert(peer_id);
+                discovered_provider = None;
+                discovered_provider_address = None;
+                circuit_listener = None;
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_providers(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY));
+            }
+            SwarmEvent::OutgoingConnectionError {
+                peer_id: Some(peer_id),
+                error,
+                ..
+            } if discovered_provider == Some(peer_id)
+                && matches!(discovery_action, Some(DiscoveryAction::Listen)) =>
+            {
+                println!(
+                    "discovery=provider_dial_failed peer_id={peer_id} error={error} action=requery"
+                );
+                discovered_provider = None;
+                discovered_provider_address = None;
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .get_providers(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY));
+            }
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
                 println!("connected peer_id={peer_id} endpoint={endpoint:?}");
-                if discovered_provider == Some(peer_id) {
+                connected_addresses.insert(peer_id, endpoint.get_remote_address().clone());
+                if discovered_provider == Some(peer_id)
+                    && (circuit_listener.is_none()
+                        || !matches!(discovery_action, Some(DiscoveryAction::Listen)))
+                {
+                    let mut address = endpoint.get_remote_address().clone();
+                    if !matches!(
+                        address.iter().last(),
+                        Some(libp2p::multiaddr::Protocol::P2p(_))
+                    ) {
+                        address.push(libp2p::multiaddr::Protocol::P2p(peer_id));
+                    }
+                    discovered_provider_address = Some(address.clone());
                     println!(
                         "discovery=provider_connected peer_id={peer_id} address={}",
-                        endpoint.get_remote_address()
+                        address
                     );
-                    return Ok(());
+                    if matches!(discovery_action, Some(DiscoveryAction::Connect)) {
+                        return Ok(());
+                    }
                 }
                 if target == Some(peer_id) {
+                    let path = if endpoint
+                        .get_remote_address()
+                        .iter()
+                        .any(|part| matches!(part, libp2p::multiaddr::Protocol::P2pCircuit))
+                    {
+                        "forwarded"
+                    } else {
+                        "direct"
+                    };
+                    println!("path={path} peer_id={peer_id}");
                     if let Some(message) = outbound_request.take() {
                         swarm
                             .behaviour_mut()
@@ -284,8 +457,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         "response accepted={} body={}",
                         response.accepted, response.body
                     );
-                    return if response.accepted {
+                    return if response.accepted && linger_after_response.is_zero() {
                         Ok(())
+                    } else if response.accepted {
+                        response_exit_at =
+                            Some(tokio::time::Instant::now() + linger_after_response);
+                        continue;
                     } else {
                         Err("remote rejected DLLM identity".into())
                     };
@@ -343,6 +520,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                 }
+                if discovered_provider == Some(peer_id) {
+                    let provider_address = discovered_provider_address
+                        .clone()
+                        .ok_or("discovered provider address is unavailable")?;
+                    match discovery_action {
+                        Some(DiscoveryAction::Listen) if circuit_listener.is_none() => {
+                            circuit_listener = Some(swarm.listen_on(
+                                provider_address.with(libp2p::multiaddr::Protocol::P2pCircuit),
+                            )?);
+                            println!("discovery=provider_reservation_requested peer_id={peer_id}");
+                        }
+                        Some(DiscoveryAction::Dial) => {
+                            let target_peer = target.ok_or("discovery target is unavailable")?;
+                            swarm.dial(
+                                provider_address
+                                    .with(libp2p::multiaddr::Protocol::P2pCircuit)
+                                    .with(libp2p::multiaddr::Protocol::P2p(target_peer)),
+                            )?;
+                            println!("discovery=provider_circuit_requested peer_id={peer_id}");
+                        }
+                        _ => {}
+                    }
+                }
             }
             SwarmEvent::Behaviour(BehaviourEvent::Kademlia(
                 kad::Event::OutboundQueryProgressed {
@@ -353,7 +553,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         })),
                     ..
                 },
-            )) if discovering => {
+            )) if discovering && discovered_provider.is_none() => {
                 let mut providers = providers.into_iter().collect::<Vec<_>>();
                 providers.sort_by_key(|peer| peer.to_bytes());
                 println!(
@@ -368,12 +568,43 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     providers.retain(|peer| *peer == allowed);
                     println!("discovery=policy_applied allowed_provider={allowed}");
                 }
+                let policy_eligible = providers.clone();
+                providers.retain(|peer| !failed_providers.contains(peer));
+                if providers.is_empty()
+                    && !policy_eligible.is_empty()
+                    && matches!(discovery_action, Some(DiscoveryAction::Listen))
+                {
+                    failed_providers.clear();
+                    providers = policy_eligible;
+                    println!("discovery=failed_provider_retry reason=no_alternative");
+                }
                 let provider = providers
                     .into_iter()
                     .next()
                     .ok_or("no forwarding-capable node discovered")?;
-                swarm.dial(provider)?;
                 discovered_provider = Some(provider);
+                if let Some(address) = connected_addresses.get(&provider).cloned() {
+                    let mut address = address;
+                    if !matches!(
+                        address.iter().last(),
+                        Some(libp2p::multiaddr::Protocol::P2p(_))
+                    ) {
+                        address.push(libp2p::multiaddr::Protocol::P2p(provider));
+                    }
+                    discovered_provider_address = Some(address.clone());
+                    if matches!(discovery_action, Some(DiscoveryAction::Listen)) {
+                        circuit_listener = Some(
+                            swarm
+                                .listen_on(address.with(libp2p::multiaddr::Protocol::P2pCircuit))?,
+                        );
+                        println!(
+                            "discovery=provider_reservation_requested peer_id={provider} source=existing_connection"
+                        );
+                    }
+                }
+                if let Err(error) = swarm.dial(provider) {
+                    println!("discovery=provider_dial_deferred peer_id={provider} error={error}");
+                }
                 println!("discovery=provider_selected peer_id={provider}");
             }
             _ => {}
