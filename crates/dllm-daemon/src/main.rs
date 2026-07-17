@@ -9,7 +9,7 @@ use dllm_daemon::{
     NetworkStore,
 };
 use dllm_protocol::now_unix;
-use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
+use dllm_runtime::{BundledModelSource, BundledRuntimeConfig, LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
 };
@@ -119,28 +119,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut runtime_worker = None;
     if runtime_url.is_none() {
-        if let (Ok(binary), Ok(model)) = (
-            std::env::var("DLLMD_RUNTIME_BIN"),
-            std::env::var("DLLMD_MODEL_PATH"),
-        ) {
-            let config = LlamaCppConfig {
-                binary: binary.into(),
-                model: model.into(),
-                host: "127.0.0.1".into(),
-                port: std::env::var("DLLMD_RUNTIME_PORT")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(8081),
-                gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
-                context_size: std::env::var("DLLMD_CONTEXT_SIZE")
-                    .ok()
-                    .and_then(|value| value.parse().ok())
-                    .unwrap_or(2048),
-                extra_args: vec![],
+        if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
+            // DLLMD_RUNTIME_BIN is an explicit request for an external runtime.
+            // Only start it if a model is also configured; never fall through
+            // to the bundled binary here, even if misconfigured.
+            if let Ok(model) = std::env::var("DLLMD_MODEL_PATH") {
+                let config = LlamaCppConfig {
+                    binary: binary.into(),
+                    model: model.into(),
+                    host: "127.0.0.1".into(),
+                    port: std::env::var("DLLMD_RUNTIME_PORT")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(8081),
+                    gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
+                    context_size: std::env::var("DLLMD_CONTEXT_SIZE")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(2048),
+                    extra_args: vec![],
+                };
+                let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
+                runtime_url = Some(worker.endpoint().to_owned());
+                runtime_worker = Some(worker);
+            }
+        } else {
+            let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
+            let hf_model = std::env::var("DLLMD_HF_MODEL").ok();
+            let model_source = match (model_path, hf_model) {
+                (Some(_), Some(_)) => {
+                    return Err("DLLMD_MODEL_PATH and DLLMD_HF_MODEL are mutually exclusive".into());
+                }
+                (Some(path), None) => Some(BundledModelSource::Local(path.into())),
+                (None, Some(repo)) => Some(BundledModelSource::HuggingFace(repo)),
+                (None, None) => None,
             };
-            let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
-            runtime_url = Some(worker.endpoint().to_owned());
-            runtime_worker = Some(worker);
+            if let Some(model) = model_source {
+                let config = BundledRuntimeConfig {
+                    binary: bundled_runtime_binary()?,
+                    model,
+                    host: "127.0.0.1".into(),
+                    port: std::env::var("DLLMD_RUNTIME_PORT")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(8081),
+                    gpu_layers: std::env::var("DLLMD_GPU_LAYERS")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(38),
+                    context_size: std::env::var("DLLMD_CONTEXT_SIZE")
+                        .ok()
+                        .and_then(|value| value.parse().ok())
+                        .unwrap_or(2048)
+                        .into(),
+                    api_key: None,
+                    parallel: 1,
+                    mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
+                };
+                let worker =
+                    RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
+                runtime_url = Some(worker.endpoint().to_owned());
+                runtime_worker = Some(worker);
+            }
         }
     }
     let primary_state = api::ApiState {
@@ -297,6 +337,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer.abort();
     }
     Ok(())
+}
+
+fn bundled_runtime_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let current_exe = std::env::current_exe()?;
+    let dir = current_exe
+        .parent()
+        .ok_or("could not determine directory of current executable")?;
+    let candidate = dir.join("dllm-llama-server");
+    if !candidate.exists() {
+        return Err(format!(
+            "bundled runtime binary not found at {}; build it with `cargo build --release -p dllm-llama-server`, or set DLLMD_RUNTIME_BIN to use an external runtime instead",
+            candidate.display()
+        )
+        .into());
+    }
+    Ok(candidate)
 }
 
 fn peer_config(
