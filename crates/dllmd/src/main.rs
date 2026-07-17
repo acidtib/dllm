@@ -1,7 +1,7 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
-    load_or_create_identity, start_peer_node, Multiaddr, PeerId, PeerNodeConfig,
+    load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
 };
 use dllmd::{
     api,
@@ -312,6 +312,16 @@ fn peer_config(
     let forwarding_enabled = local_policy.is_some();
     let reserve_default =
         !forwarding_enabled && bootstrap.as_ref().is_some_and(|list| !list.is_empty());
+    let discovery_mode = match std::env::var("DLLMD_P2P_DISCOVERY_MODE").ok().as_deref() {
+        None | Some("listed") => DiscoveryMode::Listed,
+        Some("unlisted") => DiscoveryMode::Unlisted,
+        Some(other) => {
+            return Err(format!(
+                "DLLMD_P2P_DISCOVERY_MODE must be \"listed\" or \"unlisted\", got \"{other}\""
+            )
+            .into());
+        }
+    };
     Ok(Some(PeerNodeConfig {
         key_path,
         listen_port: std::env::var("DLLMD_P2P_PORT")
@@ -326,6 +336,7 @@ fn peer_config(
             .unwrap_or(0),
         eligible_forwarders,
         reserve_forwarding_path: env_bool("DLLMD_P2P_RESERVE", reserve_default)?,
+        discovery_mode,
     }))
 }
 

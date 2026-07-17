@@ -33,7 +33,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
 - [x] P4.3: carry authenticated health, inference streaming, cancellation, and
   deadlines over the embedded transport with bounded concurrent streams and
   automatic path recovery.
-- [ ] P4.4: implement separate unlisted and listed discovery without allowing
+- [x] P4.4: implement separate unlisted and listed discovery without allowing
   discovery records to grant membership or override owner-signed state.
 - [ ] P4.5: implement owner-approved membership and request-access policy that
   is independent of compute membership and enforces explicit resource budgets.
@@ -385,3 +385,51 @@ physical validation with multiple `dllmd` nodes.
 - Physical acceptance matrix (9 scenarios: direct, forwarded, concurrency,
   cancellation, deadline, live-auth, recovery, restart, security observation)
 - Physical cleanup on test hosts
+
+## P4.4 listed and unlisted discovery
+
+### Discovery mode
+
+Each node controls whether it publishes reachability records to the Kademlia DHT
+via a `DiscoveryMode` enum with `Listed` (default) and `Unlisted` variants. The
+mode is local configuration (`DLLMD_P2P_DISCOVERY_MODE` environment variable), not
+owner-signed state. Discovery records publish reachability only; they do not grant
+membership, inference access, or forwarding eligibility. Authorization is always
+enforced through the owner-signed `NetworkState` via `AuthView`, independent of
+discovery mode.
+
+Listed nodes that are forwarding-eligible (owner-signed forwarding policy) publish
+`/dllm/forwarding/v1` to the DHT so edges can discover and reserve through them.
+Unlisted nodes never publish provider records. A private mode (no DHT participation
+at all) is deferred to a later milestone.
+
+### Startup guardrails
+
+An unlisted node that is also forwarding-eligible is rejected at startup. Edges
+discover forwarders exclusively through the DHT, so an unlisted forwarder would be
+invisible — a broken configuration. An unlisted node with no bootstrap peers emits
+a warning: it can still receive inbound connections from peers that know its
+address, but it cannot join the DHT on its own.
+
+### Diagnostics
+
+`GET /v1/peer-network/status` now includes `discovery_mode` (`"listed"` or
+`"unlisted"`) and `published_discovery` (whether the node has published a provider
+record to the DHT). The probe binary (`libp2p-node-probe`) accepts
+`--discovery-mode` on the `Forwarder` subcommand.
+
+### Automated test coverage
+
+87 tests pass across the workspace. Three new tests cover the discovery mode
+behavior: `unlisted_nodes_do_not_publish` (integration — two nodes, unlisted node
+never appears in DHT provider results), `unlisted_forwarder_rejected_at_startup`
+(unit — `start_peer_node` returns `Err` for the invalid combination), and
+`both_discovery_modes_enforce_authorization` (unit on `AuthView` — authorization
+is structurally independent of discovery mode).
+
+Existing tests continue to pass with the new `discovery_mode: Listed` default on
+all `PeerNodeConfig` constructions. The P4.3 local demo script works unchanged.
+
+### Remaining
+
+- Physical validation with multiple nodes across the VPS hosts

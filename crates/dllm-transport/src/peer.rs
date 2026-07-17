@@ -24,6 +24,21 @@ use crate::stream_handler::{self, AppEvent, OpenStreamCmd};
 const IDENTIFY_PROTOCOL: &str = "/dllm/peer/1";
 const FORWARDING_PROVIDER_KEY: &[u8] = b"/dllm/forwarding/v1";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryMode {
+    Listed,
+    Unlisted,
+}
+
+impl DiscoveryMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DiscoveryMode::Listed => "listed",
+            DiscoveryMode::Unlisted => "unlisted",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerNodeConfig {
     pub key_path: PathBuf,
@@ -33,6 +48,7 @@ pub struct PeerNodeConfig {
     pub max_reservations: usize,
     pub eligible_forwarders: HashSet<PeerId>,
     pub reserve_forwarding_path: bool,
+    pub discovery_mode: DiscoveryMode,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -59,6 +75,8 @@ pub struct PeerDiagnostics {
     pub last_app_error: Option<String>,
     pub last_stream_peer: Option<String>,
     pub last_stream_path: Option<String>,
+    pub discovery_mode: String,
+    pub published_discovery: bool,
 }
 
 #[derive(Clone)]
@@ -134,6 +152,18 @@ pub fn load_or_create_identity(path: &Path) -> Result<identity::Keypair, PeerErr
 }
 
 pub fn start_peer_node(config: PeerNodeConfig) -> Result<PeerNodeHandle, PeerError> {
+    if config.forwarding_enabled && config.discovery_mode == DiscoveryMode::Unlisted {
+        return Err(PeerError::Transport(
+            "unlisted nodes cannot be forwarding-eligible because edges discover \
+             forwarders exclusively through the DHT"
+                .into(),
+        ));
+    }
+    if config.discovery_mode == DiscoveryMode::Unlisted && config.bootstrap.is_empty() {
+        tracing::warn!(
+            "unlisted node has no bootstrap peers and will not be discoverable by other nodes"
+        );
+    }
     let key = load_or_create_identity(&config.key_path)?;
     let peer_id = key.public().to_peer_id();
     let initial = PeerDiagnostics {
@@ -146,6 +176,8 @@ pub fn start_peer_node(config: PeerNodeConfig) -> Result<PeerNodeHandle, PeerErr
             .filter_map(peer_from_address)
             .map(|peer| peer.to_string())
             .collect(),
+        discovery_mode: config.discovery_mode.as_str().into(),
+        published_discovery: false,
         ..PeerDiagnostics::default()
     };
     let (status_tx, status_rx) = watch::channel(initial);
@@ -251,7 +283,8 @@ async fn run_peer_node(
         }
     }
 
-    let mut published = false;
+    let mut published_forwarding = false;
+    let mut _published_node = false;
     let mut discovery_started = false;
     let mut selected = None;
     let mut selected_address = None;
@@ -356,13 +389,16 @@ async fn run_peer_node(
             })) => {
                 if config.forwarding_enabled {
                     swarm.add_external_address(info.observed_addr);
-                    if !published {
+                    if !published_forwarding && config.discovery_mode == DiscoveryMode::Listed {
                         swarm
                             .behaviour_mut()
                             .kademlia
                             .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))
                             .map_err(transport_error)?;
-                        published = true;
+                        published_forwarding = true;
+                        update_status(&status_tx, |status| {
+                            status.published_discovery = true;
+                        });
                     }
                 }
                 if bootstrap_addresses.contains_key(&peer_id)
@@ -511,6 +547,7 @@ mod tests {
             max_reservations: 0,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -522,6 +559,7 @@ mod tests {
             max_reservations: 4,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         let unapproved = start_peer_node(PeerNodeConfig {
@@ -532,6 +570,7 @@ mod tests {
             max_reservations: 4,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -543,6 +582,7 @@ mod tests {
             max_reservations: 0,
             eligible_forwarders: HashSet::from([forwarder_peer]),
             reserve_forwarding_path: true,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         let diagnostics = edge.diagnostics();
@@ -605,6 +645,7 @@ mod tests {
             max_reservations: 0,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -616,6 +657,7 @@ mod tests {
             max_reservations: 4,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         let forwarder_b = start_peer_node(PeerNodeConfig {
@@ -626,6 +668,7 @@ mod tests {
             max_reservations: 4,
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -637,6 +680,7 @@ mod tests {
             max_reservations: 0,
             eligible_forwarders: HashSet::from([peers[1], peers[2]]),
             reserve_forwarding_path: true,
+            discovery_mode: DiscoveryMode::Listed,
         })
         .unwrap();
         let diagnostics = edge.diagnostics();
@@ -702,5 +746,121 @@ mod tests {
             .local_addr()
             .unwrap()
             .port()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unlisted_nodes_do_not_publish() {
+        let directory = std::env::temp_dir().join(format!(
+            "dllm-unlisted-discover-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let bootstrap_key_path = directory.join("bootstrap.key");
+        let unlisted_key_path = directory.join("unlisted.key");
+        let bootstrap_peer = load_or_create_identity(&bootstrap_key_path)
+            .unwrap()
+            .public()
+            .to_peer_id();
+        let unlisted_peer = load_or_create_identity(&unlisted_key_path)
+            .unwrap()
+            .public()
+            .to_peer_id();
+        let bootstrap_port = unused_port();
+        let unlisted_port = unused_port();
+        let bootstrap_address: Multiaddr =
+            format!("/ip4/127.0.0.1/tcp/{bootstrap_port}/p2p/{bootstrap_peer}")
+                .parse()
+                .unwrap();
+
+        let bootstrap = start_peer_node(PeerNodeConfig {
+            key_path: bootstrap_key_path,
+            listen_port: bootstrap_port,
+            bootstrap: Vec::new(),
+            forwarding_enabled: false,
+            max_reservations: 0,
+            eligible_forwarders: HashSet::new(),
+            reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Listed,
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Unlisted node: not a forwarder, bootstrap is the bootstrap node.
+        let unlisted = start_peer_node(PeerNodeConfig {
+            key_path: unlisted_key_path,
+            listen_port: unlisted_port,
+            bootstrap: vec![bootstrap_address],
+            forwarding_enabled: false,
+            max_reservations: 0,
+            eligible_forwarders: HashSet::new(),
+            reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Unlisted,
+        })
+        .unwrap();
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
+        let diag = unlisted.diagnostics();
+        let status = diag.borrow().clone();
+        assert_eq!(
+            status.discovery_mode, "unlisted",
+            "diagnostics should report unlisted mode"
+        );
+        assert!(
+            !status.published_discovery,
+            "unlisted node should not set published_discovery"
+        );
+
+        // Query DHT from the bootstrap node; verify the unlisted node is not
+        // among the forwarding providers.
+        let bootstrap_diag = bootstrap.diagnostics();
+        let bstatus = bootstrap_diag.borrow().clone();
+        assert!(
+            !bstatus
+                .discovered_providers
+                .contains(&unlisted_peer.to_string()),
+            "unlisted node should not appear as a forwarding provider"
+        );
+
+        unlisted.abort();
+        bootstrap.abort();
+        for path in [
+            directory.join("bootstrap.key"),
+            directory.join("unlisted.key"),
+        ] {
+            fs::remove_file(path).unwrap();
+        }
+        fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn unlisted_forwarder_rejected_at_startup() {
+        let directory = std::env::temp_dir().join(format!(
+            "dllm-unlisted-forwarder-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let key_path = directory.join("node.key");
+        let result = start_peer_node(PeerNodeConfig {
+            key_path: key_path.clone(),
+            listen_port: unused_port(),
+            bootstrap: Vec::new(),
+            forwarding_enabled: true,
+            max_reservations: 4,
+            eligible_forwarders: HashSet::new(),
+            reserve_forwarding_path: false,
+            discovery_mode: DiscoveryMode::Unlisted,
+        });
+        assert!(
+            result.is_err(),
+            "unlisted + forwarding_enabled should fail at startup"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("unlisted"),
+            "error message should mention unlisted: {err}"
+        );
+        let _ = fs::remove_file(key_path);
+        fs::remove_dir(directory).unwrap();
     }
 }

@@ -30,6 +30,9 @@ enum Command {
         seed: u8,
         port: u16,
         bootstrap: Option<Multiaddr>,
+        /// "listed" or "unlisted" (default: listed)
+        #[arg(long, default_value = "listed")]
+        discovery_mode: String,
     },
     Discover {
         seed: u8,
@@ -128,9 +131,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         seed,
         port,
         bootstrap,
+        discovery_mode,
     } = &args.command
     {
-        return run_forwarder(*seed, *port, bootstrap.clone()).await;
+        let listed = discovery_mode != "unlisted";
+        return run_forwarder(*seed, *port, bootstrap.clone(), listed).await;
     }
 
     let (seed, port) = match &args.command {
@@ -617,6 +622,7 @@ async fn run_forwarder(
     seed: u8,
     port: u16,
     bootstrap: Option<Multiaddr>,
+    listed: bool,
 ) -> Result<(), Box<dyn Error>> {
     let local_key = key(seed);
     let local_peer = local_key.public().to_peer_id();
@@ -699,12 +705,16 @@ async fn run_forwarder(
                     info.observed_addr
                 );
                 if bootstrap_peer == Some(peer_id) && !forwarding_capability_published {
-                    swarm
-                        .behaviour_mut()
-                        .kademlia
-                        .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))?;
-                    forwarding_capability_published = true;
-                    println!("discovery=forwarding_capability_published");
+                    if listed {
+                        swarm
+                            .behaviour_mut()
+                            .kademlia
+                            .start_providing(kad::RecordKey::new(&FORWARDING_PROVIDER_KEY))?;
+                        forwarding_capability_published = true;
+                        println!("discovery=forwarding_capability_published");
+                    } else {
+                        println!("discovery=unlisted_skipping_publication");
+                    }
                 }
             }
             SwarmEvent::Behaviour(ForwardBehaviourEvent::Kademlia(

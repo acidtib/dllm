@@ -560,4 +560,43 @@ mod tests {
             Err(AuthError::UnknownPeer)
         ));
     }
+
+    /// Authorization is structurally independent of discovery mode:
+    /// `AuthView::authorize` does not take a discovery mode parameter,
+    /// so the same authorization checks apply regardless of how the
+    /// caller was discovered. This test confirms a valid binding passes
+    /// and an unknown peer is rejected.
+    #[test]
+    fn both_discovery_modes_enforce_authorization() {
+        let owner = owner_key();
+        let state = make_state(
+            vec![TransportEndpointBinding {
+                node_pubkey: owner.verifying_key().to_bytes(),
+                transport_peer_id: PEER_A.into(),
+                binding_generation: 1,
+                issued_at_unix: 100,
+                expires_at_unix: 200,
+            }],
+            vec![],
+            vec![Member {
+                node_pubkey: owner.verifying_key().to_bytes(),
+                endpoint: "http://example.com".into(),
+                relay_endpoint: None,
+                joined_generation: 1,
+            }],
+        );
+        let (_tx, rx) = watch::channel(Arc::new(state));
+        let view = AuthView::new(rx);
+
+        // Valid binding passes.
+        let known: PeerId = PEER_A.parse().unwrap();
+        assert!(view.authorize(&known, 150).is_ok());
+
+        // Unknown peer is rejected regardless of how it was discovered.
+        let unknown: PeerId = PEER_B.parse().unwrap();
+        assert!(matches!(
+            view.authorize(&unknown, 150),
+            Err(AuthError::UnknownPeer)
+        ));
+    }
 }

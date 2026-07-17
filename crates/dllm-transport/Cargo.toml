@@ -13,6 +13,7 @@ libp2p = { version = "0.56.0", features = ["autonat", "cbor", "dcutr", "dns", "i
 serde = { version = "1", features = ["derive"] }
 thiserror = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
 
 [dev-dependencies]
 rand = "0.8"
