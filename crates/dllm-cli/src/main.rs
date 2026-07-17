@@ -137,12 +137,20 @@ enum Command {
         #[arg(long)]
         old_owner_endpoint: String,
     },
+    Onboard {
+        owner_endpoint: String,
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
     RequestAccess {
         owner_endpoint: String,
         #[arg(long)]
         note: Option<String>,
     },
-    ListAccessRequests,
+    ListAccessRequests {
+        #[arg(long)]
+        json: bool,
+    },
     ApproveAccess {
         node_key: PathBuf,
         #[arg(long)]
@@ -186,12 +194,21 @@ enum Command {
         #[arg(long)]
         note: String,
     },
-    ListAbuseReports,
+    ListAbuseReports {
+        #[arg(long)]
+        json: bool,
+    },
     AuditLog {
         #[arg(long)]
         since: Option<u64>,
         #[arg(long)]
         limit: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    PeerStatus {
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -223,11 +240,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("{}", serde_json::to_string_pretty(&state)?);
             } else {
                 let network = &state["network"]["state"];
+                let member_count = network["members"].as_array().map_or(0, Vec::len);
+                let fwd_count = network["forwarding_policy"].as_array().map_or(0, Vec::len);
+                let binding_count = network["transport_bindings"].as_array().map_or(0, Vec::len);
+                let budget_count = network["resource_budgets"].as_array().map_or(0, Vec::len);
+                let ban_count = network["banned"].as_array().map_or(0, Vec::len);
+                let mut expiring_soon = 0u64;
+                if let Some(bindings) = network["transport_bindings"].as_array() {
+                    let now = dllm_protocol::now_unix();
+                    for binding in bindings {
+                        if let Some(exp) = binding["expires_at_unix"].as_u64() {
+                            if exp > now && exp < now + 86400 {
+                                expiring_soon += 1;
+                            }
+                        }
+                    }
+                }
                 println!(
                     "network {} generation {} members {}",
-                    network["name"],
-                    network["generation"],
-                    network["members"].as_array().map_or(0, Vec::len)
+                    network["name"], network["generation"], member_count
+                );
+                println!(
+                    "forwarding {}  bindings {} ({} expire <24h)  budgets {}  bans {}",
+                    fwd_count, binding_count, expiring_soon, budget_count, ban_count
                 );
             }
         }
@@ -479,6 +514,112 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             )?;
             println!("restored control plane from {}", input.display());
         }
+        Command::Onboard {
+            owner_endpoint,
+            timeout,
+        } => {
+            let timeout = timeout.unwrap_or(300);
+            // Step 1: ensure node identity
+            if !cli.node_key.exists() {
+                println!("no node identity found, creating one...");
+                let key = SigningKey::generate(&mut rand::thread_rng());
+                write_private_key(&cli.node_key, &key.to_bytes())?;
+                println!("created node identity {}", cli.node_key.display());
+            } else {
+                println!("using node identity {}", cli.node_key.display());
+            }
+            // Step 2: ensure transport identity
+            let transport_peer_id = if cli.transport_key.exists() {
+                let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+                let pid = key.public().to_peer_id();
+                println!("using transport identity {pid}");
+                pid
+            } else {
+                println!("no transport identity found, creating one...");
+                let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+                let pid = key.public().to_peer_id();
+                println!("created transport identity {pid}");
+                pid
+            };
+            // Step 3: submit access request
+            let node_signing_key = NetworkStore::load_owner_key(&cli.node_key)?;
+            let node_pubkey = node_signing_key.verifying_key().to_bytes();
+            let request = AccessRequest {
+                node_pubkey,
+                requested_endpoint: cli.node_endpoint.clone(),
+                note: "onboard".into(),
+                requested_at_unix: now_unix(),
+            };
+            let signed = SignedAccessRequest::sign(request, &node_signing_key);
+            let response = request_json(auth(
+                client
+                    .post(format!("{owner_endpoint}/v1/access-requests"))
+                    .json(&json!({ "request": signed })),
+                &None,
+            ));
+            match response {
+                Ok(_) => println!("access request submitted"),
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("AccessRequestAlreadyPending") {
+                        println!("access request already pending");
+                    } else if msg.contains("NodeIsBanned") {
+                        return Err("this node is banned from the network".into());
+                    } else if msg.contains("AlreadyMember") {
+                        println!("already a member, no request needed");
+                    } else {
+                        return Err(format!("access request failed: {msg}").into());
+                    }
+                }
+            }
+            // Step 4: poll for approval
+            let pk_hex: String = node_pubkey
+                .iter()
+                .take(4)
+                .map(|b| format!("{b:02x}"))
+                .collect::<Vec<_>>()
+                .join("");
+            println!();
+            println!("polling for approval (timeout {timeout}s)...");
+            println!("the owner must run: dllm approve-access <your-node-key>");
+            println!("your node key fingerprint: {pk_hex}...");
+            println!("your transport peer id: {transport_peer_id}");
+            println!();
+            let start = std::time::Instant::now();
+            let deadline = std::time::Duration::from_secs(timeout);
+            loop {
+                if start.elapsed() > deadline {
+                    return Err("timed out waiting for approval".into());
+                }
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                let status: Result<Value, _> = request_json(auth(
+                    client
+                        .get(format!("{owner_endpoint}/v1/status"))
+                        .header("Accept", "application/json"),
+                    &cli.management_token,
+                ));
+                if let Ok(status) = status {
+                    if let Some(members) = status["network"]["state"]["members"].as_array() {
+                        let pk_bytes: Vec<serde_json::Value> = node_pubkey
+                            .iter()
+                            .map(|b| serde_json::Value::from(*b))
+                            .collect();
+                        if members
+                            .iter()
+                            .any(|m| m["node_pubkey"].as_array() == Some(&pk_bytes))
+                        {
+                            println!("approved! you are now a member of the network.");
+                            println!();
+                            println!("next steps:");
+                            println!("  dllm bind-transport {transport_peer_id} --binding-generation 1 --expires-at-unix <future> --owner");
+                            println!("  (the owner runs this to bind your transport identity)");
+                            println!("  then start your daemon and verify: dllm peer-status");
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
         Command::RequestAccess {
             owner_endpoint,
             note,
@@ -504,12 +645,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Command::ListAccessRequests => {
+        Command::ListAccessRequests { json } => {
             let response = request_json(auth(
                 client.get(format!("{}/v1/access-requests", cli.daemon)),
                 &cli.management_token,
             ))?;
-            println!("{}", serde_json::to_string_pretty(&response)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            } else {
+                let requests = response.as_array().map_or(&[] as &[Value], Vec::as_slice);
+                if requests.is_empty() {
+                    println!("no pending access requests");
+                } else {
+                    println!(
+                        "{:<20}  {:<30}  {:<12}  note",
+                        "node key", "endpoint", "age"
+                    );
+                    println!("{}", "-".repeat(80));
+                    let now = dllm_protocol::now_unix();
+                    for req in requests {
+                        let pk = req["request"]["node_pubkey"]
+                            .as_array()
+                            .map(|a| format_hex(a))
+                            .unwrap_or_else(|| "unknown".into());
+                        let ep = req["request"]["requested_endpoint"]
+                            .as_str()
+                            .unwrap_or("(none)");
+                        let ts = req["request"]["timestamp"].as_u64().unwrap_or(0);
+                        let age = if ts > 0 && ts < now {
+                            format_age(now - ts)
+                        } else {
+                            "just now".into()
+                        };
+                        let note = req["request"]["note"].as_str().unwrap_or("");
+                        println!("{pk:<20}  {ep:<30}  {age:<12}  {note}");
+                    }
+                }
+            }
         }
         Command::ApproveAccess { node_key, endpoint } => {
             let node_pubkey = read_key(node_key)?;
@@ -617,16 +789,49 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
-        Command::ListAbuseReports => {
+        Command::ListAbuseReports { json } => {
             let reports = request_json(auth(
                 client
                     .get(format!("{}/v1/abuse-reports", cli.daemon))
                     .header("Accept", "application/json"),
                 &cli.management_token,
             ))?;
-            println!("{}", serde_json::to_string_pretty(&reports)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&reports)?);
+            } else {
+                let items = reports.as_array().map_or(&[] as &[Value], Vec::as_slice);
+                if items.is_empty() {
+                    println!("no abuse reports");
+                } else {
+                    println!(
+                        "{:<20}  {:<20}  {:<16}  {:<12}  note",
+                        "reporter", "subject", "category", "age"
+                    );
+                    println!("{}", "-".repeat(90));
+                    let now = dllm_protocol::now_unix();
+                    for r in items {
+                        let reporter = r["reporter_pubkey"]
+                            .as_array()
+                            .map(|a| format_hex(a))
+                            .unwrap_or_else(|| "unknown".into());
+                        let subject = r["subject_pubkey"]
+                            .as_array()
+                            .map(|a| format_hex(a))
+                            .unwrap_or_else(|| "unknown".into());
+                        let cat = r["category"].as_str().unwrap_or("");
+                        let ts = r["reported_at_unix"].as_u64().unwrap_or(0);
+                        let age = if ts > 0 && ts < now {
+                            format_age(now - ts)
+                        } else {
+                            "just now".into()
+                        };
+                        let note = r["note"].as_str().unwrap_or("");
+                        println!("{reporter:<20}  {subject:<20}  {cat:<16}  {age:<12}  {note}");
+                    }
+                }
+            }
         }
-        Command::AuditLog { since, limit } => {
+        Command::AuditLog { since, limit, json } => {
             let mut url = format!("{}/v1/audit-log", cli.daemon);
             let mut sep = "?";
             if let Some(since) = since {
@@ -640,7 +845,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client.get(url).header("Accept", "application/json"),
                 &cli.management_token,
             ))?;
-            println!("{}", serde_json::to_string_pretty(&entries)?);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else {
+                let items = entries.as_array().map_or(&[] as &[Value], Vec::as_slice);
+                if items.is_empty() {
+                    println!("no audit entries");
+                } else {
+                    println!(
+                        "{:<12}  {:<20}  {:<24}  {:<24}  outcome",
+                        "timestamp", "actor", "action", "target"
+                    );
+                    println!("{}", "-".repeat(100));
+                    for e in items {
+                        let ts = e["timestamp_unix"].as_u64().unwrap_or(0);
+                        let ts_str = if ts > 0 { format!("{ts}") } else { "?".into() };
+                        let actor = e["actor"].as_str().unwrap_or("");
+                        let action = e["action"].as_str().unwrap_or("");
+                        let target = e["target"].as_str().unwrap_or("");
+                        let outcome = e["outcome"].as_str().unwrap_or("");
+                        println!(
+                            "{ts_str:<12}  {actor:<20}  {action:<24}  {target:<24}  {outcome}"
+                        );
+                    }
+                }
+            }
+        }
+        Command::PeerStatus { json } => {
+            let status: Value = request_json(auth(
+                client.get(format!("{}/v1/peer-network/status", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&status)?);
+            } else {
+                let enabled = status["enabled"].as_bool().unwrap_or(false);
+                if !enabled {
+                    println!("peer network disabled");
+                    return Ok(());
+                }
+                let pid = status["peer_id"].as_str().unwrap_or("unknown");
+                let disc = status["discovery_mode"].as_str().unwrap_or("unknown");
+                let dht = if status["dht_hosting"].as_bool().unwrap_or(false) {
+                    "server"
+                } else {
+                    "client"
+                };
+                let fwd = if status["forwarding_enabled"].as_bool().unwrap_or(false) {
+                    "eligible"
+                } else {
+                    "ineligible"
+                };
+                let boot_count = status["bootstrap_peers"].as_array().map_or(0, Vec::len);
+                let disc_count = status["discovered_providers"]
+                    .as_array()
+                    .map_or(0, Vec::len);
+                let fwd_peer = status["selected_forwarder"]
+                    .as_str()
+                    .unwrap_or("none, direct");
+                let path = status["path"].as_str().unwrap_or("unknown");
+                let reserved = if status["reservation_active"].as_bool().unwrap_or(false) {
+                    "active"
+                } else {
+                    "none"
+                };
+                let failed = status["failed_connections"].as_u64().unwrap_or(0);
+                let reselections = status["reselections"].as_u64().unwrap_or(0);
+                let active_in = status["active_inbound_streams"].as_u64().unwrap_or(0);
+                let active_out = status["active_outbound_streams"].as_u64().unwrap_or(0);
+                let rejected = status["rejected_streams"].as_u64().unwrap_or(0);
+                let cancelled = status["cancelled_streams"].as_u64().unwrap_or(0);
+                let deadlines = status["deadline_expirations"].as_u64().unwrap_or(0);
+                let proto_fail = status["protocol_failures"].as_u64().unwrap_or(0);
+                let auth_fail = status["auth_failures"].as_u64().unwrap_or(0);
+                let last_err = status["last_error"].as_str().unwrap_or("none");
+                let published = if status["published_discovery"].as_bool().unwrap_or(false) {
+                    "yes"
+                } else {
+                    "no"
+                };
+
+                println!("peer id              {pid}");
+                println!("discovery            {disc} (forwarding published: {published})");
+                println!("dht hosting          {dht}");
+                println!("forwarding           {fwd}");
+                println!("bootstrap peers      {boot_count}");
+                println!("discovered peers     {disc_count}");
+                println!("selected forwarder   {fwd_peer}");
+                println!("path                 {path}");
+                println!("reservation          {reserved}");
+                println!();
+                println!("streams              inbound {active_in}  outbound {active_out}");
+                println!("rejected/cancelled   {rejected} / {cancelled}");
+                println!("deadline expirations {deadlines}");
+                println!("protocol failures    {proto_fail}");
+                println!("auth failures        {auth_fail}");
+                println!("failed connections   {failed}");
+                println!("reselections         {reselections}");
+                println!("last error           {last_err}");
+            }
         }
         Command::TransferOwner {
             new_owner_key,
@@ -745,4 +1048,25 @@ fn read_passphrase(path: &PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>
         return Err("passphrase file is empty".into());
     }
     Ok(passphrase)
+}
+
+fn format_hex(bytes: &[serde_json::Value]) -> String {
+    bytes
+        .iter()
+        .take(4)
+        .map(|v| format!("{:02x}", v.as_u64().unwrap_or(0)))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn format_age(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86400 {
+        format!("{}h", seconds / 3600)
+    } else {
+        format!("{}d", seconds / 86400)
+    }
 }

@@ -83,6 +83,7 @@ pub struct PeerDiagnostics {
     pub last_stream_path: Option<String>,
     pub discovery_mode: String,
     pub published_discovery: bool,
+    pub dht_hosting: bool,
 }
 
 #[derive(Clone)]
@@ -185,6 +186,7 @@ pub fn start_peer_node(config: PeerNodeConfig) -> Result<PeerNodeHandle, PeerErr
             .collect(),
         discovery_mode: config.discovery_mode.as_str().into(),
         published_discovery: false,
+        dht_hosting: config.dht_hosting,
         ..PeerDiagnostics::default()
     };
     let (status_tx, status_rx) = watch::channel(initial);

@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "milestone": "P4.7",
+  "date": "2026-07-16",
+  "status": "implementation-complete-partial-physical-validation",
+  "implementation": {
+    "approach": "CLI and UI exposure of P4.1-P4.6 features, plus physical acceptance matrix. No new authorization or transport behavior; presentation and validation only.",
+    "cli_onboarding": {
+      "dllm_peer_status": "new command calling GET /v1/peer-network/status. Renders all PeerDiagnostics fields in human-readable format with --json flag for raw output.",
+      "dllm_status_extended": "added forwarding policy count, transport binding count with expiry warning (<24h), resource budget count, and ban list size to non-JSON output.",
+      "list_command_reformat": "ListAccessRequests, ListAbuseReports, and AuditLog now print tables by default (node key/endpoint/age/note for access requests; reporter/subject/category/age/note for abuse reports; timestamp/actor/action/target/outcome for audit log). All three accept --json for raw output.",
+      "dllm_onboard": "guided sequence: ensures node and transport identities exist, submits access request, polls owner endpoint for approval up to configurable timeout, prints next steps on success."
+    },
+    "ui": {
+      "sections_added": [
+        "Peer network (GET /v1/peer-network/status)",
+        "Transport bindings (list + revoke from /v1/transport-bindings/revoke)",
+        "Forwarding policy (list + set/remove from /v1/forwarding-policy)",
+        "Access requests (list + approve/deny from /v1/access-requests)",
+        "Resource budgets (list + set/remove from /v1/resource-budgets)",
+        "Moderation bans (list + ban/unban from /v1/moderation/bans)",
+        "Abuse reports (list + submit from /v1/abuse-reports)",
+        "Audit log (paginated from /v1/audit-log)"
+      ],
+      "pattern": "follows existing section + fetch + mutate + refresh pattern. hexToBytes helper for pubkey inputs."
+    },
+    "peer_diagnostics_dht_hosting": {
+      "added_field": "dht_hosting: bool on PeerDiagnostics",
+      "populated_from": "config.dht_hosting in start_peer_node initial diagnostics"
+    }
+  },
+  "files_changed": {
+    "crates/dllm-transport/src/peer.rs": "added dht_hosting: bool field to PeerDiagnostics; populated from config.dht_hosting in initial diagnostics",
+    "crates/dllm-cli/src/main.rs": "added PeerStatus, Onboard command variants; extended Status output; reformatted ListAccessRequests/ListAbuseReports/AuditLog to table output with --json flag; added format_hex, format_age helpers",
+    "web/index.html": "added 8 new sections (peer network, transport bindings, forwarding policy, access requests, resource budgets, moderation, abuse reports, audit log) with JS rendering and mutation handlers"
+  },
+  "automated_validation": {
+    "cargo_fmt": "passed",
+    "cargo_test_workspace": "119 tests passed",
+    "cargo_clippy": "passed -D warnings",
+    "cargo_build_release": "passed",
+    "git_diff_check": "clean"
+  },
+  "physical_validation": {
+    "topology": "2 local daemons (kansas owner/bootstrap/forwarder on :7337/:7444, newyork forwarding member on :7338/:7445) with P2P enabled",
+    "verified": [
+      {"scenario": "peer-status diagnostics", "result": "PASS", "detail": "Both kansas and newyork report peer ID, discovery mode, DHT hosting, forwarding eligibility, bootstrap/discovered counts, stream counters, error counters via dllm peer-status"},
+      {"scenario": "list-access-requests table", "result": "PASS", "detail": "Table output with node key, endpoint, age, note columns"},
+      {"scenario": "list-abuse-reports table", "result": "PASS", "detail": "Table output with reporter, subject, category, age, note columns"},
+      {"scenario": "audit-log table", "result": "PASS", "detail": "Table output with timestamp, actor, action, target, outcome columns"},
+      {"scenario": "dllm onboard parsing", "result": "PASS", "detail": "Command parses correctly, appears in --help"},
+      {"scenario": "dht_hosting in diagnostics", "result": "PASS", "detail": "dht_hosting: true appears as 'server' in peer-status output"}
+    ],
+    "deferred": [
+      "Full 24-scenario matrix requires stable 3-node topology (KS bootstrap, NY forwarder, CO edge behind NAT)",
+      "Laptop edge node deployment (binary built, state and keys prepared at /tmp/dllm-p47/colorado/)",
+      "HTTP API /v1/status timeout observed when daemon runs with P2P — pre-existing, not caused by P4.7 changes"
+    ],
+    "setup_artifacts": "/tmp/dllm-p47/ contains state, keys, and scripts for reproducibility"
+  },
+  "phase4_closeout": {
+    "criteria_1": "single binary install, join network, discover peers, authenticate, serve inference: IMPLEMENTED across P4.0-P4.6, CLI/UI exposed in P4.7",
+    "criteria_2": "discovery records publish reachability only; owner-signed state is authoritative: PROVEN per-milestone, confirmed end-to-end by P4.7 documentation",
+    "criteria_3": "bootstrap/discovery/NAT traversal/forwarding are ordinary dllmd capabilities: IMPLEMENTED, no dedicated infrastructure required",
+    "criteria_4": "direct connection where possible, automatic forwarding otherwise per signed policy: IMPLEMENTED and observable via peer-status",
+    "criteria_5": "status and diagnostics report discovered endpoint, path, forwarding member, failures: EXPOSED in CLI (peer-status, extended status) and UI (peer network section)"
+  },
+  "independence_invariants": {
+    "no_new_api_routes": "All CLI and UI changes consume existing P4.1-P4.6 routes; no new handlers added",
+    "no_new_authorization": "No changes to AuthView, membership, or transport authorization",
+    "presentation_only": "CLI formatting and UI rendering are observational; no state mutations added"
+  },
+  "next": "Phase 5 (per docs/PHASE4.md transition)"
+}

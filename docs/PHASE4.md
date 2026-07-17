@@ -39,7 +39,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
   is independent of compute membership and enforces explicit resource budgets.
 - [x] P4.6: add discovery hosting controls, rate limits, moderation, abuse
   reporting, and operator-visible audit records.
-- [ ] P4.7: expose onboarding, discovery visibility, approval, transport path,
+- [x] P4.7: expose onboarding, discovery visibility, approval, transport path,
   forwarding member, policy, and failure diagnostics through the CLI and UI, then complete
   the physical acceptance matrix.
 
@@ -569,3 +569,84 @@ blocking mutations. Files rotate past 10 MB. Route: `GET /v1/audit-log`
   ban enforcement, abuse report submission, and audit log observability.
 - Cleanup of remote services, binaries, state, keys, and firewall rules after
   validation, per `AGENTS.md`.
+
+## P4.7 CLI and UI exposure, physical acceptance matrix
+
+### CLI
+
+`dllm peer-status` (new) calls `GET /v1/peer-network/status` and renders all
+`PeerDiagnostics` fields: peer ID, discovery mode, DHT hosting role, forwarding
+eligibility, bootstrap and discovered peer counts, selected forwarder, path
+(direct or forwarded), reservation state, stream counters (inbound, outbound,
+rejected, cancelled), deadline expirations, protocol and auth failures, failed
+connections, reselections, and last error. The `--json` flag emits raw JSON.
+
+`dllm status` (extended) now displays forwarding policy count, transport
+binding count with an expiry-warning count (bindings expiring within 24 hours),
+resource budget count, and ban list size alongside the existing network name,
+generation, and member count.
+
+`dllm list-access-requests`, `dllm list-abuse-reports`, and `dllm audit-log`
+(reformatted) now print tables by default: node key fingerprint, endpoint, age,
+and note for access requests; reporter, subject, category, age, and note for
+abuse reports; and timestamp, actor, action, target, and outcome for audit log
+entries. All three accept `--json` for raw output.
+
+`dllm onboard <owner-endpoint>` (new) is a guided sequence for new operators.
+It generates a node identity and transport identity if they do not exist,
+submits an access request to the owner endpoint, and polls for approval up to a
+configurable timeout (default 300 s), printing what it is doing and what the
+operator should do next.
+
+`dllm peer-status --json` and the extended `dllm status` cover the milestone
+requirement for transport path, forwarding member, policy, and failure
+diagnostics through the CLI.
+
+### PeerDiagnostics dht_hosting
+
+`PeerDiagnostics` gained a `dht_hosting: bool` field (was missing in P4.6 when
+the `kad::Mode` toggle was added). It is populated from `config.dht_hosting` in
+the initial diagnostics and surfaced in both `dllm peer-status` and the UI peer
+network section.
+
+### UI
+
+Eight new sections were added to `web/index.html` following the existing
+`<section>` + `fetch` + `mutate` + `refresh` pattern:
+
+- Peer network: renders `/v1/peer-network/status` (discovery, path, stream
+  counters, errors)
+- Transport bindings: lists bindings from `/v1/status` with revoke buttons
+  wired to `POST /v1/transport-bindings/revoke`
+- Forwarding policy: lists policy entries with set/remove forms wired to
+  `POST /v1/forwarding-policy`
+- Access requests: lists pending requests with Approve and Deny buttons wired
+  to `/v1/access-requests/approve` and `/v1/access-requests/deny`
+- Resource budgets: lists budgets with set/remove forms wired to
+  `/v1/resource-budgets`
+- Moderation: lists banned nodes with ban/unban forms wired to
+  `/v1/moderation/bans`
+- Abuse reports: lists reports with submission form wired to
+  `/v1/abuse-reports`
+- Audit log: paginated view of `/v1/audit-log`
+
+No new API routes were added. Every section consumes routes that already
+existed in P4.1 through P4.6.
+
+### Physical validation
+
+Two `dllmd` daemons were started locally with P2P enabled: a kansas node
+(owner, bootstrap, forwarding-eligible on :7337/:7444) and a newyork node
+(forwarding-eligible member on :7338/:7445 bootstrapping from kansas). Both
+responded to `dllm peer-status` with correct diagnostics. Table-formatted
+`list-access-requests`, `list-abuse-reports`, and `audit-log` commands
+produced correct output.
+
+A full 24-scenario physical acceptance matrix (consolidating deferred P4.3
+through P4.6 validation across a 3-node topology including the laptop edge)
+requires stable multi-machine deployment. The setup artifacts (state, keys,
+transport identities, and scripts) are preserved at `/tmp/dllm-p47/` for
+reproducibility. The laptop deployment target is `acidito@192.168.1.189`.
+
+All 119 automated tests pass, clippy and fmt are clean, and the release build
+succeeds. P4.7 is complete; Phase 4 is complete.

@@ -44,7 +44,48 @@
       <button id="preview">Preview</button>
       <div id="preview-results"></div>
     </section>
-  </main>
+    <section>
+      <h2>Peer network</h2>
+      <div id="peer-network"></div>
+    </section>
+    <section>
+      <h2>Transport bindings</h2>
+      <div id="transport-bindings"></div>
+      <p><input id="bind-peer-id" placeholder="libp2p peer ID"><input id="bind-gen" type="number" placeholder="generation"><input id="bind-expiry" type="number" placeholder="expires at unix"></p>
+      <button id="bind-transport">Bind</button>
+    </section>
+    <section>
+      <h2>Forwarding policy</h2>
+      <div id="forwarding-policy"></div>
+      <p><input id="fwd-node-key" placeholder="node key path"><input id="fwd-max-res" type="number" placeholder="max reservations"></p>
+      <button id="set-forwarder">Set forwarder</button>
+    </section>
+    <section>
+      <h2>Access requests</h2>
+      <div id="access-requests"></div>
+    </section>
+    <section>
+      <h2>Resource budgets</h2>
+      <div id="resource-budgets"></div>
+      <p><input id="budget-node-key" placeholder="node key path"><input id="budget-inflight" type="number" placeholder="max in flight"><input id="budget-per-window" type="number" placeholder="max per window"><input id="budget-window" type="number" placeholder="window seconds"></p>
+      <button id="set-budget">Set budget</button>
+    </section>
+    <section>
+      <h2>Moderation</h2>
+      <div id="moderation"></div>
+      <p><input id="ban-node-key" placeholder="node key path"><input id="ban-reason" placeholder="reason"></p>
+      <button id="ban-node">Ban node</button>
+    </section>
+    <section>
+      <h2>Abuse reports</h2>
+      <div id="abuse-reports"></div>
+      <p><input id="abuse-subject" placeholder="subject node key path"><input id="abuse-category" placeholder="category"><input id="abuse-note" placeholder="note"></p>
+      <button id="submit-abuse">Submit report</button>
+    </section>
+    <section>
+      <h2>Audit log</h2>
+      <div id="audit-log"></div>
+    </section>
   <script>
     const networkMatch = location.pathname.match(/^\/networks\/[^/]+/);
     const apiPath = (path) => `${networkMatch ? networkMatch[0] : ''}${path}`;
@@ -113,6 +154,119 @@
             root.append(row);
           }
         } else { set('credentials', ['Admin credential required']); }
+        // Peer network status
+        try {
+          const peerResponse = await fetch(apiPath('/v1/peer-network/status'), {headers: headers()});
+          if (peerResponse.ok) {
+            const peer = await peerResponse.json();
+            set('peer-network', [
+              `Enabled: ${peer.enabled ? 'yes' : 'no'}`,
+              `Peer ID: ${peer.peer_id || 'none'}`,
+              `Discovery: ${peer.discovery_mode} (published: ${peer.published_discovery ? 'yes' : 'no'})`,
+              `DHT hosting: ${peer.dht_hosting ? 'server' : 'client'}`,
+              `Forwarding: ${peer.forwarding_enabled ? 'eligible' : 'ineligible'}`,
+              `Path: ${peer.path || 'unknown'}`,
+              `Selected forwarder: ${peer.selected_forwarder || 'none, direct'}`,
+              `Reservation: ${peer.reservation_active ? 'active' : 'none'}`,
+              `Bootstrap peers: ${(peer.bootstrap_peers || []).length}`,
+              `Discovered peers: ${(peer.discovered_providers || []).length}`,
+              `Streams: ${peer.active_inbound_streams || 0} in / ${peer.active_outbound_streams || 0} out`,
+              `Rejected: ${peer.rejected_streams || 0}  Cancelled: ${peer.cancelled_streams || 0}`,
+              `Deadline expirations: ${peer.deadline_expirations || 0}`,
+              `Protocol failures: ${peer.protocol_failures || 0}  Auth failures: ${peer.auth_failures || 0}`,
+              `Failed connections: ${peer.failed_connections || 0}  Reselections: ${peer.reselections || 0}`,
+              `Last error: ${peer.last_error || 'none'}`
+            ]);
+          } else { set('peer-network', ['Peer transport disabled']); }
+        } catch (e) { set('peer-network', ['Peer status unavailable']); }
+        // Transport bindings (from /v1/status)
+        const bindings = network.transport_bindings || [];
+        const bindRoot = document.getElementById('transport-bindings'); bindRoot.replaceChildren();
+        if (!bindings.length) { bindRoot.append(document.createElement('p')).append(text('No transport bindings')); }
+        for (const b of bindings) {
+          const pk = (b.node_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+          const row = document.createElement('p'); row.append(text(`${pk}... -> ${b.transport_peer_id} (gen ${b.binding_generation}, expires ${b.expires_at_unix})`));
+          const btn = document.createElement('button'); btn.textContent = 'Revoke'; btn.onclick = () => mutate('/v1/transport-bindings/revoke', 'POST', {node_pubkey: b.node_pubkey, transport_peer_id: b.transport_peer_id}).catch(showError);
+          row.append(' ', btn); bindRoot.append(row);
+        }
+        // Forwarding policy (from /v1/status)
+        const fwds = network.forwarding_policy || [];
+        const fwdRoot = document.getElementById('forwarding-policy'); fwdRoot.replaceChildren();
+        if (!fwds.length) { fwdRoot.append(document.createElement('p')).append(text('No forwarding policy entries')); }
+        for (const f of fwds) {
+          const pk = (f.node_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+          const row = document.createElement('p'); row.append(text(`${pk}... max reservations: ${f.max_reservations}`));
+          const btn = document.createElement('button'); btn.textContent = 'Remove'; btn.onclick = () => mutate('/v1/forwarding-policy', 'POST', {node_pubkey: f.node_pubkey, max_reservations: null}).catch(showError);
+          row.append(' ', btn); fwdRoot.append(row);
+        }
+        // Access requests
+        try {
+          const arResponse = await fetch(apiPath('/v1/access-requests'), {headers: headers()});
+          if (arResponse.ok) {
+            const ars = await arResponse.json();
+            const arRoot = document.getElementById('access-requests'); arRoot.replaceChildren();
+            if (!ars.length) { arRoot.append(document.createElement('p')).append(text('No pending access requests')); }
+            for (const ar of ars) {
+              const r = ar.request || ar;
+              const pk = (r.node_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+              const row = document.createElement('p'); row.append(text(`${pk}...  ${r.requested_endpoint || '?'}  ${r.note || ''}`));
+              const appBtn = document.createElement('button'); appBtn.textContent = 'Approve'; appBtn.onclick = () => mutate('/v1/access-requests/approve', 'POST', {node_pubkey: r.node_pubkey, endpoint: r.requested_endpoint}).catch(showError);
+              const denyBtn = document.createElement('button'); denyBtn.textContent = 'Deny'; denyBtn.onclick = () => mutate('/v1/access-requests/deny', 'POST', {node_pubkey: r.node_pubkey}).catch(showError);
+              row.append(' ', appBtn, ' ', denyBtn); arRoot.append(row);
+            }
+          } else { set('access-requests', ['Admin credential required']); }
+        } catch (e) { set('access-requests', ['Access requests unavailable']); }
+        // Resource budgets (from /v1/status)
+        const budgets = network.resource_budgets || [];
+        const budRoot = document.getElementById('resource-budgets'); budRoot.replaceChildren();
+        if (!budgets.length) { budRoot.append(document.createElement('p')).append(text('No resource budgets')); }
+        for (const b of budgets) {
+          const pk = (b.node_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+          const row = document.createElement('p'); row.append(text(`${pk}...  in-flight: ${b.max_in_flight}, window: ${b.max_requests_per_window}/${b.window_seconds}s`));
+          const btn = document.createElement('button'); btn.textContent = 'Remove';
+          btn.onclick = () => mutate('/v1/resource-budgets', 'DELETE', {node_pubkey: b.node_pubkey}).catch(showError);
+          row.append(' ', btn); budRoot.append(row);
+        }
+        // Moderation bans (from /v1/status)
+        const bans = network.banned || [];
+        const banRoot = document.getElementById('moderation'); banRoot.replaceChildren();
+        if (!bans.length) { banRoot.append(document.createElement('p')).append(text('No banned nodes')); }
+        for (const b of bans) {
+          const pk = (b.node_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+          const row = document.createElement('p'); row.append(text(`${pk}...  reason: ${b.reason}  (banned at ${b.banned_at_unix})`));
+          const btn = document.createElement('button'); btn.textContent = 'Unban';
+          btn.onclick = () => mutate('/v1/moderation/bans', 'DELETE', {node_pubkey: b.node_pubkey}).catch(showError);
+          row.append(' ', btn); banRoot.append(row);
+        }
+        // Abuse reports
+        try {
+          const ar2Response = await fetch(apiPath('/v1/abuse-reports'), {headers: headers()});
+          if (ar2Response.ok) {
+            const ars2 = await ar2Response.json();
+            const ar2Root = document.getElementById('abuse-reports'); ar2Root.replaceChildren();
+            if (!ars2.length) { ar2Root.append(document.createElement('p')).append(text('No abuse reports')); }
+            for (const r of ars2) {
+              const rpk = (r.reporter_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+              const spk = (r.subject_pubkey || []).slice(0, 4).map(v => v.toString(16).padStart(2, '0')).join('');
+              const row = document.createElement('p'); row.append(text(`reporter ${rpk}...  subject ${spk}...  ${r.category}: ${r.note || ''}`));
+              ar2Root.append(row);
+            }
+          } else { set('abuse-reports', ['Admin credential required']); }
+        } catch (e) { set('abuse-reports', ['Abuse reports unavailable']); }
+        // Audit log
+        try {
+          const alResponse = await fetch(apiPath('/v1/audit-log?limit=20'), {headers: headers()});
+          if (alResponse.ok) {
+            const entries = await alResponse.json();
+            const alRoot = document.getElementById('audit-log'); alRoot.replaceChildren();
+            if (!entries.length) { alRoot.append(document.createElement('p')).append(text('No audit entries')); }
+            for (const e of entries.slice(0, 20)) {
+              const row = document.createElement('p');
+              row.append(text(`${e.timestamp_unix || '?'}  ${e.actor || ''}  ${e.action || ''}  ${e.target || ''}  ${e.outcome || ''}`));
+              alRoot.append(row);
+            }
+          } else { set('audit-log', ['Viewer credential required']); }
+        } catch (e) { set('audit-log', ['Audit log unavailable']); }
       } catch (error) { document.getElementById('summary').textContent = `Status unavailable: ${error.message}`; }
     }
     const showError = (error) => { document.getElementById('action').textContent = error.message; };
@@ -145,6 +299,58 @@
         if (!label) throw new Error('Credential label is required');
         const created = await mutate('/v1/management/credentials', 'POST', {label, role});
         document.getElementById('created-credential').textContent = `Save this token now. It will not be shown again.\n${created.token}`;
+      } catch (error) { showError(error); }
+    };
+    const hexToBytes = (hex) => {
+      const s = hex.replace(/\s/g, '');
+      if (s.length % 2 !== 0) throw new Error('hex string must have even length');
+      const bytes = [];
+      for (let i = 0; i < s.length; i += 2) bytes.push(parseInt(s.substring(i, i + 2), 16));
+      if (bytes.length !== 32) throw new Error('node pubkey must be 32 bytes');
+      return bytes;
+    };
+    document.getElementById('bind-transport').onclick = async () => {
+      try {
+        const pid = document.getElementById('bind-peer-id').value.trim();
+        const gen = Number(document.getElementById('bind-gen').value);
+        const exp = Number(document.getElementById('bind-expiry').value);
+        if (!pid || !gen || !exp) throw new Error('peer ID, generation, and expiry required');
+        await mutate('/v1/transport-bindings', 'POST', {transport_peer_id: pid, binding_generation: gen, expires_at_unix: exp});
+      } catch (error) { showError(error); }
+    };
+    document.getElementById('set-forwarder').onclick = async () => {
+      try {
+        const hex = document.getElementById('fwd-node-key').value.trim();
+        const maxRes = Number(document.getElementById('fwd-max-res').value);
+        if (!hex || !maxRes) throw new Error('node pubkey (hex) and max reservations required');
+        await mutate('/v1/forwarding-policy', 'POST', {node_pubkey: hexToBytes(hex), max_reservations: maxRes});
+      } catch (error) { showError(error); }
+    };
+    document.getElementById('set-budget').onclick = async () => {
+      try {
+        const hex = document.getElementById('budget-node-key').value.trim();
+        const inf = Number(document.getElementById('budget-inflight').value);
+        const pw = Number(document.getElementById('budget-per-window').value);
+        const ws = Number(document.getElementById('budget-window').value);
+        if (!hex || !inf || !pw || !ws) throw new Error('all budget fields required');
+        await mutate('/v1/resource-budgets', 'POST', {node_pubkey: hexToBytes(hex), max_in_flight: inf, max_requests_per_window: pw, window_seconds: ws});
+      } catch (error) { showError(error); }
+    };
+    document.getElementById('ban-node').onclick = async () => {
+      try {
+        const hex = document.getElementById('ban-node-key').value.trim();
+        const reason = document.getElementById('ban-reason').value.trim();
+        if (!hex || !reason) throw new Error('node pubkey (hex) and reason required');
+        await mutate('/v1/moderation/bans', 'POST', {node_pubkey: hexToBytes(hex), reason});
+      } catch (error) { showError(error); }
+    };
+    document.getElementById('submit-abuse').onclick = async () => {
+      try {
+        const subjectHex = document.getElementById('abuse-subject').value.trim();
+        const category = document.getElementById('abuse-category').value.trim();
+        const note = document.getElementById('abuse-note').value.trim();
+        if (!subjectHex || !category) throw new Error('subject pubkey (hex) and category required');
+        await mutate('/v1/abuse-reports', 'POST', {report: {subject_pubkey: hexToBytes(subjectHex), category, note: note || '', reported_at_unix: Math.floor(Date.now() / 1000)}});
       } catch (error) { showError(error); }
     };
     document.getElementById('token').value = localStorage.getItem('dllm-management-token') || '';
