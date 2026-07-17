@@ -1,8 +1,8 @@
 use dllm_protocol::{
-    now_unix, AccessRequest, ForwardingPolicy, HardwareProfile, Member, ModelAssignment,
-    NetworkState, Placement, PlacementLifecycle, ResourceBudget, SignedAccessRequest,
-    SignedJoinToken, SignedState, StateError, TokenError, TransportEndpointBinding,
-    TransportEndpointRevocation, SCHEMA_VERSION,
+    now_unix, AbuseReport, AccessRequest, ForwardingPolicy, HardwareProfile, Member, MembershipBan,
+    ModelAssignment, NetworkState, Placement, PlacementLifecycle, ResourceBudget,
+    SignedAccessRequest, SignedJoinToken, SignedState, StateError, TokenError,
+    TransportEndpointBinding, TransportEndpointRevocation, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -12,11 +12,13 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub mod api;
+pub mod audit;
 pub mod backup;
 pub mod budget;
 pub mod credentials;
 pub mod inference;
 pub mod peer_service;
+pub mod rate_limit;
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -72,6 +74,14 @@ pub enum StoreError {
     BudgetNodeUnknown,
     #[error("resource budget must allow at least one request")]
     EmptyResourceBudget,
+    #[error("pending access request queue is full")]
+    PendingQueueFull,
+    #[error("node is banned: {0}")]
+    NodeIsBanned(String),
+    #[error("node is not banned")]
+    BanNotFound,
+    #[error("abuse report can only be submitted by a network member")]
+    AbuseReportNotMember,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +91,8 @@ pub struct PersistedState {
     pub redeemed_token_ids: HashSet<Uuid>,
     #[serde(default)]
     pub pending_access_requests: Vec<AccessRequest>,
+    #[serde(default)]
+    pub abuse_reports: Vec<AbuseReport>,
 }
 
 pub struct NetworkStore {
@@ -88,6 +100,7 @@ pub struct NetworkStore {
     pub state: SignedState,
     used_tokens: HashSet<Uuid>,
     pending_access_requests: Vec<AccessRequest>,
+    abuse_reports: Vec<AbuseReport>,
 }
 
 impl NetworkStore {
@@ -128,6 +141,7 @@ impl NetworkStore {
             transport_revocations: Vec::new(),
             forwarding_policy: Vec::new(),
             resource_budgets: Vec::new(),
+            banned: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
@@ -135,6 +149,7 @@ impl NetworkStore {
             state: signed,
             used_tokens: HashSet::new(),
             pending_access_requests: Vec::new(),
+            abuse_reports: Vec::new(),
         }
     }
 
@@ -158,6 +173,7 @@ impl NetworkStore {
             state: persisted.signed_state,
             used_tokens: persisted.redeemed_token_ids,
             pending_access_requests: persisted.pending_access_requests,
+            abuse_reports: persisted.abuse_reports,
         })
     }
 
@@ -174,6 +190,7 @@ impl NetworkStore {
             state: persisted.signed_state,
             used_tokens: persisted.redeemed_token_ids,
             pending_access_requests: persisted.pending_access_requests,
+            abuse_reports: persisted.abuse_reports,
         })
     }
 
@@ -231,11 +248,31 @@ impl NetworkStore {
         Ok(())
     }
 
+    const MAX_PENDING_ACCESS_REQUESTS: usize = 1000;
+
     pub fn submit_access_request(&mut self, signed: SignedAccessRequest) -> Result<(), StoreError> {
         signed
             .verify()
             .map_err(|_| StoreError::InvalidAccessRequestSignature)?;
         let node_pubkey = signed.request.node_pubkey;
+        // Reject banned identities before queuing.
+        if self
+            .state
+            .state
+            .banned
+            .iter()
+            .any(|ban| ban.node_pubkey == node_pubkey)
+        {
+            return Err(StoreError::NodeIsBanned(
+                self.state
+                    .state
+                    .banned
+                    .iter()
+                    .find(|ban| ban.node_pubkey == node_pubkey)
+                    .map(|ban| ban.reason.clone())
+                    .unwrap_or_default(),
+            ));
+        }
         if self.state.state.owner_pubkey == node_pubkey
             || self
                 .state
@@ -252,6 +289,9 @@ impl NetworkStore {
             .any(|req| req.node_pubkey == node_pubkey)
         {
             return Err(StoreError::AccessRequestAlreadyPending);
+        }
+        if self.pending_access_requests.len() >= Self::MAX_PENDING_ACCESS_REQUESTS {
+            return Err(StoreError::PendingQueueFull);
         }
         self.pending_access_requests.push(signed.request);
         Ok(())
@@ -365,6 +405,69 @@ impl NetworkStore {
         next.generation += 1;
         self.state = self.sign(next)?;
         Ok(true)
+    }
+
+    pub fn ban_node(&mut self, node_pubkey: [u8; 32], reason: String) -> Result<bool, StoreError> {
+        // validate_state rejects a ban overlapping an active member, so the caller
+        // must revoke first.
+        if self
+            .state
+            .state
+            .banned
+            .iter()
+            .any(|ban| ban.node_pubkey == node_pubkey)
+        {
+            return Ok(false);
+        }
+        let mut next = self.state.state.clone();
+        next.banned.push(MembershipBan {
+            node_pubkey,
+            banned_at_unix: now_unix(),
+            reason,
+        });
+        next.banned.sort_by_key(|ban| ban.node_pubkey);
+        next.generation += 1;
+        self.state = self.sign(next)?;
+        Ok(true)
+    }
+
+    pub fn unban_node(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
+        let mut next = self.state.state.clone();
+        let before = next.banned.len();
+        next.banned.retain(|ban| ban.node_pubkey != node_pubkey);
+        if next.banned.len() == before {
+            return Err(StoreError::BanNotFound);
+        }
+        next.generation += 1;
+        self.state = self.sign(next)?;
+        Ok(true)
+    }
+
+    pub fn submit_abuse_report(&mut self, report: AbuseReport) -> Result<(), StoreError> {
+        let is_member = self.state.state.owner_pubkey == report.reporter_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == report.reporter_pubkey);
+        if !is_member {
+            return Err(StoreError::AbuseReportNotMember);
+        }
+        self.abuse_reports.push(report);
+        Ok(())
+    }
+
+    pub fn list_abuse_reports(&self) -> &[AbuseReport] {
+        &self.abuse_reports
+    }
+
+    pub fn clear_abuse_report(&mut self, index: usize) -> Result<(), StoreError> {
+        if index >= self.abuse_reports.len() {
+            return Err(StoreError::AccessRequestNotFound);
+        }
+        self.abuse_reports.remove(index);
+        Ok(())
     }
 
     pub fn revoke_member(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
@@ -748,6 +851,7 @@ impl NetworkStore {
             signed_state: self.state.clone(),
             redeemed_token_ids: self.used_tokens.clone(),
             pending_access_requests: self.pending_access_requests.clone(),
+            abuse_reports: self.abuse_reports.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&persisted)?;
         let temporary = path.with_extension("tmp");

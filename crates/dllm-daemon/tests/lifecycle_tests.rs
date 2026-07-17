@@ -39,6 +39,9 @@ fn api_state() -> api::ApiState {
         auth_view: None,
         peer_client: None,
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
+        rate_limiter: Arc::new(dllm_daemon::rate_limit::RateLimiter::new()),
+        access_request_rate_config: dllm_daemon::rate_limit::RateLimitConfig::default(),
+        audit_log: None,
     }
 }
 

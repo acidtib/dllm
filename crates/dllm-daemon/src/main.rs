@@ -1,9 +1,11 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
 use dllm_daemon::{
     api,
+    audit::AuditLog,
     budget::BudgetEnforcer,
     credentials::{CredentialRegistry, ManagementCredential},
     inference::{InferenceCredential, InferenceRegistry},
+    rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore,
 };
 use dllm_protocol::now_unix;
@@ -167,6 +169,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         auth_view,
         peer_client,
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
+        rate_limiter: Arc::new(RateLimiter::new()),
+        access_request_rate_config: RateLimitConfig {
+            max_requests: std::env::var("DLLMD_ACCESS_REQUEST_RATE_LIMIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            window_seconds: std::env::var("DLLMD_ACCESS_REQUEST_RATE_WINDOW")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60),
+        },
+        audit_log: Some(Arc::new(AuditLog::new(
+            state_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("audit"),
+            10 * 1024 * 1024, // 10 MB rotation threshold
+        ))),
     };
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
@@ -199,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let network_public_url = config
             .public_url
             .unwrap_or_else(|| format!("{public_url}/networks/{network_id}"));
+        let additional_state_path = config.state_path.clone();
         additional.push((
             network_id,
             api::ApiState {
@@ -229,6 +250,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 auth_view: None,
                 peer_client: None,
                 budget_enforcer: Arc::new(BudgetEnforcer::new()),
+                rate_limiter: Arc::new(RateLimiter::new()),
+                access_request_rate_config: RateLimitConfig::default(),
+                audit_log: Some(Arc::new(AuditLog::new(
+                    additional_state_path
+                        .parent()
+                        .unwrap_or_else(|| std::path::Path::new("."))
+                        .join("audit"),
+                    10 * 1024 * 1024,
+                ))),
             },
         ));
     }
@@ -249,13 +279,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
         axum_server::bind_rustls(bind_address, config)
             .handle(handle)
-            .serve(app.into_make_service())
+            .serve(app.into_make_service_with_connect_info::<SocketAddr>())
             .await?;
     } else {
         let listener = TcpListener::bind(bind_address).await?;
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown())
-            .await?;
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown())
+        .await?;
     }
     if let Some(worker) = runtime_worker {
         worker.shutdown().await?;
@@ -345,6 +378,18 @@ fn peer_config(
         eligible_forwarders,
         reserve_forwarding_path: env_bool("DLLMD_P2P_RESERVE", reserve_default)?,
         discovery_mode,
+        dht_hosting: env_bool("DLLMD_P2P_DHT_HOSTING", true)?,
+        max_established_incoming: std::env::var("DLLMD_P2P_MAX_ESTABLISHED_INCOMING")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        max_established_per_peer: std::env::var("DLLMD_P2P_MAX_ESTABLISHED_PER_PEER")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        max_pending_incoming: std::env::var("DLLMD_P2P_MAX_PENDING_INCOMING")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        reservation_rate_limit: None,
+        circuit_src_rate_limit: None,
     }))
 }
 

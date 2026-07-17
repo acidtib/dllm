@@ -144,6 +144,7 @@ mod tests {
             transport_revocations: vec![],
             forwarding_policy: vec![],
             resource_budgets: budgets,
+            banned: vec![],
         }
     }
 

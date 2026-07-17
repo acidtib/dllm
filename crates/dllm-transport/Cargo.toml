@@ -9,7 +9,7 @@ clap.workspace = true
 dllm-protocol.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
-libp2p = { version = "0.56.0", features = ["autonat", "cbor", "dcutr", "dns", "identify", "kad", "macros", "noise", "ping", "quic", "relay", "request-response", "serde", "tcp", "tokio", "yamux"] }
+libp2p = { version = "0.56.0", features = ["autonat", "cbor", "dcutr", "dns", "identify", "kad", "macros", "memory-connection-limits", "noise", "ping", "quic", "relay", "request-response", "serde", "tcp", "tokio", "yamux"] }
 serde.workspace = true
 thiserror.workspace = true
 tokio.workspace = true

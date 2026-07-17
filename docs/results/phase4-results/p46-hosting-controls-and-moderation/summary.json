@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "milestone": "P4.6",
+  "date": "2026-07-16",
+  "status": "implementation-and-automated-validation-complete",
+  "implementation": {
+    "approach": "discovery hosting controls, rate limits, moderation (bans), abuse reporting, and operator-visible audit records",
+    "discovery_hosting_controls": {
+      "connection_limits": "libp2p::connection_limits::Behaviour in Behaviour struct with configurable max_established_incoming, max_established_per_peer, max_pending_incoming via env vars",
+      "kademlia_bounds": "explicit MemoryStoreConfig with max_records=100, max_provided_keys=10, max_providers_per_key=20, max_value_bytes=65536",
+      "dht_hosting_toggle": "DLLMD_P2P_DHT_HOSTING env var controls kad::Mode::Server vs Client, independent of DiscoveryMode",
+      "feature_flag": "added memory-connection-limits to libp2p features in dllm-transport/Cargo.toml"
+    },
+    "rate_limits": {
+      "connect_info": "into_make_service_with_connect_info::<SocketAddr>() in both TLS (axum_server) and non-TLS (axum::serve) paths",
+      "rate_limiter": "crates/dllm-daemon/src/rate_limit.rs — generic per-key sliding window RateLimiter following BudgetEnforcer pattern",
+      "ip_rate_limit": "middleware on POST /v1/access-requests keyed by source IP; configurable via DLLMD_ACCESS_REQUEST_RATE_LIMIT (default 10) and DLLMD_ACCESS_REQUEST_RATE_WINDOW (default 60s)",
+      "pubkey_cooldown": "submit_access_request checks for existing pending request (existing AccessRequestAlreadyPending guard)",
+      "queue_cap": "MAX_PENDING_ACCESS_REQUESTS = 1000; returns PendingQueueFull when full",
+      "abuse_report_rate_limit": "POST /v1/abuse-reports rate-limited by same RateLimiter"
+    },
+    "moderation": {
+      "data_model": "MembershipBan { node_pubkey, banned_at_unix, reason } on NetworkState with #[serde(default, skip_serializing_if = \"Vec::is_empty\")]",
+      "validate_state": "BanTargetIsMember when ban overlaps active member or owner",
+      "ban_check_http": "submit_access_request checks banned list before queuing; returns NodeIsBanned(reason)",
+      "ban_check_libp2p": "AuthView::authorize() checks banned list after membership validation; returns AuthError::Banned",
+      "api": "POST /v1/moderation/bans (admin-tier upsert), DELETE /v1/moderation/bans (admin-tier remove)",
+      "store": "ban_node/unban_node follow clone-bump-sign pattern mirroring set_forwarding_policy/remove_resource_budget"
+    },
+    "abuse_reporting": {
+      "data_model": "AbuseReport { reporter_pubkey, subject_pubkey, category, note, reported_at_unix }",
+      "storage": "unsigned local queue in PersistedState and NetworkStore, matching pending_access_requests pattern",
+      "api": "POST /v1/abuse-reports, GET /v1/abuse-reports (admin-tier)",
+      "validation": "submit_abuse_report checks reporter is a known member (AbuseReportNotMember)"
+    },
+    "audit_records": {
+      "component": "AuditLog in crates/dllm-daemon/src/audit.rs",
+      "format": "append-only newline-delimited JSON (JSONL)",
+      "concurrency": "mpsc::UnboundedSender to dedicated tokio::spawn writer task; best-effort, drops on failure",
+      "rotation": "10 MB threshold, rotates to audit.N.jsonl",
+      "coverage": "access request submit/approve/deny, budget set/remove, member revoke, forwarding policy set/remove, transport bind/revoke, model assign/unassign, placement drain/resume, owner transfer, ban/unban, abuse report submit, rate-limit rejections",
+      "api": "GET /v1/audit-log (viewer-tier, ?since=<unix>&limit=<n>)"
+    },
+    "cli": [
+      "dllm ban-node <key> --reason <text> --owner",
+      "dllm unban-node <key> --owner",
+      "dllm report-abuse <subject-key> --category <text> --note <text>",
+      "dllm list-abuse-reports",
+      "dllm audit-log --since <unix> --limit <n>"
+    ],
+    "new_state_errors": ["BanTargetIsMember"],
+    "new_store_errors": ["PendingQueueFull", "NodeIsBanned", "BanNotFound", "AbuseReportNotMember"],
+    "new_auth_errors": ["Banned"]
+  },
+  "files_changed": {
+    "crates/dllm-protocol/src/lib.rs": "MembershipBan, AbuseReport structs; banned field on NetworkState; BanTargetIsMember StateError; validate_state ban check; 5 new tests",
+    "crates/dllm-daemon/src/lib.rs": "4 new StoreError variants; abuse_reports on PersistedState and NetworkStore; ban_node, unban_node, submit_abuse_report, list_abuse_reports, clear_abuse_report methods; ban check and queue cap in submit_access_request; create/load/load_replica/save updated for abuse_reports",
+    "crates/dllm-daemon/src/rate_limit.rs": "NEW FILE — generic per-key sliding-window RateLimiter; 4 tests",
+    "crates/dllm-daemon/src/audit.rs": "NEW FILE — append-only JSONL audit log with rotation and mpsc-based async writer; 3 tests",
+    "crates/dllm-daemon/src/api.rs": "RateLimiter, AuditLog fields on ApiState; BanNodeRequest, UnbanNodeRequest, SubmitAbuseReportRequest, AuditLogQuery types; rate-limit middleware; ban_node, unban_node, submit_abuse_report, list_abuse_reports, audit_log handlers; new routes on admin and viewer routers",
+    "crates/dllm-daemon/src/main.rs": "into_make_service_with_connect_info in both TLS and non-TLS paths; RateLimiter, RateLimitConfig, AuditLog construction; new PeerNodeConfig fields (dht_hosting, connection limits); DLLMD_ACCESS_REQUEST_RATE_LIMIT/WINDOW env vars",
+    "crates/dllm-transport/Cargo.toml": "added memory-connection-limits libp2p feature",
+    "crates/dllm-transport/src/peer.rs": "connection_limits::Behaviour in Behaviour struct; PeerNodeConfig fields for dht_hosting, connection limits, relay rate limiters; MemoryStoreConfig for Kademlia; conditional kad::Mode; 12 test PeerNodeConfig sites updated",
+    "crates/dllm-transport/src/auth.rs": "AuthError::Banned variant; ban-list check in authorize(); banned: vec![] in test helper",
+    "crates/dllm-cli/src/main.rs": "BanNode, UnbanNode, ReportAbuse, ListAbuseReports, AuditLog subcommands",
+    "crates/dllm-daemon/tests/lifecycle_tests.rs": "rate_limiter, access_request_rate_config, audit_log fields on test ApiState",
+    "crates/dllm-daemon/src/budget.rs": "banned: vec![] in test helper",
+    "crates/dllm-daemon/Cargo.toml": "added hex dependency"
+  },
+  "automated_validation": {
+    "cargo_fmt": "passed",
+    "cargo_test_workspace": "119 tests passed (up from 107)",
+    "cargo_clippy": "passed -D warnings",
+    "cargo_build_release": "passed",
+    "total_tests": 119,
+    "new_tests": [
+      {"name": "ban_overlapping_active_member_rejected", "type": "unit (protocol)", "assertions": "Ban of active member → BanTargetIsMember"},
+      {"name": "ban_targeting_owner_rejected", "type": "unit (protocol)", "assertions": "Ban of owner → BanTargetIsMember"},
+      {"name": "ban_non_member_accepted", "type": "unit (protocol)", "assertions": "Ban of stranger is accepted; roundtrips through sign/verify"},
+      {"name": "membership_ban_roundtrips", "type": "unit (protocol)", "assertions": "MembershipBan serde roundtrip"},
+      {"name": "abuse_report_roundtrips", "type": "unit (protocol)", "assertions": "AbuseReport serde roundtrip"},
+      {"name": "admits_up_to_max_requests", "type": "unit (rate limiter)", "assertions": "Up to max_requests admitted; next fails"},
+      {"name": "window_rollover_admits_again", "type": "unit (rate limiter)", "assertions": "After window passes, admissions resume"},
+      {"name": "isolated_keys", "type": "unit (rate limiter)", "assertions": "Key A exhaustion does not affect Key B"},
+      {"name": "prune_removes_stale_keys", "type": "unit (rate limiter)", "assertions": "Stale entries removed by prune"},
+      {"name": "log_writes_entries", "type": "unit (audit)", "assertions": "Two entries written; both deserialize with correct fields"},
+      {"name": "rotation_creates_new_file", "type": "unit (audit)", "assertions": "Small max_bytes triggers rotation to audit.1.jsonl"},
+      {"name": "dropped_sender_does_not_panic", "type": "unit (audit)", "assertions": "Log call with no receiver does not panic"}
+    ]
+  },
+  "release_binary": {
+    "build_passed": true,
+    "platform": "x86_64-unknown-linux-gnu",
+    "optimized": true
+  },
+  "independence_invariants": {
+    "connection_limits_not_authorization": "connection_limits::Behaviour is local resource protection configured via env vars, not owner-signed state. Passing it is necessary but not sufficient.",
+    "ban_does_not_implicitly_revoke": "validate_state rejects BanTargetIsMember; revoke_member must be called first",
+    "ban_does_not_touch_budget_or_forwarding": "ban_node/unban_node only mutate the banned Vec; ResourceBudget and ForwardingPolicy are untouched",
+    "audit_is_observational": "audit log uses best-effort mpsc; failures drop entries silently and never block or roll back mutations",
+    "abuse_reports_not_authoritative": "unsigned local queue, same pattern as pending_access_requests",
+    "rate_limits_are_resource_protection": "rate limits are a local daemon gate, not a membership decision"
+  },
+  "next_milestone": "P4.7"
+}

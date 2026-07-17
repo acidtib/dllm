@@ -27,6 +27,8 @@ pub enum AuthError {
     StaleState,
     #[error("transport binding is superseded by a newer generation")]
     StaleBinding,
+    #[error("node is banned")]
+    Banned,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +87,14 @@ impl AuthView {
             return Err(AuthError::NotMember);
         }
 
+        if state
+            .banned
+            .iter()
+            .any(|ban| ban.node_pubkey == binding.node_pubkey)
+        {
+            return Err(AuthError::Banned);
+        }
+
         Ok(PeerAuth {
             node_pubkey: binding.node_pubkey,
             member,
@@ -136,6 +146,7 @@ mod tests {
             transport_revocations: revocations,
             forwarding_policy: vec![],
             resource_budgets: vec![],
+            banned: vec![],
         }
     }
 

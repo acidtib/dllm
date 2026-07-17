@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use libp2p::{
-    autonat, dcutr, identify, identity, kad, noise, ping, relay,
+    autonat, connection_limits, dcutr, identify, identity, kad, noise, ping, relay,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
@@ -49,6 +49,12 @@ pub struct PeerNodeConfig {
     pub eligible_forwarders: HashSet<PeerId>,
     pub reserve_forwarding_path: bool,
     pub discovery_mode: DiscoveryMode,
+    pub dht_hosting: bool,
+    pub max_established_incoming: Option<u32>,
+    pub max_established_per_peer: Option<u32>,
+    pub max_pending_incoming: Option<u32>,
+    pub reservation_rate_limit: Option<u32>,
+    pub circuit_src_rate_limit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
@@ -124,6 +130,7 @@ pub enum PeerError {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
+    connection_limits: connection_limits::Behaviour,
     relay_client: relay::client::Behaviour,
     relay_server: relay::Behaviour,
     dcutr: dcutr::Behaviour,
@@ -204,6 +211,10 @@ async fn run_peer_node(
     let local_peer = key.public().to_peer_id();
     let forwarding_enabled = config.forwarding_enabled;
     let max_reservations = config.max_reservations;
+    let dht_hosting = config.dht_hosting;
+    let max_established_incoming = config.max_established_incoming;
+    let max_established_per_peer = config.max_established_per_peer;
+    let max_pending_incoming = config.max_pending_incoming;
     let mut swarm = libp2p::SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
@@ -225,7 +236,24 @@ async fn run_peer_node(
                 0
             };
             relay_config.max_circuits = relay_config.max_reservations;
+            let mut conn_limits = connection_limits::ConnectionLimits::default();
+            if let Some(n) = max_established_incoming {
+                conn_limits = conn_limits.with_max_established_incoming(Some(n));
+            }
+            if let Some(n) = max_established_per_peer {
+                conn_limits = conn_limits.with_max_established_per_peer(Some(n));
+            }
+            if let Some(n) = max_pending_incoming {
+                conn_limits = conn_limits.with_max_pending_incoming(Some(n));
+            }
+            let kademlia_store_config = kad::store::MemoryStoreConfig {
+                max_records: 100,
+                max_provided_keys: 10,
+                max_providers_per_key: 20,
+                max_value_bytes: 65536,
+            };
             Behaviour {
+                connection_limits: connection_limits::Behaviour::new(conn_limits),
                 relay_client,
                 relay_server: relay::Behaviour::new(local_peer, relay_config),
                 dcutr: dcutr::Behaviour::new(local_peer),
@@ -234,7 +262,10 @@ async fn run_peer_node(
                     identity.public(),
                 )),
                 autonat: autonat::Behaviour::new(local_peer, Default::default()),
-                kademlia: kad::Behaviour::new(local_peer, kad::store::MemoryStore::new(local_peer)),
+                kademlia: kad::Behaviour::new(
+                    local_peer,
+                    kad::store::MemoryStore::with_config(local_peer, kademlia_store_config),
+                ),
                 ping: ping::Behaviour::new(ping::Config::new()),
                 stream: stream_behaviour,
             }
@@ -242,10 +273,12 @@ async fn run_peer_node(
         .map_err(transport_error)?
         .with_swarm_config(|config| config.with_idle_connection_timeout(Duration::from_secs(60)))
         .build();
-    swarm
-        .behaviour_mut()
-        .kademlia
-        .set_mode(Some(kad::Mode::Server));
+    let kademlia_mode = if dht_hosting {
+        Some(kad::Mode::Server)
+    } else {
+        Some(kad::Mode::Client)
+    };
+    swarm.behaviour_mut().kademlia.set_mode(kademlia_mode);
     swarm
         .listen_on(
             format!("/ip4/0.0.0.0/tcp/{}", config.listen_port)
@@ -548,6 +581,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -560,6 +599,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         let unapproved = start_peer_node(PeerNodeConfig {
@@ -571,6 +616,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -583,6 +634,12 @@ mod tests {
             eligible_forwarders: HashSet::from([forwarder_peer]),
             reserve_forwarding_path: true,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         let diagnostics = edge.diagnostics();
@@ -646,6 +703,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -658,6 +721,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         let forwarder_b = start_peer_node(PeerNodeConfig {
@@ -669,6 +738,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -681,6 +756,12 @@ mod tests {
             eligible_forwarders: HashSet::from([peers[1], peers[2]]),
             reserve_forwarding_path: true,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         let diagnostics = edge.diagnostics();
@@ -781,6 +862,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Listed,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -795,6 +882,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Unlisted,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         })
         .unwrap();
 
@@ -850,6 +943,12 @@ mod tests {
             eligible_forwarders: HashSet::new(),
             reserve_forwarding_path: false,
             discovery_mode: DiscoveryMode::Unlisted,
+            dht_hosting: true,
+            max_established_incoming: None,
+            max_established_per_peer: None,
+            max_pending_incoming: None,
+            reservation_rate_limit: None,
+            circuit_src_rate_limit: None,
         });
         assert!(
             result.is_err(),

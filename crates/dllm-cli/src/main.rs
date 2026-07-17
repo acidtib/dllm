@@ -167,6 +167,32 @@ enum Command {
         owner: bool,
         node_key: Option<PathBuf>,
     },
+    BanNode {
+        node_key: PathBuf,
+        #[arg(long)]
+        reason: String,
+        #[arg(long)]
+        owner: bool,
+    },
+    UnbanNode {
+        node_key: PathBuf,
+        #[arg(long)]
+        owner: bool,
+    },
+    ReportAbuse {
+        subject_key: PathBuf,
+        #[arg(long)]
+        category: String,
+        #[arg(long)]
+        note: String,
+    },
+    ListAbuseReports,
+    AuditLog {
+        #[arg(long)]
+        since: Option<u64>,
+        #[arg(long)]
+        limit: Option<usize>,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -539,6 +565,82 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &cli.management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::BanNode {
+            node_key,
+            reason,
+            owner,
+        } => {
+            let node_pubkey = assignment_key(owner, Some(node_key), &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/moderation/bans", cli.daemon))
+                    .json(&json!({ "node_pubkey": node_pubkey, "reason": reason })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::UnbanNode { node_key, owner } => {
+            let node_pubkey = assignment_key(owner, Some(node_key), &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/moderation/bans", cli.daemon))
+                    .json(&json!({ "node_pubkey": node_pubkey })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::ReportAbuse {
+            subject_key,
+            category,
+            note,
+        } => {
+            let reporter_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
+                .verifying_key()
+                .to_bytes();
+            let subject_pubkey = NetworkStore::load_owner_key(&subject_key)?
+                .verifying_key()
+                .to_bytes();
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/abuse-reports", cli.daemon))
+                    .json(&json!({
+                        "report": {
+                            "reporter_pubkey": reporter_pubkey,
+                            "subject_pubkey": subject_pubkey,
+                            "category": category,
+                            "note": note,
+                            "reported_at_unix": now_unix(),
+                        },
+                    })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::ListAbuseReports => {
+            let reports = request_json(auth(
+                client
+                    .get(format!("{}/v1/abuse-reports", cli.daemon))
+                    .header("Accept", "application/json"),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&reports)?);
+        }
+        Command::AuditLog { since, limit } => {
+            let mut url = format!("{}/v1/audit-log", cli.daemon);
+            let mut sep = "?";
+            if let Some(since) = since {
+                url.push_str(&format!("{sep}since={since}"));
+                sep = "&";
+            }
+            if let Some(limit) = limit {
+                url.push_str(&format!("{sep}limit={limit}"));
+            }
+            let entries = request_json(auth(
+                client.get(url).header("Accept", "application/json"),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&entries)?);
         }
         Command::TransferOwner {
             new_owner_key,

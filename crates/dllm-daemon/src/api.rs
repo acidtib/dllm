@@ -1,10 +1,12 @@
 use crate::{
+    audit::AuditLog,
     budget::BudgetEnforcer,
     credentials::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
     inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
     peer_service::PeerClient,
+    rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore, StoreError,
 };
 use axum::{
@@ -55,6 +57,9 @@ pub struct ApiState {
     pub peer_client: Option<PeerClient>,
     pub auth_view: Option<dllm_transport::auth::AuthView>,
     pub budget_enforcer: Arc<BudgetEnforcer>,
+    pub rate_limiter: Arc<RateLimiter<String>>,
+    pub access_request_rate_config: RateLimitConfig,
+    pub audit_log: Option<Arc<AuditLog>>,
 }
 
 #[derive(Default)]
@@ -150,6 +155,28 @@ struct MutationResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct BanNodeRequest {
+    node_pubkey: Vec<u8>,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct UnbanNodeRequest {
+    node_pubkey: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SubmitAbuseReportRequest {
+    report: dllm_protocol::AbuseReport,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditLogQuery {
+    since: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CreateCredentialRequest {
     label: String,
     role: ManagementRole,
@@ -161,7 +188,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/peer-network/status", get(peer_network_status))
         .route("/v1/inference-policy", get(inference_policy))
         .route("/v1/placements/preview", post(preview_placement))
-        .route("/v1/access-requests", get(list_access_requests));
+        .route("/v1/access-requests", get(list_access_requests))
+        .route("/v1/audit-log", get(audit_log));
     let mut operator = Router::new()
         .route("/v1/assignments", post(assign).delete(unassign))
         .route("/v1/hardware-profiles", post(publish_hardware_profile))
@@ -188,6 +216,11 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/v1/management/credentials/{credential_id}",
             axum::routing::delete(revoke_credential),
+        )
+        .route("/v1/moderation/bans", post(ban_node).delete(unban_node))
+        .route(
+            "/v1/abuse-reports",
+            get(list_abuse_reports).post(submit_abuse_report),
         );
     let credentials = state.management_credentials.clone();
     if !credentials
@@ -225,13 +258,20 @@ pub fn router(state: ApiState) -> Router {
             require_peer_identity,
         ));
     }
+    let rate_limit_state = state.clone();
+    let access_request_route = Router::new()
+        .route("/v1/access-requests", post(submit_access_request))
+        .route_layer(middleware::from_fn_with_state(
+            rate_limit_state,
+            rate_limit_access_request,
+        ));
     Router::new()
         .route("/", get(ui))
         .route("/health", get(|| async { StatusCode::OK }))
         .route("/health/runtime", get(runtime_health))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
-        .route("/v1/access-requests", post(submit_access_request))
+        .merge(access_request_route)
         .merge(viewer)
         .merge(operator)
         .merge(admin)
@@ -672,6 +712,157 @@ async fn deny_access_request(
         generation: store.state.state.generation,
         changed: true,
     }))
+}
+
+async fn rate_limit_access_request(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+    let ip = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let now = now_unix();
+    if !state
+        .rate_limiter
+        .check(&ip, now, &state.access_request_rate_config)
+        .await
+    {
+        // Log the rate-limit rejection if audit is enabled.
+        if let Some(ref audit) = state.audit_log {
+            audit.log(crate::audit::AuditEntry {
+                timestamp_unix: now,
+                actor: ip,
+                action: "access_request_rate_limited".into(),
+                target: None,
+                outcome: "rate_limit".into(),
+            });
+        }
+        return Err(StatusCode::TOO_MANY_REQUESTS);
+    }
+    Ok(next.run(request).await)
+}
+
+async fn ban_node(
+    State(state): State<ApiState>,
+    Json(request): Json<BanNodeRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.ban_node(node_pubkey, request.reason.clone())?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    if let Some(ref audit) = state.audit_log {
+        audit.log(crate::audit::AuditEntry {
+            timestamp_unix: now_unix(),
+            actor: "admin".into(),
+            action: "ban_node".into(),
+            target: Some(hex::encode(node_pubkey)),
+            outcome: if changed {
+                "ok".into()
+            } else {
+                "unchanged".into()
+            },
+        });
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn unban_node(
+    State(state): State<ApiState>,
+    Json(request): Json<UnbanNodeRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.unban_node(node_pubkey)?;
+    if changed {
+        store.save(&state.state_path)?;
+    }
+    if let Some(ref audit) = state.audit_log {
+        audit.log(crate::audit::AuditEntry {
+            timestamp_unix: now_unix(),
+            actor: "admin".into(),
+            action: "unban_node".into(),
+            target: Some(hex::encode(node_pubkey)),
+            outcome: if changed { "ok".into() } else { "error".into() },
+        });
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn submit_abuse_report(
+    State(state): State<ApiState>,
+    Json(request): Json<SubmitAbuseReportRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let mut store = state.store.lock().await;
+    store.submit_abuse_report(request.report)?;
+    store.save(&state.state_path)?;
+    if let Some(ref audit) = state.audit_log {
+        audit.log(crate::audit::AuditEntry {
+            timestamp_unix: now_unix(),
+            actor: "member".into(),
+            action: "submit_abuse_report".into(),
+            target: None,
+            outcome: "ok".into(),
+        });
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
+    }))
+}
+
+async fn list_abuse_reports(
+    State(state): State<ApiState>,
+) -> Json<Vec<dllm_protocol::AbuseReport>> {
+    let store = state.store.lock().await;
+    Json(store.list_abuse_reports().to_vec())
+}
+
+async fn audit_log(
+    State(state): State<ApiState>,
+    axum::extract::Query(query): axum::extract::Query<AuditLogQuery>,
+) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
+    let log_dir = state
+        .state_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("audit");
+    let path = log_dir.join("audit.jsonl");
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Json(Vec::new()));
+        }
+        Err(e) => return Err(ApiError::Store(StoreError::Storage(e))),
+    };
+    let mut entries: Vec<serde_json::Value> = contents
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|entry| {
+            query.since.is_none_or(|since| {
+                entry
+                    .get("timestamp_unix")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|ts| ts >= since)
+            })
+        })
+        .collect();
+    if let Some(limit) = query.limit {
+        entries.truncate(limit);
+    }
+    Ok(Json(entries))
 }
 
 async fn revoke(
@@ -1649,6 +1840,9 @@ mod tests {
             auth_view: None,
             peer_client: None,
             budget_enforcer: Arc::new(crate::budget::BudgetEnforcer::new()),
+            rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
+            access_request_rate_config: crate::rate_limit::RateLimitConfig::default(),
+            audit_log: None,
         }
     }
 

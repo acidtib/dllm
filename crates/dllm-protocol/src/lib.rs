@@ -26,6 +26,8 @@ pub struct NetworkState {
     pub forwarding_policy: Vec<ForwardingPolicy>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resource_budgets: Vec<ResourceBudget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub banned: Vec<MembershipBan>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -44,6 +46,13 @@ pub struct ResourceBudget {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MembershipBan {
+    pub node_pubkey: [u8; 32],
+    pub banned_at_unix: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AccessRequest {
     pub node_pubkey: [u8; 32],
     pub requested_endpoint: String,
@@ -55,6 +64,15 @@ pub struct AccessRequest {
 pub struct SignedAccessRequest {
     pub request: AccessRequest,
     pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AbuseReport {
+    pub reporter_pubkey: [u8; 32],
+    pub subject_pubkey: [u8; 32],
+    pub category: String,
+    pub note: String,
+    pub reported_at_unix: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,6 +270,8 @@ pub enum StateError {
     DuplicateBudgetNode,
     #[error("resource budget must allow at least one request")]
     EmptyResourceBudget,
+    #[error("ban target is an active member; revoke membership first")]
+    BanTargetIsMember,
 }
 
 impl SignedState {
@@ -377,6 +397,16 @@ fn validate_state(state: &NetworkState, signer: &[u8; 32]) -> Result<(), StateEr
         }
         if budget.max_in_flight == 0 && budget.max_requests_per_window == 0 {
             return Err(StateError::EmptyResourceBudget);
+        }
+    }
+    for ban in &state.banned {
+        if ban.node_pubkey == state.owner_pubkey
+            || state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == ban.node_pubkey)
+        {
+            return Err(StateError::BanTargetIsMember);
         }
     }
     Ok(())
@@ -521,6 +551,7 @@ mod tests {
             transport_revocations: vec![],
             forwarding_policy: vec![],
             resource_budgets: vec![],
+            banned: vec![],
         }
     }
 
@@ -690,5 +721,87 @@ mod tests {
             SignedState::sign(state, &key),
             Err(StateError::EmptyResourceBudget)
         );
+    }
+
+    #[test]
+    fn ban_overlapping_active_member_rejected() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        let member_key = SigningKey::generate(&mut rand::thread_rng());
+        let member_pubkey = member_key.verifying_key().to_bytes();
+        state.members.push(Member {
+            node_pubkey: member_pubkey,
+            endpoint: "http://example.com:7337".into(),
+            relay_endpoint: None,
+            joined_generation: 1,
+        });
+        state.banned.push(MembershipBan {
+            node_pubkey: member_pubkey,
+            banned_at_unix: 2000,
+            reason: "test".into(),
+        });
+        assert_eq!(
+            SignedState::sign(state, &key),
+            Err(StateError::BanTargetIsMember)
+        );
+    }
+
+    #[test]
+    fn ban_targeting_owner_rejected() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        state.banned.push(MembershipBan {
+            node_pubkey: state.owner_pubkey,
+            banned_at_unix: 2000,
+            reason: "test".into(),
+        });
+        assert_eq!(
+            SignedState::sign(state, &key),
+            Err(StateError::BanTargetIsMember)
+        );
+    }
+
+    #[test]
+    fn ban_non_member_accepted() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        let stranger = [9; 32];
+        state.banned.push(MembershipBan {
+            node_pubkey: stranger,
+            banned_at_unix: 2000,
+            reason: "spam".into(),
+        });
+        let signed = SignedState::sign(state, &key).unwrap();
+        assert_eq!(signed.state.banned.len(), 1);
+        assert_eq!(signed.state.banned[0].node_pubkey, stranger);
+    }
+
+    #[test]
+    fn membership_ban_roundtrips() {
+        let ban = MembershipBan {
+            node_pubkey: [7; 32],
+            banned_at_unix: 1234,
+            reason: "abuse".into(),
+        };
+        let json = serde_json::to_string(&ban).unwrap();
+        let parsed: MembershipBan = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.node_pubkey, ban.node_pubkey);
+        assert_eq!(parsed.reason, ban.reason);
+    }
+
+    #[test]
+    fn abuse_report_roundtrips() {
+        let report = AbuseReport {
+            reporter_pubkey: [1; 32],
+            subject_pubkey: [2; 32],
+            category: "spam".into(),
+            note: "flooding requests".into(),
+            reported_at_unix: 1234,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let parsed: AbuseReport = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.reporter_pubkey, report.reporter_pubkey);
+        assert_eq!(parsed.subject_pubkey, report.subject_pubkey);
+        assert_eq!(parsed.category, report.category);
     }
 }

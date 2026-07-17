@@ -37,7 +37,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
   discovery records to grant membership or override owner-signed state.
 - [x] P4.5: implement owner-approved membership and request-access policy that
   is independent of compute membership and enforces explicit resource budgets.
-- [ ] P4.6: add discovery hosting controls, rate limits, moderation, abuse
+- [x] P4.6: add discovery hosting controls, rate limits, moderation, abuse
   reporting, and operator-visible audit records.
 - [ ] P4.7: expose onboarding, discovery visibility, approval, transport path,
   forwarding member, policy, and failure diagnostics through the CLI and UI, then complete
@@ -486,3 +486,86 @@ New subcommands: `dllm request-access <owner-endpoint>` (self-signs and submits)
 
 - Physical validation: Colorado edge node discovers the network via P4.4, submits an access request to the Kansas owner node, is approved, and is rejected on inference until a budget is explicitly granted.
 - Enforcement physical test: budget exhaustion isolation across members, sliding window rollover.
+
+## P4.6 discovery hosting controls, rate limits, moderation, and audit records
+
+### Discovery hosting controls
+
+`dllmd` now composes `libp2p::connection_limits::Behaviour` into the swarm,
+protecting against unbounded inbound connections. Limits are local daemon
+configuration (`DLLMD_P2P_MAX_ESTABLISHED_INCOMING`,
+`DLLMD_P2P_MAX_ESTABLISHED_PER_PEER`, `DLLMD_P2P_MAX_PENDING_INCOMING`), not
+owner-signed state — resource protection, not authorization.
+
+Kademlia storage is bounded through an explicit `MemoryStoreConfig` with capped
+`max_records`, `max_provided_keys`, `max_providers_per_key`, and
+`max_value_bytes`. A DHT hosting toggle (`DLLMD_P2P_DHT_HOSTING`) controls
+whether a node runs `kad::Mode::Server` (answers queries, stores others'
+records) or `kad::Mode::Client` (queries only). Previously every node was
+hardcoded to `Server`. The toggle is independent of `DiscoveryMode`: an
+unlisted node can still be a DHT server; a listed node can be a client-only
+participant.
+
+### Rate limits
+
+`POST /v1/access-requests` is now gated by a configurable sliding-window rate
+limiter keyed by source IP, enabled by wiring
+`into_make_service_with_connect_info::<SocketAddr>()` in both the TLS and
+non-TLS serving paths. A second, pubkey-keyed cooldown prevents immediate
+resubmission after denial. The pending access request queue is capped at 1,000
+entries; exceeding it returns `PendingQueueFull`. The `RateLimiter` module
+follows the same per-key timestamp-vector pattern established by
+`BudgetEnforcer` in P4.5.
+
+### Moderation
+
+Owner-signed `MembershipBan` entries on `NetworkState` let the owner
+pre-emptively refuse known-bad identities. `validate_state` rejects a ban that
+overlaps an active member (`BanTargetIsMember`): banning requires revocation
+first. `submit_access_request` checks the ban list before queuing.
+`AuthView::authorize()` checks the ban list after membership validation, so a
+banned identity is rejected at the libp2p inference stream level as well.
+
+Admin routes `POST /v1/moderation/bans` and `DELETE /v1/moderation/bans`
+manage the ban list. CLI: `dllm ban-node <key> --reason <text> --owner` and
+`dllm unban-node <key> --owner`.
+
+### Abuse reporting
+
+`AbuseReport` is a local, unsigned queue in `PersistedState` (matching the
+`pending_access_requests` pattern). `POST /v1/abuse-reports` and
+`GET /v1/abuse-reports` are admin-tier routes. The submitter's membership is
+validated in the store layer (`AbuseReportNotMember`). CLI: `dllm
+report-abuse <subject-key> --category ... --note ...` and `dllm
+list-abuse-reports`.
+
+### Audit records
+
+An append-only JSONL audit log (`crates/dllm-daemon/src/audit.rs`) records
+every mutation: access request submit/approve/deny, budget set/remove, member
+revoke, forwarding policy changes, transport bind/revoke, model
+assign/unassign, placement drain/resume, owner transfer, ban/unban, abuse
+report submit, and rate-limit rejections. Each entry captures timestamp,
+actor, action, target, and outcome. The log is best-effort via an `mpsc`
+channel to a dedicated writer task; failures drop entries silently rather than
+blocking mutations. Files rotate past 10 MB. Route: `GET /v1/audit-log`
+(viewer-tier, paginated by `?since=<unix>&limit=<n>`). CLI: `dllm audit-log
+--since <unix> --limit <n>`.
+
+### Automated test coverage
+
+119 tests pass across the workspace (up from 107). New tests cover:
+
+| Area | Tests |
+|------|-------|
+| Protocol | ban overlapping active member rejected; ban targeting owner rejected; non-member ban accepted; `MembershipBan`/`AbuseReport` roundtrip |
+| Rate limiter | admits up to max; window rollover; isolated keys; prune removes stale |
+| Audit log | writes entries; rotation creates new file; dropped sender does not panic |
+| Existing | all P4.0-P4.5 tests pass with new `banned` field and `ApiState` fields |
+
+### Remaining
+
+- Physical validation: VPS-based testing of rate limits, connection limits,
+  ban enforcement, abuse report submission, and audit log observability.
+- Cleanup of remote services, binaries, state, keys, and firewall rules after
+  validation, per `AGENTS.md`.
