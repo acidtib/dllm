@@ -211,7 +211,7 @@ async fn handle_inbound(peer: PeerId, mut stream: Stream, client: PeerClient, st
             )
             .await;
         }
-        Ok(_auth) => match dispatch.message {
+        Ok(auth) => match dispatch.message {
             Message::HealthRequest => {
                 let _ = write_frame(&mut stream, &Message::HealthResponse).await;
             }
@@ -233,6 +233,7 @@ async fn handle_inbound(peer: PeerId, mut stream: Stream, client: PeerClient, st
                     &headers,
                     &body,
                     deadline_unix_ms,
+                    auth.node_pubkey,
                 )
                 .await;
             }
@@ -280,6 +281,7 @@ async fn serve_inference(
     headers: &HashMap<String, String>,
     body: &[u8],
     deadline_ms: u64,
+    node_pubkey: [u8; 32],
 ) {
     let now = now_ms();
     if deadline_ms <= now {
@@ -298,6 +300,31 @@ async fn serve_inference(
         });
         return;
     }
+
+    // Budget enforcement gate: no budget entry → fail closed.
+    let _budget_permit = match state
+        .budget_enforcer
+        .try_admit(&client.auth.snapshot(), &node_pubkey)
+        .await
+    {
+        Ok(permit) => permit,
+        Err(_) => {
+            let _ = write_frame(
+                stream,
+                &Message::Error {
+                    request_id,
+                    code: ErrorCode::CapacityExceeded,
+                    message: "resource budget exhausted or absent".into(),
+                },
+            )
+            .await;
+            client.handle.update_diagnostics(|d| {
+                d.rejected_streams += 1;
+                d.active_inbound_streams = d.active_inbound_streams.saturating_sub(1);
+            });
+            return;
+        }
+    };
 
     let permit = match client.admission.clone().try_acquire_owned() {
         Ok(p) => p,

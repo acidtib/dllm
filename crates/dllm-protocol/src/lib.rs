@@ -24,12 +24,37 @@ pub struct NetworkState {
     pub transport_revocations: Vec<TransportEndpointRevocation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub forwarding_policy: Vec<ForwardingPolicy>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resource_budgets: Vec<ResourceBudget>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ForwardingPolicy {
     pub node_pubkey: [u8; 32],
     pub max_reservations: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResourceBudget {
+    pub node_pubkey: [u8; 32],
+    pub max_in_flight: u32,
+    pub max_requests_per_window: u32,
+    pub window_seconds: u32,
+    pub granted_generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AccessRequest {
+    pub node_pubkey: [u8; 32],
+    pub requested_endpoint: String,
+    pub note: String,
+    pub requested_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedAccessRequest {
+    pub request: AccessRequest,
+    pub signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -221,6 +246,12 @@ pub enum StateError {
     InvalidForwardingLimit,
     #[error("state generation {supplied} does not advance current generation {current}")]
     StaleStateGeneration { supplied: u64, current: u64 },
+    #[error("resource budget refers to a node outside the network")]
+    BudgetNodeUnknown,
+    #[error("resource budget contains a duplicate node")]
+    DuplicateBudgetNode,
+    #[error("resource budget must allow at least one request")]
+    EmptyResourceBudget,
 }
 
 impl SignedState {
@@ -331,6 +362,23 @@ fn validate_state(state: &NetworkState, signer: &[u8; 32]) -> Result<(), StateEr
             return Err(StateError::InvalidForwardingLimit);
         }
     }
+    let mut budget_nodes = std::collections::HashSet::new();
+    for budget in &state.resource_budgets {
+        let known = budget.node_pubkey == state.owner_pubkey
+            || state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == budget.node_pubkey);
+        if !known {
+            return Err(StateError::BudgetNodeUnknown);
+        }
+        if !budget_nodes.insert(budget.node_pubkey) {
+            return Err(StateError::DuplicateBudgetNode);
+        }
+        if budget.max_in_flight == 0 && budget.max_requests_per_window == 0 {
+            return Err(StateError::EmptyResourceBudget);
+        }
+    }
     Ok(())
 }
 
@@ -422,6 +470,24 @@ impl SignedJoinToken {
     }
 }
 
+impl SignedAccessRequest {
+    pub fn sign(request: AccessRequest, key: &SigningKey) -> Self {
+        let bytes = serde_json::to_vec(&request).expect("access request is serializable");
+        let signature = key.sign(&bytes).to_bytes().to_vec();
+        Self { request, signature }
+    }
+
+    pub fn verify(&self) -> Result<(), TokenError> {
+        let key = VerifyingKey::from_bytes(&self.request.node_pubkey)
+            .map_err(|_| TokenError::InvalidSignature)?;
+        let bytes = serde_json::to_vec(&self.request).expect("access request is serializable");
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| TokenError::InvalidSignature)?;
+        key.verify(&bytes, &signature)
+            .map_err(|_| TokenError::InvalidSignature)
+    }
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -454,6 +520,7 @@ mod tests {
             transport_bindings: vec![],
             transport_revocations: vec![],
             forwarding_policy: vec![],
+            resource_budgets: vec![],
         }
     }
 
@@ -528,6 +595,100 @@ mod tests {
         assert_eq!(
             SignedState::sign(state, &key),
             Err(StateError::InvalidTransportPeerId)
+        );
+    }
+
+    #[test]
+    fn signed_access_request_verifies_and_detects_tampering() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let request = AccessRequest {
+            node_pubkey: key.verifying_key().to_bytes(),
+            requested_endpoint: "http://127.0.0.1:7337".into(),
+            note: "please let me in".into(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request.clone(), &key);
+        assert!(signed.verify().is_ok());
+        // Tamper with the note.
+        let mut tampered = request;
+        tampered.note = "evil".into();
+        let bad = SignedAccessRequest {
+            request: tampered,
+            signature: signed.signature.clone(),
+        };
+        assert!(bad.verify().is_err());
+    }
+
+    #[test]
+    fn signed_access_request_wrong_key_rejected() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let other = SigningKey::generate(&mut rand::thread_rng());
+        let request = AccessRequest {
+            node_pubkey: other.verifying_key().to_bytes(),
+            requested_endpoint: "http://127.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        // Signature was made with `key` but node_pubkey is `other`.
+        assert!(signed.verify().is_err());
+    }
+
+    #[test]
+    fn resource_budget_validate_state_rejects_unknown_node() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        state.resource_budgets.push(ResourceBudget {
+            node_pubkey: [99; 32],
+            max_in_flight: 1,
+            max_requests_per_window: 0,
+            window_seconds: 0,
+            granted_generation: 1,
+        });
+        assert_eq!(
+            SignedState::sign(state, &key),
+            Err(StateError::BudgetNodeUnknown)
+        );
+    }
+
+    #[test]
+    fn resource_budget_validate_state_rejects_duplicate() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        state.resource_budgets.push(ResourceBudget {
+            node_pubkey: state.owner_pubkey,
+            max_in_flight: 1,
+            max_requests_per_window: 0,
+            window_seconds: 0,
+            granted_generation: 1,
+        });
+        state.resource_budgets.push(ResourceBudget {
+            node_pubkey: state.owner_pubkey,
+            max_in_flight: 2,
+            max_requests_per_window: 0,
+            window_seconds: 0,
+            granted_generation: 1,
+        });
+        assert_eq!(
+            SignedState::sign(state, &key),
+            Err(StateError::DuplicateBudgetNode)
+        );
+    }
+
+    #[test]
+    fn resource_budget_validate_state_rejects_empty() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut state = state(&key);
+        state.resource_budgets.push(ResourceBudget {
+            node_pubkey: state.owner_pubkey,
+            max_in_flight: 0,
+            max_requests_per_window: 0,
+            window_seconds: 0,
+            granted_generation: 1,
+        });
+        assert_eq!(
+            SignedState::sign(state, &key),
+            Err(StateError::EmptyResourceBudget)
         );
     }
 }

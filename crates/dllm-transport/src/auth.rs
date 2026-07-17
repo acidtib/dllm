@@ -135,6 +135,7 @@ mod tests {
             transport_bindings: bindings,
             transport_revocations: revocations,
             forwarding_policy: vec![],
+            resource_budgets: vec![],
         }
     }
 

@@ -4,7 +4,10 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use dllm_daemon::{api, credentials::CredentialRegistry, inference::InferenceRegistry, NetworkStore};
+use dllm_daemon::{
+    api, budget::BudgetEnforcer, credentials::CredentialRegistry, inference::InferenceRegistry,
+    NetworkStore,
+};
 use std::{
     collections::HashMap,
     sync::{
@@ -35,6 +38,7 @@ fn api_state() -> api::ApiState {
         peer_diagnostics: None,
         auth_view: None,
         peer_client: None,
+        budget_enforcer: Arc::new(BudgetEnforcer::new()),
     }
 }
 

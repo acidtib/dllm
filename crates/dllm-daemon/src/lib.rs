@@ -1,7 +1,8 @@
 use dllm_protocol::{
-    now_unix, ForwardingPolicy, HardwareProfile, Member, ModelAssignment, NetworkState, Placement,
-    PlacementLifecycle, SignedJoinToken, SignedState, StateError, TokenError,
-    TransportEndpointBinding, TransportEndpointRevocation, SCHEMA_VERSION,
+    now_unix, AccessRequest, ForwardingPolicy, HardwareProfile, Member, ModelAssignment,
+    NetworkState, Placement, PlacementLifecycle, ResourceBudget, SignedAccessRequest,
+    SignedJoinToken, SignedState, StateError, TokenError, TransportEndpointBinding,
+    TransportEndpointRevocation, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -12,6 +13,7 @@ use uuid::Uuid;
 
 pub mod api;
 pub mod backup;
+pub mod budget;
 pub mod credentials;
 pub mod inference;
 pub mod peer_service;
@@ -58,6 +60,18 @@ pub enum StoreError {
     TransportBindingExpired(u64),
     #[error("forwarding policy node is not a network member")]
     ForwardingNodeUnknown,
+    #[error("node is already a network member")]
+    AccessRequestAlreadyMember,
+    #[error("node already has a pending access request")]
+    AccessRequestAlreadyPending,
+    #[error("no pending access request found for this node")]
+    AccessRequestNotFound,
+    #[error("access request signature does not verify against the claimed node key")]
+    InvalidAccessRequestSignature,
+    #[error("resource budget node is not a network member")]
+    BudgetNodeUnknown,
+    #[error("resource budget must allow at least one request")]
+    EmptyResourceBudget,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,12 +79,15 @@ pub struct PersistedState {
     pub schema_version: u32,
     pub signed_state: SignedState,
     pub redeemed_token_ids: HashSet<Uuid>,
+    #[serde(default)]
+    pub pending_access_requests: Vec<AccessRequest>,
 }
 
 pub struct NetworkStore {
     pub owner_key: Option<SigningKey>,
     pub state: SignedState,
     used_tokens: HashSet<Uuid>,
+    pending_access_requests: Vec<AccessRequest>,
 }
 
 impl NetworkStore {
@@ -110,12 +127,14 @@ impl NetworkStore {
             transport_bindings: Vec::new(),
             transport_revocations: Vec::new(),
             forwarding_policy: Vec::new(),
+            resource_budgets: Vec::new(),
         };
         let signed = SignedState::sign(state, &owner_key).expect("new owner state is valid");
         Self {
             owner_key: Some(owner_key),
             state: signed,
             used_tokens: HashSet::new(),
+            pending_access_requests: Vec::new(),
         }
     }
 
@@ -138,6 +157,7 @@ impl NetworkStore {
             owner_key: Some(owner_key),
             state: persisted.signed_state,
             used_tokens: persisted.redeemed_token_ids,
+            pending_access_requests: persisted.pending_access_requests,
         })
     }
 
@@ -153,6 +173,7 @@ impl NetworkStore {
             owner_key: None,
             state: persisted.signed_state,
             used_tokens: persisted.redeemed_token_ids,
+            pending_access_requests: persisted.pending_access_requests,
         })
     }
 
@@ -210,6 +231,142 @@ impl NetworkStore {
         Ok(())
     }
 
+    pub fn submit_access_request(&mut self, signed: SignedAccessRequest) -> Result<(), StoreError> {
+        signed
+            .verify()
+            .map_err(|_| StoreError::InvalidAccessRequestSignature)?;
+        let node_pubkey = signed.request.node_pubkey;
+        if self.state.state.owner_pubkey == node_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == node_pubkey)
+        {
+            return Err(StoreError::AccessRequestAlreadyMember);
+        }
+        if self
+            .pending_access_requests
+            .iter()
+            .any(|req| req.node_pubkey == node_pubkey)
+        {
+            return Err(StoreError::AccessRequestAlreadyPending);
+        }
+        self.pending_access_requests.push(signed.request);
+        Ok(())
+    }
+
+    pub fn list_access_requests(&self) -> &[AccessRequest] {
+        &self.pending_access_requests
+    }
+
+    pub fn approve_access_request(
+        &mut self,
+        node_pubkey: [u8; 32],
+        endpoint: String,
+    ) -> Result<(), StoreError> {
+        let idx = self
+            .pending_access_requests
+            .iter()
+            .position(|req| req.node_pubkey == node_pubkey)
+            .ok_or(StoreError::AccessRequestNotFound)?;
+        self.pending_access_requests.remove(idx);
+        let mut next = self.state.state.clone();
+        next.generation += 1;
+        next.members.push(Member {
+            node_pubkey,
+            endpoint,
+            relay_endpoint: None,
+            joined_generation: next.generation,
+        });
+        self.state = self.sign(next)?;
+        Ok(())
+    }
+
+    pub fn deny_access_request(&mut self, node_pubkey: [u8; 32]) -> Result<(), StoreError> {
+        let idx = self
+            .pending_access_requests
+            .iter()
+            .position(|req| req.node_pubkey == node_pubkey)
+            .ok_or(StoreError::AccessRequestNotFound)?;
+        self.pending_access_requests.remove(idx);
+        Ok(())
+    }
+
+    pub fn set_resource_budget(
+        &mut self,
+        node_pubkey: [u8; 32],
+        max_in_flight: u32,
+        max_requests_per_window: u32,
+        window_seconds: u32,
+    ) -> Result<bool, StoreError> {
+        let known = node_pubkey == self.state.state.owner_pubkey
+            || self
+                .state
+                .state
+                .members
+                .iter()
+                .any(|member| member.node_pubkey == node_pubkey);
+        if !known {
+            return Err(StoreError::BudgetNodeUnknown);
+        }
+        if max_in_flight == 0 && max_requests_per_window == 0 {
+            return Err(StoreError::EmptyResourceBudget);
+        }
+        let mut next = self.state.state.clone();
+        let previous = next
+            .resource_budgets
+            .iter()
+            .find(|budget| budget.node_pubkey == node_pubkey)
+            .cloned();
+        next.resource_budgets
+            .retain(|budget| budget.node_pubkey != node_pubkey);
+        // Preserve the previous granted_generation if the values are unchanged,
+        // so the idempotent guard works correctly.
+        let granted_generation = previous
+            .as_ref()
+            .filter(|prev| {
+                prev.max_in_flight == max_in_flight
+                    && prev.max_requests_per_window == max_requests_per_window
+                    && prev.window_seconds == window_seconds
+            })
+            .map(|prev| prev.granted_generation)
+            .unwrap_or(next.generation + 1);
+        next.resource_budgets.push(ResourceBudget {
+            node_pubkey,
+            max_in_flight,
+            max_requests_per_window,
+            window_seconds,
+            granted_generation,
+        });
+        next.resource_budgets
+            .sort_by_key(|budget| budget.node_pubkey);
+        let current = next
+            .resource_budgets
+            .iter()
+            .find(|budget| budget.node_pubkey == node_pubkey);
+        if previous.as_ref() == current {
+            return Ok(false);
+        }
+        next.generation += 1;
+        self.state = self.sign(next)?;
+        Ok(true)
+    }
+
+    pub fn remove_resource_budget(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
+        let mut next = self.state.state.clone();
+        let before = next.resource_budgets.len();
+        next.resource_budgets
+            .retain(|budget| budget.node_pubkey != node_pubkey);
+        if next.resource_budgets.len() == before {
+            return Ok(false);
+        }
+        next.generation += 1;
+        self.state = self.sign(next)?;
+        Ok(true)
+    }
+
     pub fn revoke_member(&mut self, node_pubkey: [u8; 32]) -> Result<bool, StoreError> {
         let mut next = self.state.state.clone();
         let before = next.members.len();
@@ -243,6 +400,8 @@ impl NetworkStore {
             .retain(|binding| binding.node_pubkey != node_pubkey);
         next.forwarding_policy
             .retain(|policy| policy.node_pubkey != node_pubkey);
+        next.resource_budgets
+            .retain(|budget| budget.node_pubkey != node_pubkey);
         self.state = self.sign(next)?;
         Ok(true)
     }
@@ -588,6 +747,7 @@ impl NetworkStore {
             schema_version: SCHEMA_VERSION,
             signed_state: self.state.clone(),
             redeemed_token_ids: self.used_tokens.clone(),
+            pending_access_requests: self.pending_access_requests.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&persisted)?;
         let temporary = path.with_extension("tmp");
@@ -901,5 +1061,221 @@ mod tests {
             store.owner_key.as_ref().unwrap().verifying_key().to_bytes(),
             new_owner
         );
+    }
+
+    // ── P4.5 access request and resource budget tests ──
+
+    use dllm_protocol::{AccessRequest, SignedAccessRequest};
+    use ed25519_dalek::SigningKey;
+
+    fn node_signing_key() -> SigningKey {
+        SigningKey::generate(&mut rand::thread_rng())
+    }
+
+    #[test]
+    fn submit_access_request_stores_pending() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: "hi".into(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        store.submit_access_request(signed).unwrap();
+        assert_eq!(store.list_access_requests().len(), 1);
+        assert_eq!(store.list_access_requests()[0].node_pubkey, node_pubkey);
+    }
+
+    #[test]
+    fn submit_access_request_rejects_duplicate() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        store.submit_access_request(signed).unwrap();
+        let request2 = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 101,
+        };
+        let signed2 = SignedAccessRequest::sign(request2, &key);
+        assert!(matches!(
+            store.submit_access_request(signed2),
+            Err(StoreError::AccessRequestAlreadyPending)
+        ));
+    }
+
+    #[test]
+    fn submit_access_request_rejects_existing_member() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        // First, join the node as a member via token redemption.
+        let token = store
+            .try_issue_join_token("http://owner:7337".into(), None)
+            .unwrap();
+        store
+            .redeem_join_token(token, node_pubkey, "http://10.0.0.1:7337".into())
+            .unwrap();
+        // Now try to submit an access request as the same node.
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        assert!(matches!(
+            store.submit_access_request(signed),
+            Err(StoreError::AccessRequestAlreadyMember)
+        ));
+    }
+
+    #[test]
+    fn approve_then_deny_access_request() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        // Submit.
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        store.submit_access_request(signed).unwrap();
+        // Approve.
+        store
+            .approve_access_request(node_pubkey, "http://10.0.0.1:7337".into())
+            .unwrap();
+        assert!(store.list_access_requests().is_empty());
+        assert!(store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|m| m.node_pubkey == node_pubkey));
+    }
+
+    #[test]
+    fn deny_access_request_removes_pending() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://10.0.0.1:7337".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+        };
+        let signed = SignedAccessRequest::sign(request, &key);
+        store.submit_access_request(signed).unwrap();
+        let gen_before = store.state.state.generation;
+        store.deny_access_request(node_pubkey).unwrap();
+        assert!(store.list_access_requests().is_empty());
+        // Denial does not bump generation.
+        assert_eq!(store.state.state.generation, gen_before);
+        // Node is not a member.
+        assert!(!store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|m| m.node_pubkey == node_pubkey));
+    }
+
+    #[test]
+    fn set_and_remove_resource_budget() {
+        let mut store = NetworkStore::create("test");
+        let node_pubkey = store.state.state.owner_pubkey;
+        // Set budget.
+        let changed = store.set_resource_budget(node_pubkey, 5, 100, 60).unwrap();
+        assert!(changed);
+        assert_eq!(store.state.state.resource_budgets.len(), 1);
+        assert_eq!(store.state.state.resource_budgets[0].max_in_flight, 5);
+        // Idempotent set returns false.
+        let changed = store.set_resource_budget(node_pubkey, 5, 100, 60).unwrap();
+        assert!(!changed);
+        // Remove budget.
+        let changed = store.remove_resource_budget(node_pubkey).unwrap();
+        assert!(changed);
+        assert!(store.state.state.resource_budgets.is_empty());
+        // Idempotent remove returns false.
+        let changed = store.remove_resource_budget(node_pubkey).unwrap();
+        assert!(!changed);
+    }
+
+    #[test]
+    fn resource_budget_rejects_unknown_node() {
+        let mut store = NetworkStore::create("test");
+        assert!(matches!(
+            store.set_resource_budget([99; 32], 1, 0, 0),
+            Err(StoreError::BudgetNodeUnknown)
+        ));
+    }
+
+    #[test]
+    fn resource_budget_rejects_empty() {
+        let mut store = NetworkStore::create("test");
+        let node_pubkey = store.state.state.owner_pubkey;
+        assert!(matches!(
+            store.set_resource_budget(node_pubkey, 0, 0, 0),
+            Err(StoreError::EmptyResourceBudget)
+        ));
+    }
+
+    #[test]
+    fn revoke_member_strips_resource_budget() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        // Add as member.
+        let token = store
+            .try_issue_join_token("http://owner:7337".into(), None)
+            .unwrap();
+        store
+            .redeem_join_token(token, node_pubkey, "http://10.0.0.1:7337".into())
+            .unwrap();
+        // Set budget.
+        store.set_resource_budget(node_pubkey, 3, 50, 30).unwrap();
+        assert_eq!(store.state.state.resource_budgets.len(), 1);
+        // Revoke member.
+        store.revoke_member(node_pubkey).unwrap();
+        // Budget is cleaned up.
+        assert!(store.state.state.resource_budgets.is_empty());
+        assert!(!store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|m| m.node_pubkey == node_pubkey));
+    }
+
+    #[test]
+    fn resource_budget_independent_of_forwarding_policy() {
+        let mut store = NetworkStore::create("test");
+        let node_pubkey = store.state.state.owner_pubkey;
+        // Set budget without forwarding.
+        store.set_resource_budget(node_pubkey, 1, 10, 60).unwrap();
+        assert!(store.state.state.forwarding_policy.is_empty());
+        // Set forwarding without affecting budget.
+        store.set_forwarding_policy(node_pubkey, Some(5)).unwrap();
+        assert_eq!(store.state.state.resource_budgets.len(), 1);
+        assert_eq!(store.state.state.forwarding_policy.len(), 1);
+        // Remove budget leaves forwarding intact.
+        store.remove_resource_budget(node_pubkey).unwrap();
+        assert!(store.state.state.resource_budgets.is_empty());
+        assert_eq!(store.state.state.forwarding_policy.len(), 1);
     }
 }

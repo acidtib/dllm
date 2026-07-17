@@ -1,4 +1,5 @@
 use crate::{
+    budget::BudgetEnforcer,
     credentials::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
@@ -17,7 +18,8 @@ use axum::{
 };
 use dllm_protocol::{
     now_ms, now_unix, HardwareProfile, HealthState, ManagementStatus, NodeStatus,
-    PlacementLifecycle, PlacementStatus, SignedJoinToken, TransportKind, WorkerStatus,
+    PlacementLifecycle, PlacementStatus, ResourceBudget, SignedAccessRequest, SignedJoinToken,
+    TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use hmac::{Hmac, Mac};
@@ -52,6 +54,7 @@ pub struct ApiState {
         Option<tokio::sync::watch::Receiver<dllm_transport::peer::PeerDiagnostics>>,
     pub peer_client: Option<PeerClient>,
     pub auth_view: Option<dllm_transport::auth::AuthView>,
+    pub budget_enforcer: Arc<BudgetEnforcer>,
 }
 
 #[derive(Default)]
@@ -105,6 +108,41 @@ pub struct ForwardingPolicyRequest {
     pub max_reservations: Option<u32>,
 }
 
+#[derive(Debug, Deserialize)]
+struct AccessRequestRequest {
+    pub request: SignedAccessRequest,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApproveAccessRequest {
+    pub node_pubkey: Vec<u8>,
+    pub endpoint: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DenyAccessRequest {
+    pub node_pubkey: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SetBudgetRequest {
+    pub node_pubkey: Vec<u8>,
+    pub max_in_flight: u32,
+    pub max_requests_per_window: u32,
+    pub window_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct RemoveBudgetRequest {
+    pub node_pubkey: Vec<u8>,
+}
+
+#[derive(Debug, Serialize)]
+struct InferencePolicyResponse {
+    credentials: Vec<InferencePolicy>,
+    member_budgets: Vec<ResourceBudget>,
+}
+
 #[derive(Debug, Serialize)]
 struct MutationResponse {
     generation: u64,
@@ -122,7 +160,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/status", get(status))
         .route("/v1/peer-network/status", get(peer_network_status))
         .route("/v1/inference-policy", get(inference_policy))
-        .route("/v1/placements/preview", post(preview_placement));
+        .route("/v1/placements/preview", post(preview_placement))
+        .route("/v1/access-requests", get(list_access_requests));
     let mut operator = Router::new()
         .route("/v1/assignments", post(assign).delete(unassign))
         .route("/v1/hardware-profiles", post(publish_hardware_profile))
@@ -136,6 +175,12 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/transport-bindings", post(bind_transport))
         .route("/v1/transport-bindings/revoke", post(revoke_transport))
         .route("/v1/forwarding-policy", post(set_forwarding_policy))
+        .route("/v1/access-requests/approve", post(approve_access_request))
+        .route("/v1/access-requests/deny", post(deny_access_request))
+        .route(
+            "/v1/resource-budgets",
+            post(set_resource_budget).delete(remove_resource_budget),
+        )
         .route(
             "/v1/management/credentials",
             get(list_credentials).post(create_credential),
@@ -186,6 +231,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/runtime", get(runtime_health))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
+        .route("/v1/access-requests", post(submit_access_request))
         .merge(viewer)
         .merge(operator)
         .merge(admin)
@@ -393,8 +439,20 @@ async fn list_credentials(State(state): State<ApiState>) -> Json<Vec<CredentialS
     Json(state.management_credentials.read().await.list())
 }
 
-async fn inference_policy(State(state): State<ApiState>) -> Json<Vec<InferencePolicy>> {
-    Json(state.inference_credentials.policies())
+async fn inference_policy(State(state): State<ApiState>) -> Json<InferencePolicyResponse> {
+    let credentials = state.inference_credentials.policies();
+    let member_budgets = state
+        .store
+        .lock()
+        .await
+        .state
+        .state
+        .resource_budgets
+        .clone();
+    Json(InferencePolicyResponse {
+        credentials,
+        member_budgets,
+    })
 }
 
 async fn create_credential(
@@ -556,6 +614,66 @@ async fn join(
     }))
 }
 
+async fn submit_access_request(
+    State(state): State<ApiState>,
+    Json(body): Json<AccessRequestRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let mut store = state.store.lock().await;
+    store.submit_access_request(body.request)?;
+    store.save(&state.state_path)?;
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
+    }))
+}
+
+async fn list_access_requests(
+    State(state): State<ApiState>,
+) -> Json<Vec<dllm_protocol::AccessRequest>> {
+    let store = state.store.lock().await;
+    Json(store.list_access_requests().to_vec())
+}
+
+async fn approve_access_request(
+    State(state): State<ApiState>,
+    Json(request): Json<ApproveAccessRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    // Use the requested_endpoint from the pending request as default.
+    let endpoint = match request.endpoint {
+        Some(ep) => ep,
+        None => {
+            let pending = store
+                .list_access_requests()
+                .iter()
+                .find(|req| req.node_pubkey == node_pubkey)
+                .ok_or(StoreError::AccessRequestNotFound)?;
+            pending.requested_endpoint.clone()
+        }
+    };
+    store.approve_access_request(node_pubkey, endpoint)?;
+    store.save(&state.state_path)?;
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
+    }))
+}
+
+async fn deny_access_request(
+    State(state): State<ApiState>,
+    Json(request): Json<DenyAccessRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    store.deny_access_request(node_pubkey)?;
+    store.save(&state.state_path)?;
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed: true,
+    }))
+}
+
 async fn revoke(
     State(state): State<ApiState>,
     Json(request): Json<RevokeRequest>,
@@ -615,6 +733,46 @@ async fn set_forwarding_policy(
     let changed = store.set_forwarding_policy(node_pubkey, request.max_reservations)?;
     if changed {
         store.save(&state.state_path)?;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn set_resource_budget(
+    State(state): State<ApiState>,
+    Json(request): Json<SetBudgetRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.set_resource_budget(
+        node_pubkey,
+        request.max_in_flight,
+        request.max_requests_per_window,
+        request.window_seconds,
+    )?;
+    if changed {
+        store.save(&state.state_path)?;
+        // Reconcile the budget enforcer with the updated signed state.
+        state.budget_enforcer.reconcile(&store.state.state).await;
+    }
+    Ok(Json(MutationResponse {
+        generation: store.state.state.generation,
+        changed,
+    }))
+}
+
+async fn remove_resource_budget(
+    State(state): State<ApiState>,
+    Json(request): Json<RemoveBudgetRequest>,
+) -> Result<Json<MutationResponse>, ApiError> {
+    let node_pubkey = key_bytes(request.node_pubkey)?;
+    let mut store = state.store.lock().await;
+    let changed = store.remove_resource_budget(node_pubkey)?;
+    if changed {
+        store.save(&state.state_path)?;
+        state.budget_enforcer.reconcile(&store.state.state).await;
     }
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
@@ -1490,6 +1648,7 @@ mod tests {
             peer_diagnostics: None,
             auth_view: None,
             peer_client: None,
+            budget_enforcer: Arc::new(crate::budget::BudgetEnforcer::new()),
         }
     }
 

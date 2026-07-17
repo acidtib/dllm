@@ -35,7 +35,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
   automatic path recovery.
 - [x] P4.4: implement separate unlisted and listed discovery without allowing
   discovery records to grant membership or override owner-signed state.
-- [ ] P4.5: implement owner-approved membership and request-access policy that
+- [x] P4.5: implement owner-approved membership and request-access policy that
   is independent of compute membership and enforces explicit resource budgets.
 - [ ] P4.6: add discovery hosting controls, rate limits, moderation, abuse
   reporting, and operator-visible audit records.
@@ -433,3 +433,56 @@ all `PeerNodeConfig` constructions. The P4.3 local demo script works unchanged.
 ### Remaining
 
 - Physical validation with multiple nodes across the VPS hosts
+
+## P4.5 owner-approved membership and resource budgets
+
+### Access requests
+
+Nodes that discover the network through P4.4 can now request membership. `POST /v1/access-requests` is a public, unauthenticated endpoint that accepts a `SignedAccessRequest` — an Ed25519 self-signed proof that the requester holds the node key they claim. The signature is verified against the `node_pubkey` embedded in the request, proving key possession without requiring an owner-issued token.
+
+Pending requests are stored in `PersistedState` alongside redeemed token IDs. They are unsigned, locally-mutable bookkeeping that does not bump the signed state generation. The owner (or an admin-tier credential holder) reviews pending requests via `GET /v1/access-requests`, approves with `POST /v1/access-requests/approve` (which bumps generation, pushes a `Member`, and signs), or denies with `POST /v1/access-requests/deny` (which drops the pending entry without a signed-state mutation).
+
+`approve_access_request` only grants network membership — it never implicitly creates a `ResourceBudget` or forwarding entry. Those remain separate owner actions, preserving the independence between compute contribution and inference consumption.
+
+### Resource budgets
+
+A `ResourceBudget` is owner-signed state on `NetworkState` (new field `resource_budgets: Vec<ResourceBudget>`) that grants a member the right to consume inference through the peer transport. Each budget specifies:
+
+- `max_in_flight` — concurrent request cap (enforced via a per-member `tokio::sync::Semaphore`)
+- `max_requests_per_window` and `window_seconds` — rate limit enforced via a sliding window of Unix timestamps
+
+`validate_state` checks that budget entries reference known nodes (`BudgetNodeUnknown`), contain no duplicates (`DuplicateBudgetNode`), and allow at least one request (`EmptyResourceBudget`). No validation rule ties a `ResourceBudget` to `ForwardingPolicy` or `ModelAssignment` — a member can be a pure consumer (budget, no compute), a pure contributor (compute, no budget), or both.
+
+`POST /v1/resource-budgets` (admin-tier) upserts a budget entry. `DELETE /v1/resource-budgets` removes one. Both bump the signed state generation. `revoke_member` strips the member's resource budget alongside forwarding policy, model assignments, placements, hardware profiles, and transport bindings — full revocation tears down everything; partial grants stay independent while membership exists.
+
+### Enforcement
+
+A `BudgetEnforcer` in `crates/dllm-daemon/src/budget.rs` holds per-member `Arc<Semaphore>` instances and sliding-window timestamp vectors. It reconciles with the signed `NetworkState` whenever new state arrives. Two enforcement gates check budgets:
+
+1. **libp2p dispatcher** (`peer_service.rs`): After `AuthView::authorize()` resolves the caller's `node_pubkey`, `serve_inference` calls `budget_enforcer.try_admit()` before the global admission semaphore. No budget entry → fail closed.
+
+2. **HTTP proxy path**: The per-credential `InferenceIdentity` quota and global admission semaphore continue to govern HTTP inference clients. The `BudgetEnforcer` is an additional, independent gate for DLLM network members consuming inference through the peer transport.
+
+Budget enforcement is isolated per member: Node A's quota exhaustion does not affect Node B.
+
+### CLI
+
+New subcommands: `dllm request-access <owner-endpoint>` (self-signs and submits), `dllm list-access-requests`, `dllm approve-access <node-key-file> --endpoint <addr>`, `dllm deny-access <node-key-file>`, `dllm set-budget <node-key-file> --max-in-flight <n> --max-per-window <n> --window-seconds <n> --owner`, and `dllm remove-budget <node-key-file> --owner`.
+
+`GET /v1/inference-policy` now returns both `credentials: Vec<InferencePolicy>` (local bearer-token quotas) and `member_budgets: Vec<ResourceBudget>` (owner-signed per-member budgets), so operators can see both systems.
+
+### Automated test coverage
+
+107 tests pass across the workspace (up from 87). New tests cover:
+
+| Area | Tests | What they prove |
+|------|-------|----------------|
+| Protocol | 5 | `SignedAccessRequest` verification and tamper detection, `validate_state` rejects `BudgetNodeUnknown`/`DuplicateBudgetNode`/`EmptyResourceBudget` |
+| Store | 10 | submit → approve member appears; submit → deny no state mutation; duplicate/redundant submission rejected; existing member rejected; budget set/remove with idempotency; budget rejects unknown node and empty; `revoke_member` strips budget; budget independent of forwarding policy |
+| Budget enforcer | 5 | `NoBudget` when absent, permits up to `max_in_flight`, sliding window exhaustion, per-member isolation, stale budget removal on reconcile |
+| Existing | 87 | All P4.0–P4.4 tests continue to pass with the new `resource_budgets` and `budget_enforcer` fields |
+
+### Remaining
+
+- Physical validation: Colorado edge node discovers the network via P4.4, submits an access request to the Kansas owner node, is approved, and is rejected on inference until a budget is explicitly granted.
+- Enforcement physical test: budget exhaustion isolation across members, sliding window rollover.

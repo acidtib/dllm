@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use dllm_protocol::{now_unix, SignedJoinToken};
 use dllm_daemon::{backup, NetworkStore};
+use dllm_protocol::{now_unix, AccessRequest, SignedAccessRequest, SignedJoinToken};
 use ed25519_dalek::SigningKey;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
@@ -136,6 +136,36 @@ enum Command {
         new_owner_key: PathBuf,
         #[arg(long)]
         old_owner_endpoint: String,
+    },
+    RequestAccess {
+        owner_endpoint: String,
+        #[arg(long)]
+        note: Option<String>,
+    },
+    ListAccessRequests,
+    ApproveAccess {
+        node_key: PathBuf,
+        #[arg(long)]
+        endpoint: Option<String>,
+    },
+    DenyAccess {
+        node_key: PathBuf,
+    },
+    SetBudget {
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
+        #[arg(long)]
+        max_in_flight: u32,
+        #[arg(long)]
+        max_per_window: u32,
+        #[arg(long)]
+        window_seconds: u32,
+    },
+    RemoveBudget {
+        #[arg(long)]
+        owner: bool,
+        node_key: Option<PathBuf>,
     },
 }
 
@@ -422,6 +452,93 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 &passphrase,
             )?;
             println!("restored control plane from {}", input.display());
+        }
+        Command::RequestAccess {
+            owner_endpoint,
+            note,
+        } => {
+            let node_pubkey = read_key(cli.node_key.clone())?;
+            let node_pubkey_arr: [u8; 32] = node_pubkey
+                .clone()
+                .try_into()
+                .map_err(|_| "node key must be 32 bytes")?;
+            let request = AccessRequest {
+                node_pubkey: node_pubkey_arr,
+                requested_endpoint: cli.node_endpoint.clone(),
+                note: note.unwrap_or_default(),
+                requested_at_unix: now_unix(),
+            };
+            let node_signing_key = NetworkStore::load_owner_key(&cli.node_key)?;
+            let signed = SignedAccessRequest::sign(request, &node_signing_key);
+            let response = request_json(auth(
+                client
+                    .post(format!("{owner_endpoint}/v1/access-requests"))
+                    .json(&json!({ "request": signed })),
+                &None,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::ListAccessRequests => {
+            let response = request_json(auth(
+                client.get(format!("{}/v1/access-requests", cli.daemon)),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::ApproveAccess { node_key, endpoint } => {
+            let node_pubkey = read_key(node_key)?;
+            let mut body = json!({ "node_pubkey": node_pubkey });
+            if let Some(ep) = endpoint {
+                body["endpoint"] = json!(ep);
+            }
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/access-requests/approve", cli.daemon))
+                    .json(&body),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::DenyAccess { node_key } => {
+            let node_pubkey = read_key(node_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/access-requests/deny", cli.daemon))
+                    .json(&json!({ "node_pubkey": node_pubkey })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::SetBudget {
+            owner,
+            node_key,
+            max_in_flight,
+            max_per_window,
+            window_seconds,
+        } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .post(format!("{}/v1/resource-budgets", cli.daemon))
+                    .json(&json!({
+                        "node_pubkey": node_pubkey,
+                        "max_in_flight": max_in_flight,
+                        "max_requests_per_window": max_per_window,
+                        "window_seconds": window_seconds
+                    })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
+        Command::RemoveBudget { owner, node_key } => {
+            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let response = request_json(auth(
+                client
+                    .delete(format!("{}/v1/resource-budgets", cli.daemon))
+                    .json(&json!({ "node_pubkey": node_pubkey })),
+                &cli.management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::TransferOwner {
             new_owner_key,
