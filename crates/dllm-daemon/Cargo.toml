@@ -19,6 +19,7 @@ hmac = "0.12"
 libp2p = { version = "0.56.0", features = ["tokio"] }
 rand.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+rust-embed = "8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde.workspace = true
 serde_json.workspace = true

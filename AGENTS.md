@@ -55,7 +55,7 @@ crates/dllm-probe      — Standalone libp2p diagnostic tool (binary name:
 docs/        — Phase plans and milestone evidence
 manifests/   — Model manifest files (GGUF quantization specs)
 scripts/     — Container and helper scripts
-web/         — Web UI
+apps/web/    — Web UI
 ```
 
 ## Phase workflow
@@ -72,9 +72,32 @@ web/         — Web UI
 - Remove remote test services, binaries, temporary state, keys, firewall rules,
   and listeners after validation.
 
+## Task runner
+
+Use [Mise](https://mise.jdx.dev/) to run project-wide tasks. After installing Mise, run:
+
+```sh
+mise install
+```
+
+Available tasks:
+
+```sh
+mise run fmt         # Format Rust and TypeScript
+mise run lint        # Run clippy and web type checks
+mise run test        # Run Rust tests and web type checks
+mise run build       # Build Rust release binaries and the web app
+mise run dev:web     # Start the web app development server
+mise run dev:daemon  # Run the dllmd daemon
+mise run dev:cli     # Run the dllm CLI
+mise run ci          # Run fmt, lint, test, and build
+```
+
+Use these tasks as the default entry point for builds and CI checks.
+
 ## Validation
 
-Run these checks before completing a milestone:
+Run these checks before completing a milestone. Alternatively, run `mise run ci`.
 
 ```sh
 cargo fmt --all

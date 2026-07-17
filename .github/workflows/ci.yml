@@ -9,6 +9,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run --cwd apps/web build
+      - name: Verify dist is current
+        run: git diff --exit-code apps/web/dist/
+
   check:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +34,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: check
+    needs: [check, web]
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable

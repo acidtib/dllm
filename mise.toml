@@ -1,0 +1,47 @@
+[tools]
+rust = "latest"
+bun = "latest"
+
+[tasks.fmt]
+description = "Format Rust and TypeScript sources"
+run = [
+  "cargo fmt --all",
+  "bun run --cwd apps/web fmt || true"
+]
+
+[tasks.lint]
+description = "Lint Rust and TypeScript"
+run = [
+  "cargo clippy --workspace --all-targets --locked -- -D warnings",
+  "bun run --cwd apps/web lint"
+]
+
+[tasks.test]
+description = "Run Rust tests and web type checks"
+run = [
+  "cargo test --workspace --locked",
+  "bun run --cwd apps/web typecheck"
+]
+
+[tasks.build]
+description = "Build Rust release binaries and the web app"
+run = [
+  "cargo build --release --locked",
+  "bun run --cwd apps/web build"
+]
+
+[tasks."dev:web"]
+description = "Start the web app development server"
+run = "bun run --cwd apps/web dev"
+
+[tasks."dev:daemon"]
+description = "Run the dllmd daemon (append args with --)"
+run = "cargo run --release --bin dllmd"
+
+[tasks."dev:cli"]
+description = "Run the dllm CLI (append args with --)"
+run = "cargo run --release --bin dllm"
+
+[tasks.ci]
+description = "Full CI check"
+depends = ["fmt", "lint", "test", "build"]

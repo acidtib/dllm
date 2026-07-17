@@ -9,6 +9,36 @@ cargo build --release
 cargo run --release --bin dllmd -- --help
 ```
 
+## Web UI
+
+The React web app lives in `apps/web/` and is managed as part of the root Bun workspace.
+
+```sh
+bun install
+bun run --cwd apps/web build
+```
+
+## Monorepo Tasks
+
+[Mise](https://mise.jdx.dev/) orchestrates the whole repository. After installing Mise, run:
+
+```sh
+mise install
+mise run fmt
+mise run lint
+mise run test
+mise run build
+mise run ci
+```
+
+Development shortcuts:
+
+```sh
+mise run dev:web     # Start the web app dev server
+mise run dev:daemon  # Run the dllmd daemon
+mise run dev:cli     # Run the dllm CLI
+```
+
 ## Architecture
 
 - `dllmd` is the only service users install and operate
@@ -32,7 +62,18 @@ cargo run --release --bin dllmd -- --help
 cargo fmt --all
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+bun run --cwd apps/web build
 ```
+
+## Docker
+
+Build a `dllmd` image from `docker/Dockerfile.dllmd`:
+
+```sh
+docker build -f docker/Dockerfile.dllmd -t dllmd:latest .
+```
+
+The Dockerfile builds both the `dllmd` and `dllm` binaries and packages `dllmd` in a minimal Debian runtime image.
 
 ## License
 

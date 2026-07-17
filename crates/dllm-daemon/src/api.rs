@@ -25,6 +25,7 @@ use dllm_protocol::{
 };
 use futures_util::{future::join_all, StreamExt};
 use hmac::{Hmac, Mac};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -277,6 +278,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(admin)
         .merge(inference)
         .merge(peer)
+        .fallback(get(spa_fallback))
         .with_state(state)
 }
 
@@ -519,11 +521,51 @@ async fn revoke_credential(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(RustEmbed)]
+#[folder = "../../apps/web/dist"]
+struct WebAssets;
+
+fn mime_for_path(path: &str) -> &'static str {
+    match path.rfind('.').map(|i| &path[i + 1..]) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "application/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("json") => "application/json; charset=utf-8",
+        Some("png") => "image/png",
+        Some("ico") => "image/x-icon",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn serve_embedded(path: &str) -> Response {
+    let path = path.trim_start_matches('/');
+    let path = if path.is_empty() { "index.html" } else { path };
+    if let Some(file) = WebAssets::get(path) {
+        return Response::builder()
+            .header(header::CONTENT_TYPE, mime_for_path(path))
+            .body(Body::from(file.data))
+            .unwrap();
+    }
+    // SPA fallback: any non-file path serves index.html
+    if let Some(html) = WebAssets::get("index.html") {
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .body(Body::from(html.data))
+            .unwrap()
+    } else {
+        (StatusCode::NOT_FOUND, "Not found").into_response()
+    }
+}
+
 async fn ui() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        include_str!("../../../web/index.html"),
-    )
+    serve_embedded("index.html").await
+}
+
+async fn spa_fallback(req: Request) -> impl IntoResponse {
+    serve_embedded(req.uri().path()).await
 }
 
 async fn status(State(state): State<ApiState>) -> Json<ManagementStatus> {
@@ -2680,15 +2722,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(content_type.contains("text/html"));
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let html = String::from_utf8(body.to_vec()).unwrap();
-        assert!(html.contains("Hardware capacity"));
-        assert!(html.contains("Placement preview"));
-        assert!(html.contains("replicas accepting work"));
-        assert!(html.contains("Management credentials"));
-        assert!(html.contains("Recovery"));
-        assert!(html.contains("Drain"));
-        assert!(html.contains("Inference ${policy.label}"));
-        assert!(html.contains("networkMatch"));
+        assert!(html.contains("<title>DLLM</title>"));
+        // SPA fallback serves index.html for unknown paths too
+        let fallback = router(state(None, None))
+            .oneshot(Request::get("/nodes").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(fallback.status(), StatusCode::OK);
+        let fallback_body = fallback.into_body().collect().await.unwrap().to_bytes();
+        let fallback_html = String::from_utf8(fallback_body.to_vec()).unwrap();
+        assert!(fallback_html.contains("<title>DLLM</title>"));
     }
 }
