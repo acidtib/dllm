@@ -48,6 +48,84 @@ impl LlamaCppConfig {
     }
 }
 
+/// Selects how the bundled `dllm-llama-server` binary should source its model.
+///
+/// This is a clap subcommand on the real CLI (`local <path>` or
+/// `hf-model <repo> [quant]`), not a flag, so it is represented separately
+/// from the leading flags in [`BundledRuntimeConfig::args`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundledModelSource {
+    Local(PathBuf),
+    HuggingFace(String),
+}
+
+/// Configuration for spawning the workspace-bundled `dllm-llama-server`
+/// binary, as opposed to [`LlamaCppConfig`] which targets an external stock
+/// `llama-server` binary. The two have different CLI shapes (this one uses a
+/// model-source subcommand instead of a `--model` flag) so they are kept as
+/// distinct types rather than variants of one config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundledRuntimeConfig {
+    pub binary: PathBuf,
+    pub model: BundledModelSource,
+    pub host: String,
+    pub port: u16,
+    pub gpu_layers: u32,
+    /// Context size override. `None` omits `--ctx-size` entirely so the
+    /// bundled binary falls back to the model's native context length,
+    /// matching its own `Option<NonZeroU32>` semantics.
+    pub context_size: Option<u32>,
+    pub api_key: Option<String>,
+    pub parallel: usize,
+    pub mmproj: Option<PathBuf>,
+}
+
+impl BundledRuntimeConfig {
+    /// Builds the argument list in the order the bundled binary's clap
+    /// parser requires: all top-level flags first, then the model-source
+    /// subcommand and its arguments last. Passing the subcommand before a
+    /// flag causes the real binary to reject the invocation at startup.
+    pub fn args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--host".into(),
+            self.host.clone(),
+            "--port".into(),
+            self.port.to_string(),
+            "--n-gpu-layers".into(),
+            self.gpu_layers.to_string(),
+        ];
+        if let Some(context_size) = self.context_size {
+            args.push("--ctx-size".into());
+            args.push(context_size.to_string());
+        }
+        if let Some(api_key) = &self.api_key {
+            args.push("--api-key".into());
+            args.push(api_key.clone());
+        }
+        args.push("--parallel".into());
+        args.push(self.parallel.to_string());
+        if let Some(mmproj) = &self.mmproj {
+            args.push("--mmproj".into());
+            args.push(mmproj.display().to_string());
+        }
+        match &self.model {
+            BundledModelSource::Local(path) => {
+                args.push("local".into());
+                args.push(path.display().to_string());
+            }
+            BundledModelSource::HuggingFace(repo) => {
+                args.push("hf-model".into());
+                args.push(repo.clone());
+            }
+        }
+        args
+    }
+
+    pub fn endpoint(&self) -> String {
+        format!("http://{}:{}", self.host, self.port)
+    }
+}
+
 pub struct RuntimeWorker {
     child: Child,
     endpoint: String,
@@ -65,17 +143,30 @@ pub enum RuntimeError {
 
 impl RuntimeWorker {
     pub async fn start(config: &LlamaCppConfig, timeout: Duration) -> Result<Self, RuntimeError> {
-        let child = tokio::process::Command::new(&config.binary)
-            .args(config.args())
+        Self::spawn(&config.binary, config.args(), config.endpoint(), timeout).await
+    }
+
+    pub async fn start_bundled(
+        config: &BundledRuntimeConfig,
+        timeout: Duration,
+    ) -> Result<Self, RuntimeError> {
+        Self::spawn(&config.binary, config.args(), config.endpoint(), timeout).await
+    }
+
+    async fn spawn(
+        binary: &std::path::Path,
+        args: Vec<String>,
+        endpoint: String,
+        timeout: Duration,
+    ) -> Result<Self, RuntimeError> {
+        let child = tokio::process::Command::new(binary)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .spawn()?;
-        let mut worker = Self {
-            child,
-            endpoint: config.endpoint(),
-        };
+        let mut worker = Self { child, endpoint };
         if let Err(error) = worker.wait_ready(timeout).await {
             let _ = worker.terminate().await;
             return Err(error);
@@ -161,6 +252,87 @@ mod tests {
             ]
         );
         assert_eq!(config.endpoint(), "http://127.0.0.1:8081");
+    }
+
+    #[test]
+    fn bundled_runtime_command_is_reproducible() {
+        let local_config = BundledRuntimeConfig {
+            binary: "/opt/dllm-llama-server".into(),
+            model: BundledModelSource::Local("/models/qwen.gguf".into()),
+            host: "127.0.0.1".into(),
+            port: 8081,
+            gpu_layers: 38,
+            context_size: Some(2048),
+            api_key: Some("secret".into()),
+            parallel: 2,
+            mmproj: Some("/models/mmproj.gguf".into()),
+        };
+        assert_eq!(
+            local_config.args(),
+            vec![
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8081",
+                "--n-gpu-layers",
+                "38",
+                "--ctx-size",
+                "2048",
+                "--api-key",
+                "secret",
+                "--parallel",
+                "2",
+                "--mmproj",
+                "/models/mmproj.gguf",
+                "local",
+                "/models/qwen.gguf",
+            ]
+        );
+        // Flags must precede the subcommand: the real clap parser rejects
+        // flags that appear after `local`/`hf-model`.
+        let args = local_config.args();
+        let subcommand_index = args.iter().position(|arg| arg == "local").unwrap();
+        assert!(
+            args[..subcommand_index]
+                .iter()
+                .any(|arg| arg.starts_with("--")),
+            "expected at least one flag before the subcommand"
+        );
+        assert!(
+            args[subcommand_index + 1..]
+                .iter()
+                .all(|arg| !arg.starts_with("--")),
+            "no flags may appear after the subcommand token"
+        );
+        assert_eq!(local_config.endpoint(), "http://127.0.0.1:8081");
+
+        let hf_config = BundledRuntimeConfig {
+            binary: "/opt/dllm-llama-server".into(),
+            model: BundledModelSource::HuggingFace("unsloth/Qwen3.5-397B-A17B-GGUF".into()),
+            host: "0.0.0.0".into(),
+            port: 8082,
+            gpu_layers: 0,
+            context_size: None,
+            api_key: None,
+            parallel: 1,
+            mmproj: None,
+        };
+        assert_eq!(
+            hf_config.args(),
+            vec![
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8082",
+                "--n-gpu-layers",
+                "0",
+                "--parallel",
+                "1",
+                "hf-model",
+                "unsloth/Qwen3.5-397B-A17B-GGUF",
+            ]
+        );
+        assert_eq!(hf_config.endpoint(), "http://0.0.0.0:8082");
     }
 
     #[test]
