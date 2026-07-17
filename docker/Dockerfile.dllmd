@@ -1,18 +1,27 @@
 # Stage 1: build dllmd
 FROM rust:1.96-bookworm AS builder
 WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends cmake build-essential libclang-dev \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --release --bin dllmd --bin dllm
+RUN cargo build --release --bin dllmd --bin dllm --bin dllm-llama-server
 
 # Stage 2: minimal runtime
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libgcc-s1 \
+    libgomp1 \
+    libstdc++6 \
+    libssl3 \
+    zlib1g \
+    libbrotli1 \
+    libzstd1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /src/target/release/dllmd /usr/local/bin/dllmd
 COPY --from=builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
 
 # Default state and key paths (override with volumes or env vars)
 ENV DLLMD_STATE=/var/lib/dllm/state.json
