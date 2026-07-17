@@ -460,7 +460,7 @@ Published benchmarks must include:
 - Fairness policies, quotas, and improved batching based on the chosen runtime.
 - Benchmarks across LAN, metro, cross-country, direct, and relayed paths.
 
-### Phase 4 — Discovery and controlled community networks
+### Phase 4 — Discovery and controlled community networks :DONE
 
 - Separate listed and unlisted discovery.
 - Replace the SSH reverse-tunnel fallback with an embedded, identity-authenticated
