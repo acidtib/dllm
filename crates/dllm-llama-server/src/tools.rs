@@ -405,6 +405,9 @@ pub enum ImageSource {
 /// by their first appearance in the prompt text so they align one-to-one with
 /// the markers embedded in the messages.
 #[cfg(feature = "mtmd")]
+// Vendored upstream signature kept as-is for easy re-syncing; the tuple
+// return type trips clippy's type-complexity lint.
+#[allow(clippy::type_complexity)]
 pub fn normalise_messages_multimodal(
     req: &Value,
     media_marker: &str,

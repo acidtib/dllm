@@ -2375,10 +2375,10 @@ async fn main() -> std::io::Result<()> {
                     Some(ctx)
                 }
                 Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        format!("failed to load mmproj '{}': {e}", p.display()),
-                    ))
+                    return Err(std::io::Error::other(format!(
+                        "failed to load mmproj '{}': {e}",
+                        p.display()
+                    )))
                 }
             }
         } else {
