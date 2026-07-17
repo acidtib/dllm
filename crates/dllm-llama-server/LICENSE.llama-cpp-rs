@@ -15,14 +15,22 @@ Apache License, Version 2.0. The vendored files in this directory are
 used and redistributed here under the terms of that dual license, as
 reproduced in full below.
 
-Adaptations made when vendoring into this repository are limited to:
+Adaptations made when vendoring into this repository are:
   - Renaming the CLI's displayed program name from `openai-server` to
     `dllm-llama-server` (the `clap` `#[command(name = ...)]` attribute).
   - Updating doc-comment usage examples that referenced
     `cargo run -p openai-server` to `cargo run -p dllm-llama-server`.
+  - In `main.rs`, rewriting a `std::io::Error::new(std::io::ErrorKind::Other,
+    ...)` construction (around `--mmproj` loading error handling) to use
+    `std::io::Error::other(...)`, per clippy's own suggested rewrite. This is
+    behavior-identical.
+  - In `tools.rs`, adding `#[allow(clippy::type_complexity)]` (with an
+    explanatory comment) above `normalise_messages_multimodal` to keep the
+    function signature verbatim rather than introducing a divergent type
+    alias. This is an annotation only and does not change behavior.
 
-No other behavioral, logic, or structural changes were made to the
-vendored source.
+Aside from these adaptations, no other behavioral, logic, or structural
+changes were made to the vendored source.
 
 --------------------------------------------------------------------------
 MIT License

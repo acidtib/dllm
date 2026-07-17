@@ -4,7 +4,7 @@ WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --release --bin dllmd --bin dllm --bin dllm-llama-server
+RUN cargo build --release --locked --bin dllmd --bin dllm --bin dllm-llama-server
 
 # Stage 2: minimal runtime
 FROM debian:bookworm-slim
