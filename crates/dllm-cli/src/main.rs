@@ -1,14 +1,10 @@
 use clap::{Parser, Subcommand};
-use dllm_protocol::SignedJoinToken;
-use dllmd::{backup, NetworkStore};
+use dllm_protocol::{now_unix, SignedJoinToken};
+use dllm_daemon::{backup, NetworkStore};
 use ed25519_dalek::SigningKey;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
-use std::{
-    fs,
-    path::PathBuf,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -453,13 +449,6 @@ fn write_private_key(path: &PathBuf, bytes: &[u8; 32]) -> Result<(), Box<dyn std
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }
     Ok(())
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before Unix epoch")
-        .as_secs()
 }
 
 fn assignment_request(

@@ -1,17 +1,12 @@
 use dllm_protocol::{
-    ForwardingPolicy, HardwareProfile, Member, ModelAssignment, NetworkState, Placement,
+    now_unix, ForwardingPolicy, HardwareProfile, Member, ModelAssignment, NetworkState, Placement,
     PlacementLifecycle, SignedJoinToken, SignedState, StateError, TokenError,
     TransportEndpointBinding, TransportEndpointRevocation, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashSet,
-    fs,
-    path::Path,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashSet, fs, path::Path};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -614,13 +609,6 @@ impl NetworkStore {
         rand::thread_rng().fill_bytes(&mut key);
         key
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before Unix epoch")
-        .as_secs()
 }
 
 #[cfg(test)]

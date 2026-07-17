@@ -1,16 +1,17 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
+use dllm_protocol::now_unix;
 use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
 };
-use dllmd::{
+use dllm_daemon::{
     api,
     credentials::{CredentialRegistry, ManagementCredential},
     inference::{InferenceCredential, InferenceRegistry},
     NetworkStore,
 };
 use serde::Deserialize;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
@@ -104,7 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let auth_view = dllm_transport::auth::AuthView::new(auth_rx);
         let admission = Arc::new(Semaphore::new(admission_limit));
         let peer_client =
-            dllmd::peer_service::PeerClient::new(handle.clone(), auth_view.clone(), admission);
+            dllm_daemon::peer_service::PeerClient::new(handle.clone(), auth_view.clone(), admission);
         (Some(auth_view), Some(peer_client))
     } else {
         (None, None)
@@ -226,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
     if let Some(ref pc) = primary_state.peer_client {
-        let _dispatcher = dllmd::peer_service::spawn_dispatcher(pc.clone(), primary_state.clone());
+        let _dispatcher = dllm_daemon::peer_service::spawn_dispatcher(pc.clone(), primary_state.clone());
     }
 
     let app = api::multi_network_router(primary_state, additional);
@@ -350,13 +351,6 @@ fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error
         Err(std::env::VarError::NotPresent) => Ok(default),
         Err(error) => Err(error.into()),
     }
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before Unix epoch")
-        .as_secs()
 }
 
 fn has_management_access(

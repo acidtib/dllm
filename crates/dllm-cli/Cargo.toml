@@ -1,18 +1,18 @@
 [package]
-name = "dllm"
+name = "dllm-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-dllmd = { path = "../dllmd" }
-dllm-transport = { path = "../dllm-transport" }
-dllm-protocol = { path = "../dllm-protocol" }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
-clap = { version = "4", features = ["derive"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-serde_json = "1"
+clap.workspace = true
+dllm-protocol.workspace = true
+dllm-transport.workspace = true
+dllm-daemon.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
+serde_json.workspace = true
 
 [[bin]]
 name = "dllm"

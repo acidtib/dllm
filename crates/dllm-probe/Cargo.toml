@@ -1,0 +1,16 @@
+[package]
+name = "dllm-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+clap.workspace = true
+futures-util.workspace = true
+libp2p = { version = "0.56.0", features = ["autonat", "dcutr", "identify", "kad", "noise", "ping", "quic", "relay", "request-response", "tcp", "tokio", "yamux"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[bin]]
+name = "dllm-dev-probe"
+path = "src/bin/dllm-dev-probe.rs"

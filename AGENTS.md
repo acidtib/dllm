@@ -38,8 +38,8 @@
 ```
 crates/dllm-protocol  — Shared types: network state, membership, identity,
                           policy, signed tokens, transport identity bindings
-crates/dllmd           — Node daemon: API server, credentials, inference
-                          registry, network store
+crates/dllm-daemon      — Node daemon: API server, credentials, inference
+                          registry, network store (binary name: dllmd)
 crates/dllm-cli        — CLI client (binary name: dllm)
 crates/dllm-runtime    — Inference runtime: manages llama.cpp child processes
 crates/dllm-transport  — libp2p peer transport layer

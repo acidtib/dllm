@@ -4,7 +4,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use dllmd::{api, credentials::CredentialRegistry, inference::InferenceRegistry, NetworkStore};
+use dllm_daemon::{api, credentials::CredentialRegistry, inference::InferenceRegistry, NetworkStore};
 use std::{
     collections::HashMap,
     sync::{

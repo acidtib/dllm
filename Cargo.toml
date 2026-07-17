@@ -1,8 +1,27 @@
 [workspace]
 resolver = "2"
-members = ["crates/dllm-protocol", "crates/dllmd", "crates/dllm-cli", "crates/dllm-runtime", "crates/dllm-transport"]
+members = ["crates/dllm-protocol", "crates/dllm-daemon", "crates/dllm-cli", "crates/dllm-runtime", "crates/dllm-transport", "crates/dllm-probe"]
 
 [workspace.package]
 edition = "2021"
 license = "Apache-2.0"
 version = "0.1.0"
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+futures-util = "0.3"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
+
+# Internal crates
+dllm-protocol = { path = "crates/dllm-protocol" }
+dllm-runtime = { path = "crates/dllm-runtime" }
+dllm-transport = { path = "crates/dllm-transport" }
+dllm-daemon = { path = "crates/dllm-daemon" }

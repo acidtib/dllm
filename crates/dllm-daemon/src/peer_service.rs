@@ -1,4 +1,5 @@
 use crate::api::ApiState;
+use dllm_protocol::{now_ms, now_unix};
 use dllm_transport::{
     auth::{AuthError, AuthView, PeerAuth},
     peer::{PeerId, PeerNodeHandle},
@@ -13,13 +14,8 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{oneshot, Mutex, Semaphore};
-
-// ---------------------------------------------------------------------------
-// Frame I/O
-// ---------------------------------------------------------------------------
 
 async fn read_frame(stream: &mut Stream) -> Result<Message, String> {
     let mut header = [0u8; 6];
@@ -88,15 +84,7 @@ async fn write_all(stream: &mut Stream, buf: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Pending outbound stream correlation
-// ---------------------------------------------------------------------------
-
 type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Stream, String>>>>>;
-
-// ---------------------------------------------------------------------------
-// PeerClient
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct PeerClient {
@@ -155,10 +143,6 @@ impl PeerClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Stream dispatcher
-// ---------------------------------------------------------------------------
-
 /// Spawn a background task that dispatches incoming stream events.
 pub fn spawn_dispatcher(peer_client: PeerClient, state: ApiState) -> tokio::task::JoinHandle<()> {
     let handle = peer_client.handle.clone();
@@ -198,10 +182,6 @@ pub fn spawn_dispatcher(peer_client: PeerClient, state: ApiState) -> tokio::task
         }
     })
 }
-
-// ---------------------------------------------------------------------------
-// Inbound stream handler
-// ---------------------------------------------------------------------------
 
 async fn handle_inbound(peer: PeerId, mut stream: Stream, client: PeerClient, state: ApiState) {
     let dispatch = match inbound_dispatch(&mut stream, &peer, &client.auth).await {
@@ -489,10 +469,6 @@ async fn serve_inference(
     });
 }
 
-// ---------------------------------------------------------------------------
-// Outbound stream helpers
-// ---------------------------------------------------------------------------
-
 /// A streaming response from a remote peer.
 pub struct PeerInferenceStream {
     stream: Stream,
@@ -592,22 +568,4 @@ pub async fn open_peer_inference(
         }
         other => Err(format!("unexpected response start: {other:?}")),
     }
-}
-
-// ---------------------------------------------------------------------------
-// Utility
-// ---------------------------------------------------------------------------
-
-pub(crate) fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before Unix epoch")
-        .as_secs()
-}
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }

@@ -5,16 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-dllm-protocol = { path = "../dllm-protocol" }
-ed25519-dalek = "2"
-futures-util = "0.3"
+clap.workspace = true
+dllm-protocol.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
 libp2p = { version = "0.56.0", features = ["autonat", "cbor", "dcutr", "dns", "identify", "kad", "macros", "noise", "ping", "quic", "relay", "request-response", "serde", "tcp", "tokio", "yamux"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
-tracing = "0.1"
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-rand = "0.8"
-uuid = { version = "1", features = ["v4"] }
+rand.workspace = true
+uuid.workspace = true

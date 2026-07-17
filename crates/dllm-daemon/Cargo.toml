@@ -1,0 +1,35 @@
+[package]
+name = "dllm-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2 = "0.5"
+axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+chacha20poly1305 = "0.10"
+dllm-protocol.workspace = true
+dllm-runtime.workspace = true
+dllm-transport.workspace = true
+ed25519-dalek.workspace = true
+futures-util.workspace = true
+hmac = "0.12"
+libp2p = { version = "0.56.0", features = ["tokio"] }
+rand.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+uuid.workspace = true
+
+[[bin]]
+name = "dllmd"
+path = "src/main.rs"
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

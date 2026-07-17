@@ -3,7 +3,6 @@ use crate::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
     inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
-    now_unix,
     peer_service::PeerClient,
     NetworkStore, StoreError,
 };
@@ -17,8 +16,8 @@ use axum::{
     Json, Router,
 };
 use dllm_protocol::{
-    HardwareProfile, HealthState, ManagementStatus, NodeStatus, PlacementLifecycle,
-    PlacementStatus, SignedJoinToken, TransportKind, WorkerStatus,
+    now_ms, now_unix, HardwareProfile, HealthState, ManagementStatus, NodeStatus,
+    PlacementLifecycle, PlacementStatus, SignedJoinToken, TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use hmac::{Hmac, Mac};
@@ -1013,7 +1012,7 @@ async fn proxy_peer(
         req_headers.insert("authorization".into(), auth.to_owned());
     }
 
-    let deadline_ms = crate::peer_service::now_ms() + 60_000;
+    let deadline_ms = now_ms() + 60_000;
 
     let peer_stream = match crate::peer_service::open_peer_inference(
         peer_client,
