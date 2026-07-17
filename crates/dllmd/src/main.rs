@@ -97,6 +97,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let peer_config = peer_config(&store, &owner_key_path)?;
     let peer_handle = peer_config.map(start_peer_node).transpose()?;
     let peer_diagnostics = peer_handle.as_ref().map(|handle| handle.diagnostics());
+
+    let (auth_view, peer_client) = if let Some(ref handle) = peer_handle {
+        let state_snapshot = Arc::new(store.state.state.clone());
+        let (_auth_tx, auth_rx) = tokio::sync::watch::channel(state_snapshot);
+        let auth_view = dllm_transport::auth::AuthView::new(auth_rx);
+        let admission = Arc::new(Semaphore::new(admission_limit));
+        let peer_client =
+            dllmd::peer_service::PeerClient::new(handle.clone(), auth_view.clone(), admission);
+        (Some(auth_view), Some(peer_client))
+    } else {
+        (None, None)
+    };
+
     let mut runtime_worker = None;
     if runtime_url.is_none() {
         if let (Ok(binary), Ok(model)) = (
@@ -146,6 +159,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_nonces: Arc::new(Mutex::new(HashMap::new())),
         peer_quota: Arc::new(Semaphore::new(admission_limit)),
         peer_diagnostics,
+        auth_view,
+        peer_client,
     };
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
@@ -205,9 +220,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 peer_nonces: Arc::new(Mutex::new(HashMap::new())),
                 peer_quota: Arc::new(Semaphore::new(admission_limit)),
                 peer_diagnostics: None,
+                auth_view: None,
+                peer_client: None,
             },
         ));
     }
+    if let Some(ref pc) = primary_state.peer_client {
+        let _dispatcher = dllmd::peer_service::spawn_dispatcher(pc.clone(), primary_state.clone());
+    }
+
     let app = api::multi_network_router(primary_state, additional);
     println!("dllmd listening on {bind}");
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {

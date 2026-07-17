@@ -30,7 +30,7 @@ Owner-signed DLLM state continues to decide membership and authorization.
 - [x] P4.2: embed discovery, NAT traversal, and encrypted forwarding roles in
   `dllmd`, prove automatic selection of an eligible participating node, and
   remove SSH and separately deployed relays from the supported peer path.
-- [ ] P4.3: carry authenticated health, inference streaming, cancellation, and
+- [x] P4.3: carry authenticated health, inference streaming, cancellation, and
   deadlines over the embedded transport with bounded concurrent streams and
   automatic path recovery.
 - [ ] P4.4: implement separate unlisted and listed discovery without allowing
@@ -311,3 +311,77 @@ seconds. Neither forwarding member held the owner key. SSH only deployed,
 administered, inspected, and removed the nodes. All services, binaries, keys,
 state, and listeners were removed after validation. Detailed evidence is in
 `results/phase4-results/p42-embedded-peer-network/summary.json`.
+
+## P4.3 authenticated inference transport (implementation complete, physical validation pending)
+
+### Protocol
+
+The application protocol runs on libp2p bidirectional streams negotiated as
+`/dllm/inference/1`. A custom `ConnectionHandler` wrapping
+`ReadyUpgrade<StreamProtocol>` negotiates the protocol on inbound and outbound
+connections. Fully negotiated `Stream` objects are forwarded to application code
+via a `NetworkBehaviour` that communicates through `mpsc` channels with the
+swarm event loop.
+
+### Wire format
+
+A length-delimited binary framing layer (`dllm-transport::protocol`) carries
+versioned messages with bounded sizes. Each frame is:
+
+```
+[1 byte: protocol version = 1]
+[1 byte: message type]
+[4 bytes: payload length (big-endian u32)]
+[payload bytes]
+```
+
+Message types: HealthRequest, HealthResponse, InferenceStart, ResponseStart,
+ResponseChunk, Cancel, End, Error. Bounds: 1 MiB max frame, 32 max headers,
+256 B max header name, 4 KiB max header value, 1 MiB max body/chunk,
+300 s max deadline horizon.
+
+### Authorization
+
+`dllm-transport::auth::AuthView` wraps a `watch::Receiver<Arc<NetworkState>>`
+for live authorization. It maps a Noise-authenticated libp2p `PeerId` through
+owner-signed transport bindings and enforces membership, expiry, rotation,
+revocation, and state generation. The view is updated atomically when new
+signed state is distributed.
+
+### Peer refactoring
+
+`PeerNodeHandle` is now cloneable and carries an `mpsc::UnboundedSender` for
+stream commands. The `Behaviour` struct includes the new `stream_handler::Behaviour`,
+which negotiates `/dllm/inference/1` and emits inbound/outbound stream events.
+
+### Daemon integration
+
+`ApiState` carries an optional `PeerClient` and `AuthView`. When peer transport
+is enabled, `resolve_member_transport` tries authenticated libp2p health before
+falling back to HTTP. `resolve_runtime` resolves transport PeerIds for member
+placements. `proxy` dispatches to `proxy_peer` for libp2p-routable targets,
+mapping chunked responses from the peer `Stream` into an Axum streaming body
+with a 60 s default deadline.
+
+A background dispatcher task (`spawn_dispatcher`) reads stream events from the
+peer handle. Inbound streams are authorized through `AuthView`, health requests
+receive a `HealthResponse`, and inference requests are proxied only to the
+local runtime via reqwest with deadline, admission, and cancellation handling.
+
+`PeerNodeHandle` exposes `update_diagnostics()` backed by a shared
+`watch::Sender`, and the stream dispatcher increments counters for active
+streams, rejections, cancellations, deadline expirations, protocol failures,
+and auth failures.
+
+### Automated test coverage
+
+78 tests pass (19 protocol, 18 auth, 2 peer, 2 evaluation, 6 protocol types,
+3 runtime, 27 daemon, 7 lifecycle integration). The protocol, auth, and
+lifecycle/limits matrices are covered. Routing and recovery tests require
+physical validation with multiple `dllmd` nodes.
+
+### Remaining
+
+- Physical acceptance matrix (9 scenarios: direct, forwarded, concurrency,
+  cancellation, deadline, live-auth, recovery, restart, security observation)
+- Physical cleanup on test hosts

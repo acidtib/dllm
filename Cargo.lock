@@ -837,12 +837,15 @@ name = "dllm-transport"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "dllm-protocol",
  "ed25519-dalek",
  "futures-util",
  "libp2p",
+ "rand 0.8.7",
  "serde",
  "thiserror 1.0.69",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -860,6 +863,7 @@ dependencies = [
  "futures-util",
  "hmac",
  "http-body-util",
+ "libp2p",
  "rand 0.8.7",
  "reqwest",
  "rustls",

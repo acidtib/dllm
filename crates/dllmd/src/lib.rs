@@ -19,6 +19,7 @@ pub mod api;
 pub mod backup;
 pub mod credentials;
 pub mod inference;
+pub mod peer_service;
 
 #[derive(Debug, Error)]
 pub enum StoreError {

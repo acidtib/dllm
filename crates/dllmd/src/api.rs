@@ -3,7 +3,9 @@ use crate::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
     inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
-    now_unix, NetworkStore, StoreError,
+    now_unix,
+    peer_service::PeerClient,
+    NetworkStore, StoreError,
 };
 use axum::{
     body::{Body, Bytes},
@@ -49,6 +51,8 @@ pub struct ApiState {
     pub peer_quota: Arc<Semaphore>,
     pub peer_diagnostics:
         Option<tokio::sync::watch::Receiver<dllm_transport::peer::PeerDiagnostics>>,
+    pub peer_client: Option<PeerClient>,
+    pub auth_view: Option<dllm_transport::auth::AuthView>,
 }
 
 #[derive(Default)]
@@ -898,6 +902,23 @@ async fn proxy(
             .fetch_add(1, Ordering::Relaxed);
         ApiError::Saturated
     })?;
+
+    // Use libp2p transport when a peer transport binding is available.
+    if let (Some(peer_id), Some(ref _peer_client)) = (replica.peer_id, &state.peer_client) {
+        return proxy_peer(
+            state,
+            peer_id,
+            &method,
+            path,
+            &headers,
+            &body,
+            replica,
+            permit,
+            quota_permit,
+        )
+        .await;
+    }
+
     let upstream_path = if replica.peer && state.peer_api_key.is_some() {
         format!("/v1/peer{}", path.strip_prefix("/v1").unwrap_or(path))
     } else {
@@ -960,10 +981,102 @@ async fn proxy(
         .map_err(|_| ApiError::BadRequest("invalid upstream response"))
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn proxy_peer(
+    state: ApiState,
+    peer_id: dllm_transport::peer::PeerId,
+    method: &reqwest::Method,
+    path: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    replica: ResolvedReplica,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+    _quota_permit: tokio::sync::OwnedSemaphorePermit,
+) -> Result<Response, ApiError> {
+    let peer_client = state
+        .peer_client
+        .as_ref()
+        .ok_or(ApiError::RuntimeUnavailable)?;
+
+    let mut req_headers: HashMap<String, String> = HashMap::new();
+    if let Some(ct) = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+    {
+        req_headers.insert("content-type".into(), ct.to_owned());
+    }
+    // Forward only safe headers: content-type and authorization.
+    if let Some(auth) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        req_headers.insert("authorization".into(), auth.to_owned());
+    }
+
+    let deadline_ms = crate::peer_service::now_ms() + 60_000;
+
+    let peer_stream = match crate::peer_service::open_peer_inference(
+        peer_client,
+        peer_id,
+        method.as_str(),
+        path,
+        &req_headers,
+        body,
+        deadline_ms,
+    )
+    .await
+    {
+        Ok(stream) => stream,
+        Err(_e) => {
+            state
+                .metrics
+                .upstream_failures
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(ApiError::BadRequest("peer inference failed"));
+        }
+    };
+
+    let status = StatusCode::from_u16(peer_stream.status()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let content_type = peer_stream.content_type();
+    let metrics = state.metrics.clone();
+    let replica_lease = ReplicaLease::new(replica.in_flight);
+
+    let body_stream = futures_util::stream::unfold(
+        (peer_stream, metrics.clone(), replica_lease),
+        |(mut ps, m, rl)| async move {
+            let _ = &rl;
+            match ps.read_chunk().await {
+                Ok(Some(data)) => {
+                    m.response_bytes
+                        .fetch_add(data.len() as u64, Ordering::Relaxed);
+                    Some((
+                        Ok::<_, std::io::Error>(axum::body::Bytes::from(data)),
+                        (ps, m, rl),
+                    ))
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    m.upstream_failures.fetch_add(1, Ordering::Relaxed);
+                    Some((Err(std::io::Error::other(e)), (ps, m, rl)))
+                }
+            }
+        },
+    );
+
+    let mut response = Response::builder().status(status);
+    if let Some(ct) = content_type {
+        response = response.header(header::CONTENT_TYPE, ct);
+    }
+    response
+        .body(Body::from_stream(body_stream))
+        .map_err(|_| ApiError::BadRequest("invalid upstream response"))
+}
+
 struct ResolvedReplica {
     runtime_url: String,
     peer: bool,
     in_flight: Arc<AtomicU64>,
+    peer_id: Option<dllm_transport::peer::PeerId>,
 }
 
 struct ReplicaLease(Arc<AtomicU64>);
@@ -1011,11 +1124,25 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
     let mut candidates = Vec::new();
     for placement in placements {
         let (runtime_url, peer, ready) = if placement.node_pubkey == owner {
-            (
-                state.runtime_url.clone().unwrap_or_default(),
-                false,
-                runtime_is_ready(state).await,
-            )
+            if state.runtime_url.is_some() {
+                (
+                    state.runtime_url.clone().unwrap_or_default(),
+                    false,
+                    runtime_is_ready(state).await,
+                )
+            } else {
+                // We are a replica without a local runtime. Route to the owner via libp2p.
+                let peer_id = state
+                    .auth_view
+                    .as_ref()
+                    .and_then(|auth| auth.resolve_peer(&owner));
+                let transport = peer_id.map(|pid| (format!("peer://{pid}"), TransportKind::Direct));
+                (
+                    transport.as_ref().map_or_else(String::new, |c| c.0.clone()),
+                    true,
+                    transport.is_some(),
+                )
+            }
         } else if let Some(member) = members
             .iter()
             .find(|member| member.node_pubkey == placement.node_pubkey)
@@ -1039,12 +1166,21 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                 .entry(placement.placement_id)
                 .or_default()
                 .clone();
+            let peer_id = if peer {
+                state
+                    .auth_view
+                    .as_ref()
+                    .and_then(|auth| auth.resolve_peer(&placement.node_pubkey))
+            } else {
+                None
+            };
             candidates.push((
                 load.load(Ordering::Relaxed),
                 placement.placement_id,
                 runtime_url,
                 peer,
                 load,
+                peer_id,
             ));
         }
     }
@@ -1052,11 +1188,14 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
     candidates
         .into_iter()
         .next()
-        .map(|(_, _, runtime_url, peer, in_flight)| ResolvedReplica {
-            runtime_url,
-            peer,
-            in_flight,
-        })
+        .map(
+            |(_, _, runtime_url, peer, in_flight, peer_id)| ResolvedReplica {
+                runtime_url,
+                peer,
+                in_flight,
+                peer_id,
+            },
+        )
         .ok_or(ApiError::RuntimeUnavailable)
 }
 
@@ -1065,6 +1204,22 @@ async fn resolve_member_transport(
     member: &dllm_protocol::Member,
     runtime: bool,
 ) -> Option<(String, TransportKind)> {
+    // Try peer health via libp2p first.
+    if let Some(ref peer_client) = state.peer_client {
+        if let Some(peer_id) = peer_client.auth().resolve_peer(&member.node_pubkey) {
+            let _path = if runtime {
+                "/v1/peer/health/runtime"
+            } else {
+                "/v1/peer/health"
+            };
+            // Use libp2p health check for reachability.
+            if peer_client.health_check(peer_id).await.is_ok() {
+                // Return a placeholder URL: the caller should use peer_id for routing.
+                return Some((format!("peer://{peer_id}"), TransportKind::Direct));
+            }
+        }
+    }
+
     let candidates = vec![(member.endpoint.clone(), TransportKind::Direct)];
     let (network_id, caller) = {
         let store = state.store.lock().await;
@@ -1334,6 +1489,8 @@ mod tests {
             peer_nonces: Arc::new(Mutex::new(HashMap::new())),
             peer_quota: Arc::new(Semaphore::new(1)),
             peer_diagnostics: None,
+            auth_view: None,
+            peer_client: None,
         }
     }
 

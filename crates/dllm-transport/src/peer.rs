@@ -10,10 +10,16 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use thiserror::Error;
-use tokio::{sync::watch, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
+
+use crate::stream_handler::{self, AppEvent, OpenStreamCmd};
 
 const IDENTIFY_PROTOCOL: &str = "/dllm/peer/1";
 const FORWARDING_PROVIDER_KEY: &[u8] = b"/dllm/forwarding/v1";
@@ -43,11 +49,25 @@ pub struct PeerDiagnostics {
     pub reselections: u64,
     pub last_error: Option<String>,
     pub listen_addresses: Vec<String>,
+    pub active_inbound_streams: u64,
+    pub active_outbound_streams: u64,
+    pub rejected_streams: u64,
+    pub cancelled_streams: u64,
+    pub deadline_expirations: u64,
+    pub protocol_failures: u64,
+    pub auth_failures: u64,
+    pub last_app_error: Option<String>,
+    pub last_stream_peer: Option<String>,
+    pub last_stream_path: Option<String>,
 }
 
+#[derive(Clone)]
 pub struct PeerNodeHandle {
     diagnostics: watch::Receiver<PeerDiagnostics>,
-    task: JoinHandle<Result<(), PeerError>>,
+    task: Arc<JoinHandle<Result<(), PeerError>>>,
+    stream_commands: mpsc::UnboundedSender<OpenStreamCmd>,
+    stream_events: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<AppEvent>>>,
+    diagnostics_tx: watch::Sender<PeerDiagnostics>,
 }
 
 impl PeerNodeHandle {
@@ -57,6 +77,20 @@ impl PeerNodeHandle {
 
     pub fn abort(&self) {
         self.task.abort();
+    }
+
+    pub fn open_stream(&self, cmd: OpenStreamCmd) {
+        let _ = self.stream_commands.send(cmd);
+    }
+
+    pub async fn recv_stream_event(&self) -> Option<AppEvent> {
+        self.stream_events.lock().await.recv().await
+    }
+
+    pub fn update_diagnostics(&self, f: impl FnOnce(&mut PeerDiagnostics)) {
+        let mut d = self.diagnostics_tx.borrow().clone();
+        f(&mut d);
+        self.diagnostics_tx.send_replace(d);
     }
 }
 
@@ -79,6 +113,7 @@ struct Behaviour {
     autonat: autonat::Behaviour,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     ping: ping::Behaviour,
+    stream: stream_handler::Behaviour,
 }
 
 pub fn load_or_create_identity(path: &Path) -> Result<identity::Keypair, PeerError> {
@@ -114,10 +149,17 @@ pub fn start_peer_node(config: PeerNodeConfig) -> Result<PeerNodeHandle, PeerErr
         ..PeerDiagnostics::default()
     };
     let (status_tx, status_rx) = watch::channel(initial);
-    let task = tokio::spawn(run_peer_node(config, key, status_tx));
+    let (stream_commands_tx, stream_commands_rx) = mpsc::unbounded_channel();
+    let (stream_events_tx, stream_events_rx) = mpsc::unbounded_channel();
+    let stream_behaviour = stream_handler::Behaviour::new(stream_commands_rx, stream_events_tx);
+    let diag_tx = status_tx.clone();
+    let task = tokio::spawn(run_peer_node(config, key, status_tx, stream_behaviour));
     Ok(PeerNodeHandle {
         diagnostics: status_rx,
-        task,
+        task: Arc::new(task),
+        stream_commands: stream_commands_tx,
+        stream_events: Arc::new(tokio::sync::Mutex::new(stream_events_rx)),
+        diagnostics_tx: diag_tx,
     })
 }
 
@@ -125,6 +167,7 @@ async fn run_peer_node(
     config: PeerNodeConfig,
     key: identity::Keypair,
     status_tx: watch::Sender<PeerDiagnostics>,
+    stream_behaviour: stream_handler::Behaviour,
 ) -> Result<(), PeerError> {
     let local_peer = key.public().to_peer_id();
     let forwarding_enabled = config.forwarding_enabled;
@@ -161,6 +204,7 @@ async fn run_peer_node(
                 autonat: autonat::Behaviour::new(local_peer, Default::default()),
                 kademlia: kad::Behaviour::new(local_peer, kad::store::MemoryStore::new(local_peer)),
                 ping: ping::Behaviour::new(ping::Config::new()),
+                stream: stream_behaviour,
             }
         })
         .map_err(transport_error)?
