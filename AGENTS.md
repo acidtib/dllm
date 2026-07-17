@@ -18,7 +18,8 @@
 
 ## Project architecture
 
-- `dllmd` is the only service users must install and operate.
+- `dllmd` (daemon) and `dllm` (CLI) are the only binaries users must install
+  and operate. `dllm-dev-probe` is a diagnostic tool, not for production use.
 - Do not introduce a dedicated relay, discovery, bootstrap, or coordination
   service as a requirement.
 - Ordinary participating `dllmd` nodes provide discovery, NAT traversal, and
@@ -38,16 +39,19 @@
 ```
 crates/dllm-protocol  — Shared types: network state, membership, identity,
                           policy, signed tokens, transport identity bindings
-crates/dllm-daemon      — Node daemon: API server, credentials, inference
+crates/dllm-daemon     — Node daemon: API server, credentials, inference
                           registry, network store (binary name: dllmd)
 crates/dllm-cli        — CLI client (binary name: dllm)
 crates/dllm-runtime    — Inference runtime: manages llama.cpp child processes
 crates/dllm-transport  — libp2p peer transport layer
+crates/dllm-probe      — Standalone libp2p diagnostic tool (binary name:
+                          dllm-dev-probe)
 ```
 
 ## Key directories
 
 ```
+.github/     — CI workflows
 docs/        — Phase plans and milestone evidence
 manifests/   — Model manifest files (GGUF quantization specs)
 scripts/     — Container and helper scripts
@@ -84,4 +88,5 @@ Build and run:
 ```sh
 cargo build --release
 cargo run --release --bin dllmd -- --help
+cargo run --release --bin dllm -- --help
 ```
