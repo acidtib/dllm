@@ -117,6 +117,10 @@ executable. `cargo build --release --workspace` builds both, so there is no
 separate `llama-server` install step. Point `dllmd` at a model and it starts
 the runtime for you.
 
+When `DLLMD_HF_MODEL` is used, downloads are cached under `~/.dllm/models`
+by default. Set `HF_HOME` yourself to use a different (or already
+populated) Hugging Face cache instead.
+
 Use a local GGUF file with `DLLMD_MODEL_PATH`:
 
 ```sh
