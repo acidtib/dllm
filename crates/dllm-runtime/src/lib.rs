@@ -147,7 +147,14 @@ pub enum RuntimeError {
 
 impl RuntimeWorker {
     pub async fn start(config: &LlamaCppConfig, timeout: Duration) -> Result<Self, RuntimeError> {
-        Self::spawn(&config.binary, config.args(), config.endpoint(), &[], timeout).await
+        Self::spawn(
+            &config.binary,
+            config.args(),
+            config.endpoint(),
+            &[],
+            timeout,
+        )
+        .await
     }
 
     pub async fn start_bundled(
@@ -160,7 +167,14 @@ impl RuntimeWorker {
             .map(|path| ("HF_HOME".to_string(), path.display().to_string()))
             .into_iter()
             .collect();
-        Self::spawn(&config.binary, config.args(), config.endpoint(), &env, timeout).await
+        Self::spawn(
+            &config.binary,
+            config.args(),
+            config.endpoint(),
+            &env,
+            timeout,
+        )
+        .await
     }
 
     async fn spawn(

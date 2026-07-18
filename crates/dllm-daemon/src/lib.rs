@@ -72,19 +72,17 @@ fn generate_network_name_with(rng: &mut impl rand::Rng) -> String {
 }
 
 const NETWORK_NAME_ADJECTIVES: &[&str] = &[
-    "amber", "ancient", "azure", "bold", "brave", "bright", "calm", "cedar", "clear",
-    "coral", "crisp", "deep", "dusky", "eager", "fierce", "gentle", "golden", "grand",
-    "hidden", "keen", "lively", "lucid", "misty", "noble", "quiet", "rapid", "rugged",
-    "sharp", "silent", "silver", "steady", "sturdy", "swift", "vivid", "warm", "wild",
-    "wise",
+    "amber", "ancient", "azure", "bold", "brave", "bright", "calm", "cedar", "clear", "coral",
+    "crisp", "deep", "dusky", "eager", "fierce", "gentle", "golden", "grand", "hidden", "keen",
+    "lively", "lucid", "misty", "noble", "quiet", "rapid", "rugged", "sharp", "silent", "silver",
+    "steady", "sturdy", "swift", "vivid", "warm", "wild", "wise",
 ];
 
 const NETWORK_NAME_NOUNS: &[&str] = &[
-    "badger", "beacon", "bison", "canyon", "cedar", "comet", "crane", "delta", "ember",
-    "falcon", "fjord", "forge", "glacier", "grove", "harbor", "heron", "island", "juniper",
-    "lantern", "lynx", "meadow", "mesa", "meteor", "otter", "peak", "pine", "quartz",
-    "raven", "reef", "ridge", "river", "sparrow", "summit", "tundra", "valley", "willow",
-    "wolf",
+    "badger", "beacon", "bison", "canyon", "cedar", "comet", "crane", "delta", "ember", "falcon",
+    "fjord", "forge", "glacier", "grove", "harbor", "heron", "island", "juniper", "lantern",
+    "lynx", "meadow", "mesa", "meteor", "otter", "peak", "pine", "quartz", "raven", "reef",
+    "ridge", "river", "sparrow", "summit", "tundra", "valley", "willow", "wolf",
 ];
 
 #[cfg(test)]
@@ -106,8 +104,9 @@ mod network_name_tests {
     #[test]
     fn varies_across_calls() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(1);
-        let names: std::collections::HashSet<String> =
-            (0..20).map(|_| generate_network_name_with(&mut rng)).collect();
+        let names: std::collections::HashSet<String> = (0..20)
+            .map(|_| generate_network_name_with(&mut rng))
+            .collect();
         assert!(names.len() > 1);
     }
 }
