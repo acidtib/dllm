@@ -37,46 +37,43 @@ start as expected.
 Create a directory for persistent state and keys:
 
 ```sh
-mkdir -p ~/dllm-data
+mkdir -p ~/.dllm
 ```
 
-Start the daemon with a management token and an API key so clients can make
-inference requests:
+Start the daemon with a network name, a management token, and an API key so
+clients can make inference requests:
 
 ```sh
 docker run --rm -it \
   --network host \
-  -v ~/dllm-data:/var/lib/dllm \
+  -v ~/.dllm:/var/lib/dllm \
+  -e DLLMD_NETWORK=my-network \
   -e DLLMD_MANAGEMENT_TOKEN=my-secret-token \
   -e DLLMD_API_KEY=my-api-key \
   dllm
 ```
 
+On first boot, since `~/.dllm` has no `state.json` yet, `dllmd` creates an
+owner identity and a signed network state named `my-network` itself. There is
+no separate network-creation step. `DLLMD_NETWORK` only matters on that first
+boot; once `state.json` exists, the network's name is fixed and later
+restarts just load it (`DLLMD_NETWORK` is ignored at that point).
+
 The daemon starts on `http://127.0.0.1:7337`. It exposes two ports:
 - `7337` (TCP) — HTTP management and inference API.
 - `7444` (TCP+UDP) — libp2p peer transport (when P2P is enabled).
 
-### Create a network
-
-In another terminal, use the `dllm` CLI from the same image:
-
-```sh
-docker run --rm -it --network host \
-  -v ~/dllm-data:/var/lib/dllm \
-  --entrypoint dllm \
-  dllm \
-  --state /var/lib/dllm/state.json \
-  --owner-key /var/lib/dllm/owner.key \
-  create my-network
-```
-
-This creates an owner identity and a signed network state.
+> **Do not run `dllm create` against the same state/owner-key files while
+> `dllmd` is already running against them.** `dllm create` writes directly to
+> disk and the daemon never re-reads its state file after startup, so a
+> `create` run after the daemon has booted will be silently overwritten the
+> next time the daemon persists any change.
 
 ### Check status
 
 ```sh
 docker run --rm --network host \
-  -v ~/dllm-data:/var/lib/dllm \
+  -v ~/.dllm:/var/lib/dllm \
   --entrypoint dllm \
   dllm \
   --state /var/lib/dllm/state.json \
@@ -99,6 +96,12 @@ cargo build --release
 ```
 
 The binaries are at `target/release/dllmd` and `target/release/dllm`.
+
+By default, both `dllmd` and `dllm` store their state and keys under
+`~/.dllm/` (`state.json`, `owner.key`, `node.key`, `transport.key`).
+Override individual paths with `DLLMD_STATE`, `DLLMD_OWNER_KEY`,
+`DLLMD_NODE_KEY`, `DLLMD_P2P_KEY` (`dllmd`) or `--state`, `--owner-key`,
+`--node-key`, `--transport-key` (`dllm`).
 
 ## Run inference locally
 
@@ -187,10 +190,10 @@ transport identity:
 
 ```sh
 dllm init
-# Creates dllm-node.key
+# Creates ~/.dllm/node.key
 
 dllm init-transport
-# Prints a libp2p peer ID, creates dllm-transport.key
+# Prints a libp2p peer ID, creates ~/.dllm/transport.key
 # Example output: 12D3KooW...
 ```
 
@@ -284,8 +287,9 @@ requests, budgets, moderation tools, and the audit log.
 | Variable | Default | Purpose |
 |---|---|---|
 | `DLLMD_BIND` | `127.0.0.1:7337` | HTTP listen address |
-| `DLLMD_STATE` | `dllm-state.json` | Path to signed network state |
-| `DLLMD_OWNER_KEY` | `dllm-owner.key` | Owner Ed25519 private key (32 bytes) |
+| `DLLMD_STATE` | `~/.dllm/state.json` | Path to signed network state |
+| `DLLMD_NETWORK` | `private` | Name for the network `dllmd` bootstraps on first boot (only used when `DLLMD_STATE` does not yet exist) |
+| `DLLMD_OWNER_KEY` | `~/.dllm/owner.key` | Owner Ed25519 private key (32 bytes) |
 | `DLLMD_NODE_KEY` | same as owner key | Local node Ed25519 private key |
 | `DLLMD_MANAGEMENT_TOKEN` | none | Bearer token for management API |
 | `DLLMD_API_KEY` | none | Bearer token for inference API |
@@ -299,7 +303,7 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_CONTEXT_SIZE` | `2048` | Context window size (bundled or external runtime) |
 | `DLLMD_P2P_ENABLED` | `false` | Enable embedded peer transport |
 | `DLLMD_P2P_PORT` | `7444` | libp2p listen port |
-| `DLLMD_P2P_KEY` | `dllm-transport.key` | libp2p Ed25519 identity |
+| `DLLMD_P2P_KEY` | `~/.dllm/transport.key` | libp2p Ed25519 identity |
 | `DLLMD_P2P_BOOTSTRAP` | none | Comma-separated bootstrap multiaddrs |
 | `DLLMD_P2P_DISCOVERY_MODE` | `listed` | `listed` or `unlisted` |
 | `DLLMD_P2P_DHT_HOSTING` | `true` | `true` = DHT server, `false` = client only |
@@ -312,10 +316,3 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_TLS_CERT` | none | TLS certificate path (PEM) |
 | `DLLMD_TLS_KEY` | none | TLS private key path (PEM) |
 | `DLLMD_PUBLIC_URL` | `http://{bind}` | Public URL for replica endpoints |
-
-## Next steps
-
-- Read `docs/dllm-proposal.md` for the architecture and product principles.
-- Read `docs/PHASE4.md` for the peer-network design and milestone details.
-- Use `dllm help` to see all available commands.
-- Use `dllm peer-status` to inspect transport path, forwarding, and diagnostics.

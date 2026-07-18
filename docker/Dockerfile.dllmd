@@ -27,6 +27,7 @@ COPY --from=builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-ll
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_OWNER_KEY=/var/lib/dllm/owner.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
+ENV DLLMD_P2P_KEY=/var/lib/dllm/transport.key
 # Bind to loopback by default. For remote access, override to 0.0.0.0:7337
 # and set DLLMD_TLS_CERT, DLLMD_TLS_KEY, DLLMD_MANAGEMENT_TOKEN, and DLLMD_API_KEY.
 ENV DLLMD_BIND=127.0.0.1:7337

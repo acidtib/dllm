@@ -17,14 +17,14 @@ struct Cli {
     daemon: String,
     #[arg(long)]
     management_token: Option<String>,
-    #[arg(long, default_value = "dllm-state.json")]
-    state: PathBuf,
-    #[arg(long, default_value = "dllm-owner.key")]
-    owner_key: PathBuf,
-    #[arg(long, default_value = "dllm-node.key")]
-    node_key: PathBuf,
-    #[arg(long, default_value = "dllm-transport.key")]
-    transport_key: PathBuf,
+    #[arg(long, help = "Defaults to ~/.dllm/state.json")]
+    state: Option<PathBuf>,
+    #[arg(long, help = "Defaults to ~/.dllm/owner.key")]
+    owner_key: Option<PathBuf>,
+    #[arg(long, help = "Defaults to ~/.dllm/node.key")]
+    node_key: Option<PathBuf>,
+    #[arg(long, help = "Defaults to ~/.dllm/transport.key")]
+    transport_key: Option<PathBuf>,
     #[arg(long)]
     credentials_path: Option<PathBuf>,
     #[arg(long, default_value = "http://127.0.0.1:7337")]
@@ -214,21 +214,25 @@ enum Command {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let state = resolve_path(cli.state, dllm_daemon::default_state_path)?;
+    let owner_key = resolve_path(cli.owner_key, dllm_daemon::default_owner_key_path)?;
+    let node_key = resolve_path(cli.node_key, dllm_daemon::default_node_key_path)?;
+    let transport_key = resolve_path(cli.transport_key, dllm_daemon::default_transport_key_path)?;
     let client = Client::new();
     match cli.command {
         Command::Init => {
             let key = SigningKey::generate(&mut rand::thread_rng());
-            write_private_key(&cli.node_key, &key.to_bytes())?;
-            println!("created node identity {}", cli.node_key.display());
+            write_private_key(&node_key, &key.to_bytes())?;
+            println!("created node identity {}", node_key.display());
         }
         Command::InitTransport => {
-            let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+            let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
             println!("{}", key.public().to_peer_id());
         }
         Command::Create { name } => {
             let store = NetworkStore::create(name);
-            store.save_owner_key(&cli.owner_key)?;
-            store.save(&cli.state)?;
+            store.save_owner_key(&owner_key)?;
+            store.save(&state)?;
             println!("created network {}", store.state.state.network_id);
         }
         Command::Status { json } => {
@@ -287,7 +291,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Join { token_file } => {
             let token: SignedJoinToken = serde_json::from_slice(&fs::read(token_file)?)?;
             token.verify(now_unix())?;
-            let node_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
+            let node_pubkey = NetworkStore::load_owner_key(&node_key)?
                 .verifying_key()
                 .to_bytes()
                 .to_vec();
@@ -321,7 +325,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             owner,
             node_key,
         } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/transport-bindings", cli.daemon))
@@ -336,7 +340,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::RevokeTransport { owner, node_key } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/transport-bindings/revoke", cli.daemon))
@@ -350,7 +354,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             owner,
             node_key,
         } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/forwarding-policy", cli.daemon))
@@ -363,7 +367,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::RemoveForwarder { owner, node_key } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/forwarding-policy", cli.daemon))
@@ -380,7 +384,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             owner,
             node_key,
         } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = assignment_request(
                 &client,
                 &cli.daemon,
@@ -396,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             owner,
             node_key,
         } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = assignment_request(
                 &client,
                 &cli.daemon,
@@ -492,8 +496,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let passphrase = read_passphrase(&passphrase_file)?;
             backup::create_backup(
-                &cli.state,
-                &cli.owner_key,
+                &state,
+                &owner_key,
                 cli.credentials_path.as_deref(),
                 &output,
                 &passphrase,
@@ -507,8 +511,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let passphrase = read_passphrase(&passphrase_file)?;
             backup::restore_backup(
                 &input,
-                &cli.state,
-                &cli.owner_key,
+                &state,
+                &owner_key,
                 cli.credentials_path.as_deref(),
                 &passphrase,
             )?;
@@ -520,29 +524,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } => {
             let timeout = timeout.unwrap_or(300);
             // Step 1: ensure node identity
-            if !cli.node_key.exists() {
+            if !node_key.exists() {
                 println!("no node identity found, creating one...");
                 let key = SigningKey::generate(&mut rand::thread_rng());
-                write_private_key(&cli.node_key, &key.to_bytes())?;
-                println!("created node identity {}", cli.node_key.display());
+                write_private_key(&node_key, &key.to_bytes())?;
+                println!("created node identity {}", node_key.display());
             } else {
-                println!("using node identity {}", cli.node_key.display());
+                println!("using node identity {}", node_key.display());
             }
             // Step 2: ensure transport identity
-            let transport_peer_id = if cli.transport_key.exists() {
-                let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+            let transport_peer_id = if transport_key.exists() {
+                let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
                 let pid = key.public().to_peer_id();
                 println!("using transport identity {pid}");
                 pid
             } else {
                 println!("no transport identity found, creating one...");
-                let key = dllm_transport::peer::load_or_create_identity(&cli.transport_key)?;
+                let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
                 let pid = key.public().to_peer_id();
                 println!("created transport identity {pid}");
                 pid
             };
             // Step 3: submit access request
-            let node_signing_key = NetworkStore::load_owner_key(&cli.node_key)?;
+            let node_signing_key = NetworkStore::load_owner_key(&node_key)?;
             let node_pubkey = node_signing_key.verifying_key().to_bytes();
             let request = AccessRequest {
                 node_pubkey,
@@ -624,7 +628,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             owner_endpoint,
             note,
         } => {
-            let node_pubkey = read_key(cli.node_key.clone())?;
+            let node_pubkey = read_key(node_key.clone())?;
             let node_pubkey_arr: [u8; 32] = node_pubkey
                 .clone()
                 .try_into()
@@ -635,7 +639,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 note: note.unwrap_or_default(),
                 requested_at_unix: now_unix(),
             };
-            let node_signing_key = NetworkStore::load_owner_key(&cli.node_key)?;
+            let node_signing_key = NetworkStore::load_owner_key(&node_key)?;
             let signed = SignedAccessRequest::sign(request, &node_signing_key);
             let response = request_json(auth(
                 client
@@ -714,7 +718,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_per_window,
             window_seconds,
         } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/resource-budgets", cli.daemon))
@@ -729,7 +733,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::RemoveBudget { owner, node_key } => {
-            let node_pubkey = assignment_key(owner, node_key, &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, node_key, &owner_key)?;
             let response = request_json(auth(
                 client
                     .delete(format!("{}/v1/resource-budgets", cli.daemon))
@@ -743,7 +747,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             reason,
             owner,
         } => {
-            let node_pubkey = assignment_key(owner, Some(node_key), &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, Some(node_key), &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/moderation/bans", cli.daemon))
@@ -753,7 +757,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::UnbanNode { node_key, owner } => {
-            let node_pubkey = assignment_key(owner, Some(node_key), &cli.owner_key)?;
+            let node_pubkey = assignment_key(owner, Some(node_key), &owner_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/moderation/bans", cli.daemon))
@@ -767,7 +771,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             category,
             note,
         } => {
-            let reporter_pubkey = NetworkStore::load_owner_key(&cli.node_key)?
+            let reporter_pubkey = NetworkStore::load_owner_key(&node_key)?
                 .verifying_key()
                 .to_bytes();
             let subject_pubkey = NetworkStore::load_owner_key(&subject_key)?
@@ -949,11 +953,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             new_owner_key,
             old_owner_endpoint,
         } => {
-            let mut store = NetworkStore::load(&cli.state, &cli.owner_key)?;
+            let mut store = NetworkStore::load(&state, &owner_key)?;
             let new_owner_key = NetworkStore::load_owner_key(new_owner_key)?;
             store.transfer_owner(new_owner_key, old_owner_endpoint)?;
-            store.save(&cli.state)?;
-            store.save_owner_key(&cli.owner_key)?;
+            store.save(&state)?;
+            store.save_owner_key(&owner_key)?;
             println!(
                 "transferred ownership at generation {}",
                 store.state.state.generation
@@ -961,6 +965,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+fn resolve_path(
+    explicit: Option<PathBuf>,
+    default: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> std::io::Result<PathBuf> {
+    match explicit {
+        Some(path) => Ok(path),
+        None => default(),
+    }
 }
 
 fn write_private_key(path: &PathBuf, bytes: &[u8; 32]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1068,5 +1082,26 @@ fn format_age(seconds: u64) -> String {
         format!("{}h", seconds / 3600)
     } else {
         format!("{}d", seconds / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_path;
+    use std::path::PathBuf;
+
+    #[test]
+    fn explicit_path_wins_over_default() {
+        let resolved = resolve_path(Some(PathBuf::from("explicit")), || {
+            Ok(PathBuf::from("default"))
+        })
+        .unwrap();
+        assert_eq!(resolved, PathBuf::from("explicit"));
+    }
+
+    #[test]
+    fn falls_back_to_default_when_unset() {
+        let resolved = resolve_path(None, || Ok(PathBuf::from("default"))).unwrap();
+        assert_eq!(resolved, PathBuf::from("default"));
     }
 }

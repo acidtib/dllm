@@ -45,10 +45,14 @@ struct AdditionalNetworkConfig {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let bind = std::env::var("DLLMD_BIND").unwrap_or_else(|_| "127.0.0.1:7337".into());
-    let state_path =
-        PathBuf::from(std::env::var("DLLMD_STATE").unwrap_or_else(|_| "dllm-state.json".into()));
-    let owner_key_path =
-        PathBuf::from(std::env::var("DLLMD_OWNER_KEY").unwrap_or_else(|_| "dllm-owner.key".into()));
+    let state_path = match std::env::var("DLLMD_STATE") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => dllm_daemon::default_state_path()?,
+    };
+    let owner_key_path = match std::env::var("DLLMD_OWNER_KEY") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => dllm_daemon::default_owner_key_path()?,
+    };
     let network_name = std::env::var("DLLMD_NETWORK").unwrap_or_else(|_| "private".into());
     let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
     let admission_limit = std::env::var("DLLMD_ADMISSION_LIMIT")
@@ -362,9 +366,10 @@ fn peer_config(
     if !env_bool("DLLMD_P2P_ENABLED", false)? {
         return Ok(None);
     }
-    let key_path = PathBuf::from(
-        std::env::var("DLLMD_P2P_KEY").unwrap_or_else(|_| "dllm-transport.key".into()),
-    );
+    let key_path = match std::env::var("DLLMD_P2P_KEY") {
+        Ok(value) => PathBuf::from(value),
+        Err(_) => dllm_daemon::default_transport_key_path()?,
+    };
     let local_node_key_path = std::env::var("DLLMD_NODE_KEY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| owner_key_path.to_path_buf());

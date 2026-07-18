@@ -7,7 +7,11 @@ use dllm_protocol::{
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -19,6 +23,57 @@ pub mod credentials;
 pub mod inference;
 pub mod peer_service;
 pub mod rate_limit;
+
+/// Root directory for DLLM's per-user files (state, keys) when no explicit
+/// path is configured via env var or CLI flag. Created eagerly so callers
+/// can `fs::write` into it immediately without a separate mkdir step.
+pub fn default_dir() -> std::io::Result<PathBuf> {
+    default_dir_in(dirs::home_dir())
+}
+
+fn default_dir_in(home: Option<PathBuf>) -> std::io::Result<PathBuf> {
+    let dir = home
+        .map(|home| home.join(".dllm"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+pub fn default_state_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("state.json"))
+}
+
+pub fn default_owner_key_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("owner.key"))
+}
+
+pub fn default_node_key_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("node.key"))
+}
+
+pub fn default_transport_key_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("transport.key"))
+}
+
+#[cfg(test)]
+mod default_dir_tests {
+    use super::default_dir_in;
+    use std::path::PathBuf;
+
+    #[test]
+    fn joins_dot_dllm_onto_home_and_creates_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let resolved = default_dir_in(Some(tmp.path().to_path_buf())).unwrap();
+        assert_eq!(resolved, tmp.path().join(".dllm"));
+        assert!(resolved.is_dir());
+    }
+
+    #[test]
+    fn falls_back_to_current_dir_when_home_is_unknown() {
+        let resolved = default_dir_in(None).unwrap();
+        assert_eq!(resolved, PathBuf::from("."));
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
