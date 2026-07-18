@@ -78,6 +78,10 @@ pub struct BundledRuntimeConfig {
     pub api_key: Option<String>,
     pub parallel: usize,
     pub mmproj: Option<PathBuf>,
+    /// When set, passed to the child process as `HF_HOME`, redirecting
+    /// where `hf-hub` (inside the bundled binary) caches Hugging Face
+    /// downloads. Ignored for `BundledModelSource::Local`.
+    pub hf_home: Option<PathBuf>,
 }
 
 impl BundledRuntimeConfig {
@@ -143,24 +147,32 @@ pub enum RuntimeError {
 
 impl RuntimeWorker {
     pub async fn start(config: &LlamaCppConfig, timeout: Duration) -> Result<Self, RuntimeError> {
-        Self::spawn(&config.binary, config.args(), config.endpoint(), timeout).await
+        Self::spawn(&config.binary, config.args(), config.endpoint(), &[], timeout).await
     }
 
     pub async fn start_bundled(
         config: &BundledRuntimeConfig,
         timeout: Duration,
     ) -> Result<Self, RuntimeError> {
-        Self::spawn(&config.binary, config.args(), config.endpoint(), timeout).await
+        let env: Vec<(String, String)> = config
+            .hf_home
+            .as_ref()
+            .map(|path| ("HF_HOME".to_string(), path.display().to_string()))
+            .into_iter()
+            .collect();
+        Self::spawn(&config.binary, config.args(), config.endpoint(), &env, timeout).await
     }
 
     async fn spawn(
         binary: &std::path::Path,
         args: Vec<String>,
         endpoint: String,
+        env: &[(String, String)],
         timeout: Duration,
     ) -> Result<Self, RuntimeError> {
         let child = tokio::process::Command::new(binary)
             .args(args)
+            .envs(env.iter().cloned())
             .stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -266,6 +278,7 @@ mod tests {
             api_key: Some("secret".into()),
             parallel: 2,
             mmproj: Some("/models/mmproj.gguf".into()),
+            hf_home: None,
         };
         assert_eq!(
             local_config.args(),
@@ -316,6 +329,7 @@ mod tests {
             api_key: None,
             parallel: 1,
             mmproj: None,
+            hf_home: None,
         };
         assert_eq!(
             hf_config.args(),
