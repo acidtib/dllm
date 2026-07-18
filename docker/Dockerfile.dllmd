@@ -50,7 +50,7 @@ ARG RUST_VERSION
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
-    libvulkan-dev glslc spirv-tools \
+    libvulkan-dev glslc spirv-headers spirv-tools \
     && rm -rf /var/lib/apt/lists/*
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
