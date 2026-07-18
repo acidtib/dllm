@@ -18,19 +18,6 @@ its own encryption, untouched by any of this.
 
 ## 1. Host (owner)
 
-**Do not pass `DLLMD_P2P_ENABLED=true` on the very first boot.** A brand new
-`~/.dllm` has no transport binding for the owner's own node yet, and
-`dllmd` checks for that binding *before* it will even start listening --
-so it fails immediately with `Error: TransportIdentityUnauthorized`
-(`crates/dllm-daemon/src/lib.rs:663-683`, checked at
-`crates/dllm-daemon/src/main.rs:381`). That binding can only be created by
-calling the daemon's own API, which means the daemon has to boot without
-P2P first, self-approve its own transport identity, then get restarted
-with P2P on. This is existing `dllmd` behavior, unrelated to the new
-`~/.dllm` defaults -- it's just not covered anywhere in the docs.
-
-First boot, no P2P yet:
-
 ```sh
 cd /home/acidtib/Code/dllm
 cargo build --release   # skip if binaries are already current
@@ -40,11 +27,16 @@ DLLMD_MANAGEMENT_TOKEN=my-secret-token \
 DLLMD_API_KEY=my-api-key \
 DLLMD_HF_MODEL=Qwen/Qwen2.5-0.5B-Instruct-GGUF \
 DLLMD_GPU_LAYERS=0 \
+DLLMD_P2P_ENABLED=true \
 ./target/release/dllmd
 ```
 
-This downloads the model and creates `~/.dllm/{state.json,owner.key}`. Give
-it a minute. In another terminal, sanity-check it works:
+This downloads the model, creates `~/.dllm/{state.json,owner.key,transport.key}`,
+self-binds the owner's own transport identity as part of that same
+bootstrap, and starts listening on `0.0.0.0:7444` for P2P -- one boot, no
+manual `init-transport`/`bind-transport` step needed for the owner's own
+node. Give it a minute for the model download. In another terminal,
+sanity-check it works:
 
 ```sh
 dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token assign my-model --owner
@@ -53,34 +45,6 @@ curl -s http://127.0.0.1:7337/v1/chat/completions \
   -H "Authorization: Bearer my-api-key" -H "Content-Type: application/json" \
   -d '{"model":"my-model","messages":[{"role":"user","content":"Say hi in 5 words."}],"stream":false}' | jq .
 ```
-
-Now create and self-approve the owner's transport identity, still with the
-daemon running:
-
-```sh
-dllm init-transport
-# creates ~/.dllm/transport.key, prints a peer ID -- copy it
-
-dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token \
-  bind-transport <owner-peer-id-from-above> \
-  --binding-generation 1 --expires-at-unix 2000000000 --owner
-```
-
-Stop the daemon (Ctrl-C) and restart it, this time with P2P enabled:
-
-```sh
-DLLMD_NETWORK=my-network \
-DLLMD_MANAGEMENT_TOKEN=my-secret-token \
-DLLMD_API_KEY=my-api-key \
-DLLMD_HF_MODEL=Qwen/Qwen2.5-0.5B-Instruct-GGUF \
-DLLMD_GPU_LAYERS=0 \
-DLLMD_P2P_ENABLED=true \
-./target/release/dllmd
-```
-
-The model is already cached from the first boot, so this restart is fast.
-`authorize_transport_endpoint` now finds the binding you just created and
-the daemon starts listening on `0.0.0.0:7444` for P2P.
 
 ## 2. Laptop
 
