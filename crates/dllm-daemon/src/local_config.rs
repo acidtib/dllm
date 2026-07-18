@@ -15,7 +15,12 @@ impl LocalConfig {
             return Ok(Self::default());
         }
         let bytes = fs::read(path)?;
-        Ok(serde_json::from_slice(&bytes).unwrap_or_default())
+        serde_json::from_slice(&bytes).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("invalid local config {}: {error}", path.display()),
+            )
+        })
     }
 
     fn save(&self, path: &Path) -> std::io::Result<()> {
@@ -114,6 +119,35 @@ mod tests {
         let config = LocalConfig::load(&path).unwrap();
         assert!(config.management_token.is_none());
         assert!(config.api_key.is_none());
+    }
+
+    #[test]
+    fn load_malformed_file_returns_invalid_data() {
+        let (_dir, path) = temp_config_path();
+        fs::write(&path, b"{not-json").unwrap();
+
+        let error = LocalConfig::load(&path).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("invalid local config"));
+    }
+
+    #[test]
+    fn resolve_does_not_overwrite_malformed_file() {
+        let (_dir, path) = temp_config_path();
+        let malformed = b"{not-json";
+        fs::write(&path, malformed).unwrap();
+
+        let error = resolve_token_in(
+            None,
+            &path,
+            |c| c.management_token.clone(),
+            |c, v| c.management_token = Some(v),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&path).unwrap(), malformed);
     }
 
     #[test]

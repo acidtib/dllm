@@ -204,8 +204,9 @@ dllm init
 # Example output: transport identity 12D3KooW...
 ```
 
-Run `dllm init-transport` separately only if you want to rotate the
-transport identity without touching the node identity.
+Run `dllm init-transport` separately if you only need to create a missing
+transport identity without touching the node identity. It reuses an existing
+transport identity rather than rotating it.
 
 ### Step 2: request access
 

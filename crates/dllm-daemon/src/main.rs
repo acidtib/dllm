@@ -581,6 +581,17 @@ fn spawn_peer_watcher(
             );
             return;
         }
+        if try_activate_watched_peer(
+            &state_path,
+            &owner_key_path,
+            admission_limit,
+            &peer_bundle,
+            &api_state,
+        )
+        .await
+        {
+            return;
+        }
         let state_file_name = state_path.file_name().map(|name| name.to_owned());
         while let Some(event) = rx.recv().await {
             let Ok(event) = event else { continue };
@@ -591,31 +602,54 @@ fn spawn_peer_watcher(
             if !touches_state_file {
                 continue;
             }
-            let reloaded = if owner_key_path.exists() {
-                NetworkStore::load(&state_path, &owner_key_path)
-            } else {
-                NetworkStore::load_replica(&state_path)
-            };
-            let Ok(reloaded) = reloaded else { continue };
-            let outcome = try_start_peer(&reloaded, &owner_key_path, admission_limit)
-                .map_err(|error| error.to_string());
-            match outcome {
-                Ok(Some((handle, bundle))) => {
-                    let client = bundle.client.clone();
-                    *peer_bundle.write().await = Some(bundle);
-                    drop(handle);
-                    let _dispatcher =
-                        dllm_daemon::peer_service::spawn_dispatcher(client, api_state.clone());
-                    println!("P2P authorized -- peer transport is now active");
-                    break;
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    println!("peer watcher: retry failed: {error}");
-                }
+            if try_activate_watched_peer(
+                &state_path,
+                &owner_key_path,
+                admission_limit,
+                &peer_bundle,
+                &api_state,
+            )
+            .await
+            {
+                break;
             }
         }
     });
+}
+
+async fn try_activate_watched_peer(
+    state_path: &Path,
+    owner_key_path: &Path,
+    admission_limit: usize,
+    peer_bundle: &Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>>,
+    api_state: &api::ApiState,
+) -> bool {
+    let reloaded = if owner_key_path.exists() {
+        NetworkStore::load(state_path, owner_key_path)
+    } else {
+        NetworkStore::load_replica(state_path)
+    };
+    let Ok(reloaded) = reloaded else {
+        return false;
+    };
+    match try_start_peer(&reloaded, owner_key_path, admission_limit)
+        .map_err(|error| error.to_string())
+    {
+        Ok(Some((handle, bundle))) => {
+            let client = bundle.client.clone();
+            *peer_bundle.write().await = Some(bundle);
+            drop(handle);
+            let _dispatcher =
+                dllm_daemon::peer_service::spawn_dispatcher(client, api_state.clone());
+            println!("P2P authorized -- peer transport is now active");
+            true
+        }
+        Ok(None) => false,
+        Err(error) => {
+            println!("peer watcher: retry failed: {error}");
+            false
+        }
+    }
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
