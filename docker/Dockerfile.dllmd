@@ -2,6 +2,14 @@ ARG RUST_VERSION=1.96
 ARG CUDA_VERSION=12.9.1
 ARG UBUNTU_VERSION=24.04
 
+FROM oven/bun:1 AS web-builder
+WORKDIR /src
+COPY package.json bun.lock ./
+COPY apps/web/package.json apps/web/package.json
+RUN bun install --frozen-lockfile
+COPY apps/web apps/web
+RUN bun run --cwd apps/web build
+
 FROM rust:${RUST_VERSION}-bookworm AS app-builder
 ARG RUST_VERSION
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
@@ -10,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
+COPY --from=web-builder /src/apps/web/dist apps/web/dist
 RUN cargo build --release --locked --bin dllmd --bin dllm
 
 FROM rust:${RUST_VERSION}-bookworm AS llama-cpu-builder

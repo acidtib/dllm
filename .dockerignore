@@ -1,3 +1,4 @@
 .git
 target
 .dev-gpu
+apps/web/dist
