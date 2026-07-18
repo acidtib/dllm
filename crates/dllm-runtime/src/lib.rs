@@ -145,6 +145,68 @@ pub enum RuntimeError {
     ProcessExited(std::process::ExitStatus),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FitRequest {
+    pub binary: PathBuf,
+    pub model: BundledModelSource,
+    pub n_ctx_min: u32,
+    pub margin_bytes: u64,
+}
+
+impl FitRequest {
+    pub fn args(&self) -> Vec<String> {
+        let mut args = vec![
+            "--fit".into(),
+            "--fit-n-ctx-min".into(),
+            self.n_ctx_min.to_string(),
+            "--fit-margin-bytes".into(),
+            self.margin_bytes.to_string(),
+        ];
+        match &self.model {
+            BundledModelSource::Local(path) => {
+                args.push("local".into());
+                args.push(path.display().to_string());
+            }
+            BundledModelSource::HuggingFace(repo) => {
+                args.push("hf-model".into());
+                args.push(repo.clone());
+            }
+        }
+        args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct FitReport {
+    pub n_gpu_layers: u32,
+    pub n_ctx: u32,
+    pub peak_memory_bytes: u64,
+    pub backend: String,
+}
+
+#[derive(Debug, Error)]
+pub enum FitError {
+    #[error("fit process error: {0}")]
+    Process(#[from] std::io::Error),
+    #[error("fit process exited with status {0}")]
+    ProcessFailed(std::process::ExitStatus),
+    #[error("could not parse fit output: {0}")]
+    InvalidOutput(#[from] serde_json::Error),
+}
+
+pub async fn run_fit(request: &FitRequest) -> Result<FitReport, FitError> {
+    let output = tokio::process::Command::new(&request.binary)
+        .args(request.args())
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .await?;
+    if !output.status.success() {
+        return Err(FitError::ProcessFailed(output.status));
+    }
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
 impl RuntimeWorker {
     pub async fn start(config: &LlamaCppConfig, timeout: Duration) -> Result<Self, RuntimeError> {
         Self::spawn(
@@ -361,6 +423,40 @@ mod tests {
             ]
         );
         assert_eq!(hf_config.endpoint(), "http://0.0.0.0:8082");
+    }
+
+    #[test]
+    fn fit_request_args_place_flags_before_subcommand() {
+        let request = FitRequest {
+            binary: "/opt/dllm-llama-server".into(),
+            model: BundledModelSource::Local("/models/qwen.gguf".into()),
+            n_ctx_min: 4096,
+            margin_bytes: 1_073_741_824,
+        };
+        assert_eq!(
+            request.args(),
+            vec![
+                "--fit",
+                "--fit-n-ctx-min",
+                "4096",
+                "--fit-margin-bytes",
+                "1073741824",
+                "local",
+                "/models/qwen.gguf",
+            ]
+        );
+    }
+
+    #[test]
+    fn fit_report_parses_from_json() {
+        let report: FitReport = serde_json::from_str(
+            r#"{"n_gpu_layers":32,"n_ctx":4096,"peak_memory_bytes":4200000000,"backend":"cuda"}"#,
+        )
+        .unwrap();
+        assert_eq!(report.n_gpu_layers, 32);
+        assert_eq!(report.n_ctx, 4096);
+        assert_eq!(report.peak_memory_bytes, 4_200_000_000);
+        assert_eq!(report.backend, "cuda");
     }
 
     #[test]
