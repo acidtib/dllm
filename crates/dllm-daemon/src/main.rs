@@ -60,7 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(value) => PathBuf::from(value),
         Err(_) => dllm_daemon::default_owner_key_path()?,
     };
-    let network_name = std::env::var("DLLMD_NETWORK").unwrap_or_else(|_| "private".into());
+    let network_name =
+        std::env::var("DLLMD_NETWORK").unwrap_or_else(|_| dllm_daemon::generate_network_name());
     let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
     let admission_limit = std::env::var("DLLMD_ADMISSION_LIMIT")
         .ok()
@@ -119,7 +120,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let mut store = NetworkStore::create(network_name);
         store.save_owner_key(&owner_key_path)?;
-        if env_bool("DLLMD_P2P_ENABLED", false)? {
+        if env_bool("DLLMD_P2P_ENABLED", true)? {
             let transport_key_path = resolve_transport_key_path()?;
             let transport_key = load_or_create_identity(&transport_key_path)?;
             let local_peer = transport_key.public().to_peer_id();
@@ -137,7 +138,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.save(&state_path)?;
         store
     };
-    let p2p_requested = env_bool("DLLMD_P2P_ENABLED", false)?;
+    let p2p_requested = env_bool("DLLMD_P2P_ENABLED", true)?;
     let peer_bundle: Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>> =
         Arc::new(tokio::sync::RwLock::new(None));
     let mut peer_handle: Option<PeerNodeHandle> = None;
@@ -395,7 +396,7 @@ fn peer_config(
     store: &NetworkStore,
     owner_key_path: &Path,
 ) -> Result<Option<PeerNodeConfig>, Box<dyn std::error::Error>> {
-    if !env_bool("DLLMD_P2P_ENABLED", false)? {
+    if !env_bool("DLLMD_P2P_ENABLED", true)? {
         return Ok(None);
     }
     let key_path = resolve_transport_key_path()?;
