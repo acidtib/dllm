@@ -228,6 +228,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let key = SigningKey::generate(&mut rand::thread_rng());
             write_private_key(&node_key, &key.to_bytes())?;
             println!("created node identity {}", node_key.display());
+            let transport = dllm_transport::peer::load_or_create_identity(&transport_key)?;
+            println!("transport identity {}", transport.public().to_peer_id());
         }
         Command::InitTransport => {
             let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
