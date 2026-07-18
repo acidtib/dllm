@@ -5,7 +5,7 @@ use crate::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
     inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
-    peer_service::PeerClient,
+    peer_service::PeerBundle,
     rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore, StoreError,
 };
@@ -53,10 +53,8 @@ pub struct ApiState {
     pub replica_loads: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicU64>>>>,
     pub peer_nonces: Arc<Mutex<HashMap<String, u64>>>,
     pub peer_quota: Arc<Semaphore>,
-    pub peer_diagnostics:
-        Option<tokio::sync::watch::Receiver<dllm_transport::peer::PeerDiagnostics>>,
-    pub peer_client: Option<PeerClient>,
-    pub auth_view: Option<dllm_transport::auth::AuthView>,
+    pub peer: Arc<RwLock<Option<PeerBundle>>>,
+
     pub budget_enforcer: Arc<BudgetEnforcer>,
     pub rate_limiter: Arc<RateLimiter<String>>,
     pub access_request_rate_config: RateLimitConfig,
@@ -303,9 +301,11 @@ async fn peer_network_status(
 ) -> Json<dllm_transport::peer::PeerDiagnostics> {
     Json(
         state
-            .peer_diagnostics
+            .peer
+            .read()
+            .await
             .as_ref()
-            .map(|diagnostics| diagnostics.borrow().clone())
+            .map(|bundle| bundle.diagnostics.borrow().clone())
             .unwrap_or_default(),
     )
 }
@@ -1294,7 +1294,8 @@ async fn proxy(
     })?;
 
     // Use libp2p transport when a peer transport binding is available.
-    if let (Some(peer_id), Some(ref _peer_client)) = (replica.peer_id, &state.peer_client) {
+    let peer_available = state.peer.read().await.is_some();
+    if let (Some(peer_id), true) = (replica.peer_id, peer_available) {
         return proxy_peer(
             state,
             peer_id,
@@ -1384,8 +1385,11 @@ async fn proxy_peer(
     _quota_permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<Response, ApiError> {
     let peer_client = state
-        .peer_client
+        .peer
+        .read()
+        .await
         .as_ref()
+        .map(|bundle| bundle.client.clone())
         .ok_or(ApiError::RuntimeUnavailable)?;
 
     let mut req_headers: HashMap<String, String> = HashMap::new();
@@ -1406,7 +1410,7 @@ async fn proxy_peer(
     let deadline_ms = now_ms() + 60_000;
 
     let peer_stream = match crate::peer_service::open_peer_inference(
-        peer_client,
+        &peer_client,
         peer_id,
         method.as_str(),
         path,
@@ -1523,9 +1527,11 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
             } else {
                 // We are a replica without a local runtime. Route to the owner via libp2p.
                 let peer_id = state
-                    .auth_view
+                    .peer
+                    .read()
+                    .await
                     .as_ref()
-                    .and_then(|auth| auth.resolve_peer(&owner));
+                    .and_then(|bundle| bundle.auth_view.resolve_peer(&owner));
                 let transport = peer_id.map(|pid| (format!("peer://{pid}"), TransportKind::Direct));
                 (
                     transport.as_ref().map_or_else(String::new, |c| c.0.clone()),
@@ -1558,9 +1564,11 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                 .clone();
             let peer_id = if peer {
                 state
-                    .auth_view
+                    .peer
+                    .read()
+                    .await
                     .as_ref()
-                    .and_then(|auth| auth.resolve_peer(&placement.node_pubkey))
+                    .and_then(|bundle| bundle.auth_view.resolve_peer(&placement.node_pubkey))
             } else {
                 None
             };
@@ -1595,7 +1603,13 @@ async fn resolve_member_transport(
     runtime: bool,
 ) -> Option<(String, TransportKind)> {
     // Try peer health via libp2p first.
-    if let Some(ref peer_client) = state.peer_client {
+    let peer_client = state
+        .peer
+        .read()
+        .await
+        .as_ref()
+        .map(|bundle| bundle.client.clone());
+    if let Some(ref peer_client) = peer_client {
         if let Some(peer_id) = peer_client.auth().resolve_peer(&member.node_pubkey) {
             let _path = if runtime {
                 "/v1/peer/health/runtime"
@@ -1878,9 +1892,7 @@ mod tests {
             replica_loads: Arc::new(Mutex::new(HashMap::new())),
             peer_nonces: Arc::new(Mutex::new(HashMap::new())),
             peer_quota: Arc::new(Semaphore::new(1)),
-            peer_diagnostics: None,
-            auth_view: None,
-            peer_client: None,
+            peer: Arc::new(RwLock::new(None)),
             budget_enforcer: Arc::new(crate::budget::BudgetEnforcer::new()),
             rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
             access_request_rate_config: crate::rate_limit::RateLimitConfig::default(),

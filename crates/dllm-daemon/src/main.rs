@@ -12,6 +12,7 @@ use dllm_protocol::now_unix;
 use dllm_runtime::{BundledModelSource, BundledRuntimeConfig, LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
+    PeerNodeHandle,
 };
 use serde::Deserialize;
 use std::time::Duration;
@@ -136,24 +137,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.save(&state_path)?;
         store
     };
-    let peer_config = peer_config(&store, &owner_key_path)?;
-    let peer_handle = peer_config.map(start_peer_node).transpose()?;
-    let peer_diagnostics = peer_handle.as_ref().map(|handle| handle.diagnostics());
-
-    let (auth_view, peer_client) = if let Some(ref handle) = peer_handle {
-        let state_snapshot = Arc::new(store.state.state.clone());
-        let (_auth_tx, auth_rx) = tokio::sync::watch::channel(state_snapshot);
-        let auth_view = dllm_transport::auth::AuthView::new(auth_rx);
-        let admission = Arc::new(Semaphore::new(admission_limit));
-        let peer_client = dllm_daemon::peer_service::PeerClient::new(
-            handle.clone(),
-            auth_view.clone(),
-            admission,
-        );
-        (Some(auth_view), Some(peer_client))
-    } else {
-        (None, None)
-    };
+    let p2p_requested = env_bool("DLLMD_P2P_ENABLED", false)?;
+    let peer_bundle: Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>> =
+        Arc::new(tokio::sync::RwLock::new(None));
+    let mut peer_handle: Option<PeerNodeHandle> = None;
+    if let Some((handle, bundle)) = try_start_peer(&store, &owner_key_path, admission_limit)? {
+        peer_handle = Some(handle);
+        *peer_bundle.write().await = Some(bundle);
+    }
 
     let mut runtime_worker = None;
     if runtime_url.is_none() {
@@ -243,9 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
         peer_nonces: Arc::new(Mutex::new(HashMap::new())),
         peer_quota: Arc::new(Semaphore::new(admission_limit)),
-        peer_diagnostics,
-        auth_view,
-        peer_client,
+        peer: peer_bundle.clone(),
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
         rate_limiter: Arc::new(RateLimiter::new()),
         access_request_rate_config: RateLimitConfig {
@@ -324,9 +313,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 replica_loads: Arc::new(Mutex::new(HashMap::new())),
                 peer_nonces: Arc::new(Mutex::new(HashMap::new())),
                 peer_quota: Arc::new(Semaphore::new(admission_limit)),
-                peer_diagnostics: None,
-                auth_view: None,
-                peer_client: None,
+                peer: Arc::new(tokio::sync::RwLock::new(None)),
                 budget_enforcer: Arc::new(BudgetEnforcer::new()),
                 rate_limiter: Arc::new(RateLimiter::new()),
                 access_request_rate_config: RateLimitConfig::default(),
@@ -340,9 +327,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         ));
     }
-    if let Some(ref pc) = primary_state.peer_client {
-        let _dispatcher =
-            dllm_daemon::peer_service::spawn_dispatcher(pc.clone(), primary_state.clone());
+    if let Some(ref bundle) = *peer_bundle.read().await {
+        let _dispatcher = dllm_daemon::peer_service::spawn_dispatcher(
+            bundle.client.clone(),
+            primary_state.clone(),
+        );
+    }
+    if p2p_requested && peer_handle.is_none() {
+        spawn_peer_watcher(
+            state_path.clone(),
+            owner_key_path.clone(),
+            admission_limit,
+            peer_bundle.clone(),
+            primary_state.clone(),
+        );
     }
 
     let app = api::multi_network_router(primary_state, additional);
@@ -499,6 +497,116 @@ fn resolve_transport_key_path() -> std::io::Result<PathBuf> {
         Ok(value) => Ok(PathBuf::from(value)),
         Err(_) => dllm_daemon::default_transport_key_path(),
     }
+}
+
+/// Builds a `PeerNodeConfig` (via `peer_config`) and starts the peer
+/// subsystem if the local node is currently authorized. Returns `Ok(None)`
+/// if P2P isn't enabled or the node isn't authorized yet -- same meaning as
+/// `peer_config` returning `None`. Reusable from both initial startup and
+/// the watcher in `spawn_peer_watcher`, since both need to do exactly this.
+fn try_start_peer(
+    store: &NetworkStore,
+    owner_key_path: &Path,
+    admission_limit: usize,
+) -> Result<
+    Option<(PeerNodeHandle, dllm_daemon::peer_service::PeerBundle)>,
+    Box<dyn std::error::Error>,
+> {
+    let Some(config) = peer_config(store, owner_key_path)? else {
+        return Ok(None);
+    };
+    let handle = start_peer_node(config)?;
+    let diagnostics = handle.diagnostics();
+    let state_snapshot = Arc::new(store.state.state.clone());
+    let (_auth_tx, auth_rx) = tokio::sync::watch::channel(state_snapshot);
+    let auth_view = dllm_transport::auth::AuthView::new(auth_rx);
+    let admission = Arc::new(Semaphore::new(admission_limit));
+    let client =
+        dllm_daemon::peer_service::PeerClient::new(handle.clone(), auth_view.clone(), admission);
+    Ok(Some((
+        handle,
+        dllm_daemon::peer_service::PeerBundle {
+            diagnostics,
+            client,
+            auth_view,
+        },
+    )))
+}
+
+/// Watches `state_path`'s parent directory for changes (the file itself is
+/// replaced via a temp-file-then-rename, so watching the directory catches
+/// that reliably). On every change touching `state_path`, reloads it and
+/// retries `try_start_peer`; once authorized, swaps the result into
+/// `peer_bundle` (visible to every in-flight `ApiState` clone through the
+/// shared `RwLock`), spawns its dispatcher, and stops watching.
+fn spawn_peer_watcher(
+    state_path: PathBuf,
+    owner_key_path: PathBuf,
+    admission_limit: usize,
+    peer_bundle: Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>>,
+    api_state: api::ApiState,
+) {
+    tokio::spawn(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(16);
+        let watch_dir = state_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let mut watcher = match notify::recommended_watcher(move |event| {
+            let _ = tx.blocking_send(event);
+        }) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                println!("peer watcher: failed to start file watcher: {error}");
+                return;
+            }
+        };
+        if let Err(error) = notify::Watcher::watch(
+            &mut watcher,
+            &watch_dir,
+            notify::RecursiveMode::NonRecursive,
+        ) {
+            println!(
+                "peer watcher: failed to watch {}: {error}",
+                watch_dir.display()
+            );
+            return;
+        }
+        let state_file_name = state_path.file_name().map(|name| name.to_owned());
+        while let Some(event) = rx.recv().await {
+            let Ok(event) = event else { continue };
+            let touches_state_file = event
+                .paths
+                .iter()
+                .any(|path| path.file_name() == state_file_name.as_deref());
+            if !touches_state_file {
+                continue;
+            }
+            let reloaded = if owner_key_path.exists() {
+                NetworkStore::load(&state_path, &owner_key_path)
+            } else {
+                NetworkStore::load_replica(&state_path)
+            };
+            let Ok(reloaded) = reloaded else { continue };
+            let outcome = try_start_peer(&reloaded, &owner_key_path, admission_limit)
+                .map_err(|error| error.to_string());
+            match outcome {
+                Ok(Some((handle, bundle))) => {
+                    let client = bundle.client.clone();
+                    *peer_bundle.write().await = Some(bundle);
+                    drop(handle);
+                    let _dispatcher =
+                        dllm_daemon::peer_service::spawn_dispatcher(client, api_state.clone());
+                    println!("P2P authorized -- peer transport is now active");
+                    break;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    println!("peer watcher: retry failed: {error}");
+                }
+            }
+        }
+    });
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
