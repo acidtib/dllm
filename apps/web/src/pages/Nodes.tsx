@@ -1,7 +1,9 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { fetchStatus, revokeMember } from "../lib/client";
-import { fmtPubkey } from "../lib/utils";
+import { fmtBytes, fmtPubkey } from "../lib/utils";
 import { Button } from "../components/ui/button";
+import { PubkeyBadge } from "../components/ui/pubkey-badge";
 
 export function Nodes() {
   const queryClient = useQueryClient();
@@ -13,7 +15,12 @@ export function Nodes() {
 
   const revokeMut = useMutation({
     mutationFn: (pubkey: number[]) => revokeMember(pubkey),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Node revoked");
+    },
+    onError: (e) =>
+      toast.error(e instanceof Error ? e.message : "Revoke failed"),
   });
 
   if (isLoading) return <p className="text-gray-400">Loading nodes...</p>;
@@ -38,9 +45,9 @@ export function Nodes() {
             className="flex items-center justify-between rounded-lg border border-border bg-surface p-4"
           >
             <div>
-              <p className="font-mono text-sm">
+              <p className="text-sm">
                 {node.authority ? "[authority] " : ""}
-                {fmtPubkey(node.node_pubkey)}...
+                <PubkeyBadge bytes={node.node_pubkey} />
               </p>
               <p className="text-xs text-gray-400">
                 {node.health} &middot; {node.transport || "unknown"} &middot;{" "}
@@ -51,7 +58,15 @@ export function Nodes() {
               <Button
                 variant="destructive"
                 size="sm"
-                onClick={() => revokeMut.mutate(node.node_pubkey)}
+                onClick={() => {
+                  if (
+                    !window.confirm(
+                      `Revoke node ${fmtPubkey(node.node_pubkey)}...? It will lose network membership.`,
+                    )
+                  )
+                    return;
+                  revokeMut.mutate(node.node_pubkey);
+                }}
                 disabled={revokeMut.isPending}
               >
                 Revoke
@@ -72,8 +87,7 @@ export function Nodes() {
               className="rounded-lg border border-border bg-surface p-3 text-sm"
             >
               <p>
-                {p.cpu.model}: {(p.available_memory_bytes / 1073741824).toFixed(1)}{" "}
-                GiB available
+                {p.cpu.model}: {fmtBytes(p.available_memory_bytes)} available
               </p>
               <p className="text-xs text-gray-400">
                 Backends:{" "}

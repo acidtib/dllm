@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { fetchStatus, fetchInferencePolicy } from "../lib/client";
-import { fmtPubkey } from "../lib/utils";
+import { cn, healthClass } from "../lib/utils";
+import { PubkeyBadge } from "../components/ui/pubkey-badge";
 import { InvitationSection, AssignModelSection, RecoveryNote } from "./AdminActions";
 
 export function Overview() {
@@ -28,7 +29,6 @@ export function Overview() {
   }
 
   const network = data.network.state;
-  const authorityKey = fmtPubkey(network.authority_pubkey);
 
   return (
     <div className="space-y-6">
@@ -36,23 +36,32 @@ export function Overview() {
 
       <p className="text-sm">
         Health:{" "}
-        <span
-          className={
-            data.health === "ready"
-              ? "text-ready font-medium"
-              : data.health === "degraded" || data.health === "unavailable"
-                ? "text-unavailable font-medium"
-                : "text-degraded font-medium"
-          }
-        >
+        <span className={cn(healthClass(data.health), "font-medium")}>
           {data.health}
         </span>
       </p>
 
+      {network.members.length <= 1 && (
+        <div className="rounded-lg border border-dashed border-accent/50 bg-accent/10 p-4 text-sm">
+          <p className="font-medium">Getting started</p>
+          <p className="mt-1 text-gray-300">
+            This network only has its owner node so far. Generate an invitation
+            below and run{" "}
+            <code className="rounded bg-gray-950 px-1 py-0.5 font-mono text-xs">
+              dllm onboard &lt;url&gt;
+            </code>{" "}
+            on another machine to add a peer.
+          </p>
+        </div>
+      )}
+
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Network" value={network.name} />
         <StatCard label="Generation" value={String(network.generation)} />
-        <StatCard label="Authority" value={authorityKey} mono />
+        <div className="rounded-lg border border-border bg-surface p-4">
+          <p className="mb-1 text-xs text-gray-400">Authority</p>
+          <PubkeyBadge bytes={network.authority_pubkey} className="text-sm" />
+        </div>
       </div>
 
       <div className="grid grid-cols-4 gap-4">

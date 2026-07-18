@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   fetchStatus,
   fetchPeerNetworkStatus,
@@ -7,9 +8,11 @@ import {
   revokeTransport,
   setForwardingPolicy,
 } from "../lib/client";
-import { fmtPubkey } from "../lib/utils";
+import type { NodeStatus } from "../lib/types";
+import { bytesToHex, fmtPubkey, fmtUnix, hexToBytes } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { PubkeyBadge } from "../components/ui/pubkey-badge";
 
 export function Peers() {
   const queryClient = useQueryClient();
@@ -79,9 +82,9 @@ export function Peers() {
               className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2 text-sm"
             >
               <span>
-                <span className="font-mono">{fmtPubkey(b.node_pubkey)}...</span>{" "}
-                &rarr; {b.transport_peer_id} (gen {b.binding_generation}, expires{" "}
-                {b.expires_at_unix})
+                <PubkeyBadge bytes={b.node_pubkey} /> &rarr;{" "}
+                {b.transport_peer_id} (gen {b.binding_generation}, expires{" "}
+                {fmtUnix(b.expires_at_unix)})
               </span>
               <BindRevoke
                 pubkey={b.node_pubkey}
@@ -108,8 +111,8 @@ export function Peers() {
               className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2 text-sm"
             >
               <span>
-                <span className="font-mono">{fmtPubkey(f.node_pubkey)}...</span>{" "}
-                max reservations: {f.max_reservations}
+                <PubkeyBadge bytes={f.node_pubkey} /> max reservations:{" "}
+                {f.max_reservations}
               </span>
               <RemoveForwarder
                 pubkey={f.node_pubkey}
@@ -123,6 +126,7 @@ export function Peers() {
       )}
 
       <SetForwarderForm
+        nodes={data.nodes}
         onDone={() => queryClient.invalidateQueries({ queryKey: ["status"] })}
       />
     </div>
@@ -157,13 +161,20 @@ function BindRevoke({
 }) {
   const mut = useMutation({
     mutationFn: () => revokeTransport(pubkey, peerId),
-    onSuccess: onDone,
+    onSuccess: () => {
+      onDone();
+      toast.success("Transport binding revoked");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Revoke failed"),
   });
   return (
     <Button
       variant="destructive"
       size="sm"
-      onClick={() => mut.mutate()}
+      onClick={() => {
+        if (!window.confirm(`Revoke transport binding to ${peerId}?`)) return;
+        mut.mutate();
+      }}
       disabled={mut.isPending}
     >
       Revoke
@@ -185,10 +196,12 @@ function BindTransportForm({ onDone }: { onDone: () => void }) {
       ),
     onSuccess: () => {
       onDone();
+      toast.success("Transport bound");
       setPeerId("");
       setGen("");
       setExpiry("");
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Bind failed"),
   });
 
   return (
@@ -203,7 +216,13 @@ function BindTransportForm({ onDone }: { onDone: () => void }) {
   );
 }
 
-function SetForwarderForm({ onDone }: { onDone: () => void }) {
+function SetForwarderForm({
+  nodes,
+  onDone,
+}: {
+  nodes: NodeStatus[];
+  onDone: () => void;
+}) {
   const [hex, setHex] = useState("");
   const [maxRes, setMaxRes] = useState("");
   const mut = useMutation({
@@ -211,12 +230,30 @@ function SetForwarderForm({ onDone }: { onDone: () => void }) {
       const bytes = hexToBytes(hex);
       return setForwardingPolicy(bytes, Number(maxRes));
     },
-    onSuccess: onDone,
+    onSuccess: () => {
+      onDone();
+      toast.success("Forwarding policy set");
+      setHex("");
+      setMaxRes("");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Set failed"),
   });
 
   return (
-    <div className="flex gap-2">
-      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} />
+    <div className="flex flex-wrap gap-2">
+      <select
+        value=""
+        onChange={(e) => e.target.value && setHex(e.target.value)}
+        className="rounded-md border border-border bg-gray-950 px-3 py-1.5 text-sm"
+      >
+        <option value="">Pick a known node&hellip;</option>
+        {nodes.map((n) => (
+          <option key={bytesToHex(n.node_pubkey)} value={bytesToHex(n.node_pubkey)}>
+            {fmtPubkey(n.node_pubkey)}... {n.endpoint}
+          </option>
+        ))}
+      </select>
+      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} className="min-w-[220px] flex-1" />
       <Input placeholder="max reservations" type="number" value={maxRes} onChange={(e) => setMaxRes(e.target.value)} />
       <Button size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
         Set
@@ -234,27 +271,23 @@ function RemoveForwarder({
 }) {
   const mut = useMutation({
     mutationFn: () => setForwardingPolicy(pubkey, null),
-    onSuccess: onDone,
+    onSuccess: () => {
+      onDone();
+      toast.success("Forwarder removed");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Remove failed"),
   });
   return (
     <Button
       variant="destructive"
       size="sm"
-      onClick={() => mut.mutate()}
+      onClick={() => {
+        if (!window.confirm(`Remove forwarding policy for ${fmtPubkey(pubkey)}...?`)) return;
+        mut.mutate();
+      }}
       disabled={mut.isPending}
     >
       Remove
     </Button>
   );
-}
-
-function hexToBytes(hex: string): number[] {
-  const s = hex.replace(/\s/g, "");
-  if (s.length % 2 !== 0) throw new Error("hex string must have even length");
-  const bytes: number[] = [];
-  for (let i = 0; i < s.length; i += 2) {
-    bytes.push(parseInt(s.substring(i, i + 2), 16));
-  }
-  if (bytes.length !== 32) throw new Error("node pubkey must be 32 bytes");
-  return bytes;
 }

@@ -1,8 +1,25 @@
 import { useState } from "react";
 import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "sonner";
-import { setToken } from "./lib/api";
+import {
+  Box,
+  Circle,
+  KeyRound,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  MessageSquare,
+  Network,
+  ScrollText,
+  Server,
+  ShieldAlert,
+  UserCheck,
+  type LucideIcon,
+} from "lucide-react";
+import { clearToken, setToken } from "./lib/api";
+import { fetchStatus } from "./lib/client";
+import { cn, healthClass } from "./lib/utils";
 import { Overview } from "./pages/Overview";
 import { Nodes } from "./pages/Nodes";
 import { Models } from "./pages/Models";
@@ -67,44 +84,138 @@ function TokenGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-const NAV_ITEMS = [
-  { to: "/", label: "Overview" },
-  { to: "/nodes", label: "Nodes" },
-  { to: "/models", label: "Models" },
-  { to: "/playground", label: "Playground" },
-  { to: "/peers", label: "Peers" },
-  { to: "/access", label: "Access" },
-  { to: "/credentials", label: "Credentials" },
-  { to: "/moderation", label: "Moderation" },
-  { to: "/audit", label: "Audit" },
+interface NavItem {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+}
+
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "Monitor",
+    items: [
+      { to: "/", label: "Overview", icon: LayoutDashboard },
+      { to: "/nodes", label: "Nodes", icon: Server },
+      { to: "/models", label: "Models", icon: Box },
+      { to: "/peers", label: "Peers", icon: Network },
+      { to: "/audit", label: "Audit", icon: ScrollText },
+    ],
+  },
+  {
+    label: "Use",
+    items: [{ to: "/playground", label: "Playground", icon: MessageSquare }],
+  },
+  {
+    label: "Admin",
+    items: [
+      { to: "/access", label: "Access", icon: UserCheck },
+      { to: "/credentials", label: "Credentials", icon: KeyRound },
+      { to: "/moderation", label: "Moderation", icon: ShieldAlert },
+    ],
+  },
 ];
 
-function Layout({ children }: { children: React.ReactNode }) {
+function HealthIndicator() {
+  const { data, error } = useQuery({
+    queryKey: ["status"],
+    queryFn: fetchStatus,
+    refetchInterval: 10_000,
+  });
+
+  const health = error ? "unavailable" : data?.health || "unknown";
+
   return (
-    <div className="flex min-h-screen">
-      <nav className="w-56 shrink-0 border-r border-border bg-surface p-4">
-        <h1 className="mb-4 text-lg font-semibold tracking-tight">
-          <NavLink to="/">DLLM</NavLink>
-        </h1>
-        <ul className="space-y-1">
-          {NAV_ITEMS.map((item) => (
-            <li key={item.to}>
-              <NavLink
-                to={item.to}
-                className={({ isActive }) =>
-                  `block rounded px-3 py-1.5 text-sm transition-colors ${
-                    isActive
-                      ? "bg-accent text-gray-950 font-medium"
-                      : "text-gray-400 hover:bg-surface-hover hover:text-gray-200"
-                  }`
-                }
-              >
-                {item.label}
-              </NavLink>
-            </li>
-          ))}
-        </ul>
+    <div className="flex items-center gap-2 rounded-md border border-border bg-gray-950 px-3 py-2 text-xs">
+      <Circle className={cn("h-2.5 w-2.5 fill-current", healthClass(health))} />
+      <span className={healthClass(health)}>{health}</span>
+    </div>
+  );
+}
+
+function NavContents({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <>
+      <h1 className="mb-4 text-lg font-semibold tracking-tight">
+        <NavLink to="/" onClick={onNavigate}>
+          DLLM
+        </NavLink>
+      </h1>
+
+      <HealthIndicator />
+
+      <div className="mt-4 flex-1 space-y-4">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label}>
+            <p className="mb-1 px-3 text-xs font-medium uppercase tracking-wide text-gray-500">
+              {group.label}
+            </p>
+            <ul className="space-y-1">
+              {group.items.map((item) => (
+                <li key={item.to}>
+                  <NavLink
+                    to={item.to}
+                    end={item.to === "/"}
+                    onClick={onNavigate}
+                    className={({ isActive }) =>
+                      cn(
+                        "flex items-center gap-2 rounded px-3 py-1.5 text-sm transition-colors",
+                        isActive
+                          ? "bg-accent font-medium text-gray-950"
+                          : "text-gray-400 hover:bg-surface-hover hover:text-gray-200",
+                      )
+                    }
+                  >
+                    <item.icon className="h-4 w-4 shrink-0" />
+                    {item.label}
+                  </NavLink>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => {
+          clearToken();
+          location.reload();
+        }}
+        className="flex items-center gap-2 rounded px-3 py-1.5 text-sm text-gray-400 hover:bg-surface-hover hover:text-gray-200"
+      >
+        <LogOut className="h-4 w-4 shrink-0" />
+        Log out
+      </button>
+    </>
+  );
+}
+
+function Layout({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="flex min-h-screen flex-col md:flex-row">
+      <header className="flex items-center justify-between border-b border-border bg-surface p-4 md:hidden">
+        <span className="text-lg font-semibold tracking-tight">DLLM</span>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="rounded p-1.5 hover:bg-surface-hover"
+          aria-label="Toggle navigation"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+      </header>
+
+      <nav
+        className={cn(
+          "w-full shrink-0 flex-col border-r border-border bg-surface p-4 md:flex md:w-56",
+          open ? "flex" : "hidden",
+        )}
+      >
+        <NavContents onNavigate={() => setOpen(false)} />
       </nav>
+
       <main className="flex-1 p-6">{children}</main>
     </div>
   );

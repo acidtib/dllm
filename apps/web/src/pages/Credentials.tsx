@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { fetchCredentials, createCredential, revokeCredential } from "../lib/client";
 import type { ManagementRole } from "../lib/types";
 import { Button } from "../components/ui/button";
@@ -21,13 +22,18 @@ export function Credentials() {
     onSuccess: (result) => {
       setCreatedToken(result.token);
       queryClient.invalidateQueries({ queryKey: ["credentials"] });
+      toast.success("Credential created");
     },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Create failed"),
   });
 
   const revokeMut = useMutation({
     mutationFn: (id: string) => revokeCredential(id),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["credentials"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["credentials"] });
+      toast.success("Credential revoked");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Revoke failed"),
   });
 
   return (
@@ -58,7 +64,10 @@ export function Credentials() {
                 <Button
                   variant="destructive"
                   size="sm"
-                  onClick={() => revokeMut.mutate(cred.id)}
+                  onClick={() => {
+                    if (!window.confirm(`Revoke credential "${cred.label}"?`)) return;
+                    revokeMut.mutate(cred.id);
+                  }}
                   disabled={revokeMut.isPending}
                 >
                   Revoke

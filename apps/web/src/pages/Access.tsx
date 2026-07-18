@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   fetchAccessRequests,
   approveAccessRequest,
@@ -6,6 +7,7 @@ import {
 } from "../lib/client";
 import { fmtPubkey } from "../lib/utils";
 import { Button } from "../components/ui/button";
+import { PubkeyBadge } from "../components/ui/pubkey-badge";
 
 export function Access() {
   const queryClient = useQueryClient();
@@ -23,14 +25,20 @@ export function Access() {
       pubkey: number[];
       endpoint?: string;
     }) => approveAccessRequest(pubkey, endpoint),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["access-requests"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["access-requests"] });
+      toast.success("Access request approved");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Approve failed"),
   });
 
   const denyMut = useMutation({
     mutationFn: (pubkey: number[]) => denyAccessRequest(pubkey),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["access-requests"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["access-requests"] });
+      toast.success("Access request denied");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Deny failed"),
   });
 
   if (isLoading) {
@@ -60,7 +68,7 @@ export function Access() {
                 className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2 text-sm"
               >
                 <span>
-                  <span className="font-mono">{fmtPubkey(req.node_pubkey)}...</span>{" "}
+                  <PubkeyBadge bytes={req.node_pubkey} />{" "}
                   {req.requested_endpoint || "?"} {req.note || ""}
                 </span>
                 <div className="flex gap-2">
@@ -79,7 +87,15 @@ export function Access() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => denyMut.mutate(req.node_pubkey)}
+                    onClick={() => {
+                      if (
+                        !window.confirm(
+                          `Deny access request from ${fmtPubkey(req.node_pubkey)}...?`,
+                        )
+                      )
+                        return;
+                      denyMut.mutate(req.node_pubkey);
+                    }}
                     disabled={denyMut.isPending}
                   >
                     Deny

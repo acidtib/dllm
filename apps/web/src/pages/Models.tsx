@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   fetchStatus,
   drainPlacement,
@@ -7,6 +8,7 @@ import {
   previewPlacement,
 } from "../lib/client";
 import type { PlacementPreviewCandidate } from "../lib/types";
+import { fmtBytes } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -20,12 +22,20 @@ export function Models() {
 
   const drainMut = useMutation({
     mutationFn: (id: string) => drainPlacement(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Placement draining");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Drain failed"),
   });
 
   const resumeMut = useMutation({
     mutationFn: (id: string) => resumePlacement(id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Placement resumed");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Resume failed"),
   });
 
   if (isLoading) return <p className="text-gray-400">Loading models...</p>;
@@ -150,7 +160,7 @@ function PlacementPreview() {
             candidates.map((c, i) => (
               <p key={i}>
                 {c.compatible ? "Compatible" : "Incompatible"}: {c.backend || "no backend"},{" "}
-                {(c.memory_headroom_bytes / 1073741824).toFixed(1)} GiB headroom
+                {fmtBytes(c.memory_headroom_bytes)} headroom
                 {c.decode_tokens_per_second_milli != null
                   ? `, ${(c.decode_tokens_per_second_milli / 1000).toFixed(2)} tok/s`
                   : ", unmeasured"}

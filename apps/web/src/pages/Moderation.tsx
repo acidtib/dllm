@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   fetchStatus,
   fetchAbuseReports,
@@ -9,9 +10,11 @@ import {
   setResourceBudget,
   removeResourceBudget,
 } from "../lib/client";
-import { fmtPubkey } from "../lib/utils";
+import type { NodeStatus } from "../lib/types";
+import { bytesToHex, fmtPubkey, fmtUnix, hexToBytes } from "../lib/utils";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { PubkeyBadge } from "../components/ui/pubkey-badge";
 
 export function Moderation() {
   const { data, isLoading, error } = useQuery({
@@ -43,7 +46,6 @@ export function Moderation() {
     <div className="space-y-6">
       <h2 className="text-xl font-semibold">Moderation</h2>
 
-      {/* Bans */}
       <h3 className="text-lg font-semibold">Banned Nodes</h3>
       {bans.length === 0 ? (
         <p className="text-gray-400">No banned nodes</p>
@@ -55,8 +57,8 @@ export function Moderation() {
               className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2 text-sm"
             >
               <span>
-                <span className="font-mono">{fmtPubkey(b.node_pubkey)}...</span>{" "}
-                reason: {b.reason} (banned at {b.banned_at_unix})
+                <PubkeyBadge bytes={b.node_pubkey} /> reason: {b.reason}{" "}
+                (banned {fmtUnix(b.banned_at_unix)})
               </span>
               <UnbanButton pubkey={b.node_pubkey} />
             </div>
@@ -64,9 +66,8 @@ export function Moderation() {
         </div>
       )}
 
-      <BanForm />
+      <BanForm nodes={data.nodes} />
 
-      {/* Resource Budgets */}
       <h3 className="text-lg font-semibold">Resource Budgets</h3>
       {budgets.length === 0 ? (
         <p className="text-gray-400">No resource budgets</p>
@@ -78,8 +79,8 @@ export function Moderation() {
               className="flex items-center justify-between rounded border border-border bg-surface px-3 py-2 text-sm"
             >
               <span>
-                <span className="font-mono">{fmtPubkey(b.node_pubkey)}...</span>{" "}
-                in-flight: {b.max_in_flight}, window: {b.max_requests_per_window}/
+                <PubkeyBadge bytes={b.node_pubkey} /> in-flight:{" "}
+                {b.max_in_flight}, window: {b.max_requests_per_window}/
                 {b.window_seconds}s
               </span>
               <RemoveBudgetButton pubkey={b.node_pubkey} />
@@ -88,9 +89,8 @@ export function Moderation() {
         </div>
       )}
 
-      <BudgetForm />
+      <BudgetForm nodes={data.nodes} />
 
-      {/* Abuse Reports */}
       <h3 className="text-lg font-semibold">Abuse Reports</h3>
       {!abuseReports || abuseReports.length === 0 ? (
         <p className="text-gray-400">No abuse reports</p>
@@ -102,18 +102,16 @@ export function Moderation() {
               className="rounded border border-border bg-surface px-3 py-2 text-xs"
             >
               <p>
-                reporter{" "}
-                <span className="font-mono">{fmtPubkey(r.reporter_pubkey)}</span>{" "}
-                subject{" "}
-                <span className="font-mono">{fmtPubkey(r.subject_pubkey)}</span>{" "}
-                {r.category}: {r.note || ""}
+                reporter <PubkeyBadge bytes={r.reporter_pubkey} /> subject{" "}
+                <PubkeyBadge bytes={r.subject_pubkey} /> {r.category}:{" "}
+                {r.note || ""}
               </p>
             </div>
           ))}
         </div>
       )}
 
-      <AbuseForm />
+      <AbuseForm nodes={data.nodes} />
     </div>
   );
 }
@@ -122,13 +120,20 @@ function UnbanButton({ pubkey }: { pubkey: number[] }) {
   const queryClient = useQueryClient();
   const mut = useMutation({
     mutationFn: () => unbanNode(pubkey),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Node unbanned");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Unban failed"),
   });
   return (
     <Button
       variant="destructive"
       size="sm"
-      onClick={() => mut.mutate()}
+      onClick={() => {
+        if (!window.confirm(`Unban node ${fmtPubkey(pubkey)}...?`)) return;
+        mut.mutate();
+      }}
       disabled={mut.isPending}
     >
       Unban
@@ -136,26 +141,63 @@ function UnbanButton({ pubkey }: { pubkey: number[] }) {
   );
 }
 
-function BanForm() {
+function NodePicker({
+  nodes,
+  onPick,
+}: {
+  nodes: NodeStatus[];
+  onPick: (hex: string) => void;
+}) {
+  return (
+    <select
+      value=""
+      onChange={(e) => e.target.value && onPick(e.target.value)}
+      className="rounded-md border border-border bg-gray-950 px-3 py-1.5 text-sm"
+    >
+      <option value="">Pick a known node&hellip;</option>
+      {nodes.map((n) => (
+        <option key={bytesToHex(n.node_pubkey)} value={bytesToHex(n.node_pubkey)}>
+          {fmtPubkey(n.node_pubkey)}... {n.endpoint}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function BanForm({ nodes }: { nodes: NodeStatus[] }) {
   const queryClient = useQueryClient();
   const [hex, setHex] = useState("");
   const [reason, setReason] = useState("");
   const mut = useMutation({
     mutationFn: () => banNode(hexToBytes(hex), reason),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Node banned");
+      setHex("");
+      setReason("");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Ban failed"),
   });
   return (
-    <div className="flex gap-2">
-      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} />
+    <div className="flex flex-wrap gap-2">
+      <NodePicker nodes={nodes} onPick={setHex} />
+      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} className="min-w-[220px] flex-1" />
       <Input placeholder="reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-      <Button size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
+      <Button
+        size="sm"
+        onClick={() => {
+          if (!window.confirm(`Ban node ${hex.slice(0, 8)}...?`)) return;
+          mut.mutate();
+        }}
+        disabled={mut.isPending}
+      >
         Ban
       </Button>
     </div>
   );
 }
 
-function BudgetForm() {
+function BudgetForm({ nodes }: { nodes: NodeStatus[] }) {
   const queryClient = useQueryClient();
   const [hex, setHex] = useState("");
   const [inflight, setInflight] = useState("");
@@ -169,11 +211,16 @@ function BudgetForm() {
         Number(perWindow),
         Number(windowSec),
       ),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Resource budget set");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Set failed"),
   });
   return (
-    <div className="flex gap-2">
-      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} />
+    <div className="flex flex-wrap gap-2">
+      <NodePicker nodes={nodes} onPick={setHex} />
+      <Input placeholder="node key (hex)" value={hex} onChange={(e) => setHex(e.target.value)} className="min-w-[220px] flex-1" />
       <Input placeholder="max in flight" type="number" value={inflight} onChange={(e) => setInflight(e.target.value)} />
       <Input placeholder="max per window" type="number" value={perWindow} onChange={(e) => setPerWindow(e.target.value)} />
       <Input placeholder="window seconds" type="number" value={windowSec} onChange={(e) => setWindowSec(e.target.value)} />
@@ -188,13 +235,20 @@ function RemoveBudgetButton({ pubkey }: { pubkey: number[] }) {
   const queryClient = useQueryClient();
   const mut = useMutation({
     mutationFn: () => removeResourceBudget(pubkey),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["status"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["status"] });
+      toast.success("Resource budget removed");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Remove failed"),
   });
   return (
     <Button
       variant="destructive"
       size="sm"
-      onClick={() => mut.mutate()}
+      onClick={() => {
+        if (!window.confirm(`Remove resource budget for ${fmtPubkey(pubkey)}...?`)) return;
+        mut.mutate();
+      }}
       disabled={mut.isPending}
     >
       Remove
@@ -202,7 +256,7 @@ function RemoveBudgetButton({ pubkey }: { pubkey: number[] }) {
   );
 }
 
-function AbuseForm() {
+function AbuseForm({ nodes }: { nodes: NodeStatus[] }) {
   const queryClient = useQueryClient();
   const [subjectHex, setSubjectHex] = useState("");
   const [category, setCategory] = useState("");
@@ -214,12 +268,19 @@ function AbuseForm() {
         category,
         note,
       }),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["abuse-reports"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["abuse-reports"] });
+      toast.success("Abuse report submitted");
+      setSubjectHex("");
+      setCategory("");
+      setNote("");
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Submit failed"),
   });
   return (
-    <div className="flex gap-2">
-      <Input placeholder="subject pubkey (hex)" value={subjectHex} onChange={(e) => setSubjectHex(e.target.value)} />
+    <div className="flex flex-wrap gap-2">
+      <NodePicker nodes={nodes} onPick={setSubjectHex} />
+      <Input placeholder="subject pubkey (hex)" value={subjectHex} onChange={(e) => setSubjectHex(e.target.value)} className="min-w-[220px] flex-1" />
       <Input placeholder="category" value={category} onChange={(e) => setCategory(e.target.value)} />
       <Input placeholder="note" value={note} onChange={(e) => setNote(e.target.value)} />
       <Button size="sm" onClick={() => mut.mutate()} disabled={mut.isPending}>
@@ -227,15 +288,4 @@ function AbuseForm() {
       </Button>
     </div>
   );
-}
-
-function hexToBytes(hex: string): number[] {
-  const s = hex.replace(/\s/g, "");
-  if (s.length % 2 !== 0) throw new Error("hex string must have even length");
-  const bytes: number[] = [];
-  for (let i = 0; i < s.length; i += 2) {
-    bytes.push(parseInt(s.substring(i, i + 2), 16));
-  }
-  if (bytes.length !== 32) throw new Error("node pubkey must be 32 bytes");
-  return bytes;
 }
