@@ -103,6 +103,12 @@ Override individual paths with `DLLMD_STATE`, `DLLMD_OWNER_KEY`,
 `DLLMD_NODE_KEY`, `DLLMD_P2P_KEY` (`dllmd`) or `--state`, `--owner-key`,
 `--node-key`, `--transport-key` (`dllm`).
 
+If `DLLMD_MANAGEMENT_TOKEN` or `DLLMD_API_KEY` aren't set, `dllmd`
+generates them on first boot, prints them once, and persists them to
+`~/.dllm/config.json` (mode `0600`). `dllm` reads the same file as a
+fallback for `--management-token`, so once `dllmd` has booted at least
+once on a machine, `dllm status` and friends work with no flags.
+
 ## Run inference locally
 
 `dllmd` bundles its own inference runtime (`dllm-llama-server`, compiled from
@@ -291,8 +297,8 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_NETWORK` | `private` | Name for the network `dllmd` bootstraps on first boot (only used when `DLLMD_STATE` does not yet exist) |
 | `DLLMD_OWNER_KEY` | `~/.dllm/owner.key` | Owner Ed25519 private key (32 bytes) |
 | `DLLMD_NODE_KEY` | same as owner key | Local node Ed25519 private key |
-| `DLLMD_MANAGEMENT_TOKEN` | none | Bearer token for management API |
-| `DLLMD_API_KEY` | none | Bearer token for inference API |
+| `DLLMD_MANAGEMENT_TOKEN` | generated, see `~/.dllm/config.json` | Bearer token for management API |
+| `DLLMD_API_KEY` | generated, see `~/.dllm/config.json` | Bearer token for inference API |
 | `DLLMD_RUNTIME_URL` | none | URL of an external, separately managed runtime server |
 | `DLLMD_RUNTIME_BIN` | none | Path to an external `llama-server`-compatible binary (auto-started instead of the bundled runtime) |
 | `DLLMD_MODEL_PATH` | none | Path to a local GGUF model file, used by the bundled runtime, or by `DLLMD_RUNTIME_BIN` if set |
