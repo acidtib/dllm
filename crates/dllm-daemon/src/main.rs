@@ -379,10 +379,7 @@ fn peer_config(
     if !env_bool("DLLMD_P2P_ENABLED", false)? {
         return Ok(None);
     }
-    let key_path = match std::env::var("DLLMD_P2P_KEY") {
-        Ok(value) => PathBuf::from(value),
-        Err(_) => dllm_daemon::default_transport_key_path()?,
-    };
+    let key_path = resolve_transport_key_path()?;
     let local_node_key_path = std::env::var("DLLMD_NODE_KEY")
         .map(PathBuf::from)
         .unwrap_or_else(|_| owner_key_path.to_path_buf());
@@ -465,6 +462,13 @@ fn peer_config(
         reservation_rate_limit: None,
         circuit_src_rate_limit: None,
     }))
+}
+
+fn resolve_transport_key_path() -> std::io::Result<PathBuf> {
+    match std::env::var("DLLMD_P2P_KEY") {
+        Ok(value) => Ok(PathBuf::from(value)),
+        Err(_) => dllm_daemon::default_transport_key_path(),
+    }
 }
 
 fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
