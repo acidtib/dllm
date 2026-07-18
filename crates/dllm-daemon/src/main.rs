@@ -185,6 +185,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => None,
             };
             if let Some(model) = model_source {
+                let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
+                    && std::env::var("HF_HOME").is_err()
+                {
+                    Some(dllm_daemon::default_dir()?.join("models"))
+                } else {
+                    None
+                };
                 let config = BundledRuntimeConfig {
                     binary: bundled_runtime_binary()?,
                     model,
@@ -205,6 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     api_key: None,
                     parallel: 1,
                     mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
+                    hf_home,
                 };
                 let worker =
                     RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
