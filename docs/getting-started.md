@@ -200,12 +200,12 @@ transport identity:
 
 ```sh
 dllm init
-# Creates ~/.dllm/node.key
-
-dllm init-transport
-# Prints a libp2p peer ID, creates ~/.dllm/transport.key
-# Example output: 12D3KooW...
+# Creates ~/.dllm/node.key and ~/.dllm/transport.key, prints both
+# Example output: transport identity 12D3KooW...
 ```
+
+Run `dllm init-transport` separately only if you want to rotate the
+transport identity without touching the node identity.
 
 ### Step 2: request access
 
