@@ -35,6 +35,12 @@
 - Owner-signed DLLM state is the authority for membership, policy, transport
   identity bindings, rotation, and revocation.
 - Keep DLLM node identity keys separate from libp2p transport identity keys.
+- Every node self-binds as owner of its own provisional single-node network at
+  bootstrap. `dllm onboard <authority-url>` (or `DLLMD_JOIN_URL`) transitions it
+  through `OnboardingStatus`: `Inactive` -> `Joining` -> `Active`/`Failed`.
+- While `OnboardingStatus` is `Joining`, `require_active_mode` middleware blocks
+  nearly all API routes except `/health`, `/v1/onboarding/status`, and
+  `/v1/onboarding/start`.
 
 ## Workspace crates
 
@@ -60,6 +66,7 @@ crates/dllm-llama-server — Bundled OpenAI-compatible llama.cpp server,
 ```
 .github/     — CI workflows
 docs/        — Phase plans and milestone evidence
+docker/      — Dockerfile for dllmd container builds
 manifests/   — Model manifest files (GGUF quantization specs)
 scripts/     — Container and helper scripts
 apps/web/    — Web UI
@@ -81,7 +88,7 @@ mise install
 Available tasks:
 
 ```sh
-mise run fmt         # Format Rust and TypeScript
+mise run fmt         # Format Rust (apps/web has no fmt script configured yet)
 mise run lint        # Run clippy and web type checks
 mise run test        # Run Rust tests and web type checks
 mise run build       # Build Rust release binaries and the web app
