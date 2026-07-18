@@ -1,3 +1,0 @@
-prompt: Hello
-n_tokens: 1
-token ids: 9707

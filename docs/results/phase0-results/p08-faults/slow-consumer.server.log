@@ -1,6 +1,0 @@
-0.43.938.674 I slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 1.000 (> 0.100 thold), f_keep = 0.913
-0.43.938.710 I slot launch_slot_: id  0 | task 7 | processing task, is_child = 0
-0.43.938.716 W slot   operator(): id  0 | task 7 | need to evaluate at least 1 token for each active slot (n_past = 42, task.n_tokens() = 42)
-0.43.938.716 W slot   operator(): id  0 | task 7 | n_past was set to 41
-0.45.948.324 W srv          stop: cancel task, id_task = 7
-0.46.005.105 I slot      release: id  0 | task 7 | stop processing: n_tokens = 77, truncated = 0
