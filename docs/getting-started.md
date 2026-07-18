@@ -294,7 +294,7 @@ requests, budgets, moderation tools, and the audit log.
 |---|---|---|
 | `DLLMD_BIND` | `127.0.0.1:7337` | HTTP listen address |
 | `DLLMD_STATE` | `~/.dllm/state.json` | Path to signed network state |
-| `DLLMD_NETWORK` | `private` | Name for the network `dllmd` bootstraps on first boot (only used when `DLLMD_STATE` does not yet exist) |
+| `DLLMD_NETWORK` | generated (`dllm-<word>-<word>`) | Name for the network `dllmd` bootstraps on first boot (only used when `DLLMD_STATE` does not yet exist) |
 | `DLLMD_OWNER_KEY` | `~/.dllm/owner.key` | Owner Ed25519 private key (32 bytes) |
 | `DLLMD_NODE_KEY` | same as owner key | Local node Ed25519 private key |
 | `DLLMD_MANAGEMENT_TOKEN` | generated, see `~/.dllm/config.json` | Bearer token for management API |
@@ -307,7 +307,7 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_RUNTIME_PORT` | `8081` | Port for the auto-started runtime (bundled or external) |
 | `DLLMD_GPU_LAYERS` | `38` | Layers to offload to GPU (bundled or external runtime) |
 | `DLLMD_CONTEXT_SIZE` | `2048` | Context window size (bundled or external runtime) |
-| `DLLMD_P2P_ENABLED` | `false` | Enable embedded peer transport |
+| `DLLMD_P2P_ENABLED` | `true` | Enable embedded peer transport |
 | `DLLMD_P2P_PORT` | `7444` | libp2p listen port |
 | `DLLMD_P2P_KEY` | `~/.dllm/transport.key` | libp2p Ed25519 identity |
 | `DLLMD_P2P_BOOTSTRAP` | none | Comma-separated bootstrap multiaddrs |
