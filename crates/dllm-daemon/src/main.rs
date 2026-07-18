@@ -59,7 +59,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(1);
-    let management_token = std::env::var("DLLMD_MANAGEMENT_TOKEN").ok();
+    let (management_token, management_token_generated) =
+        dllm_daemon::local_config::resolve_management_token()?;
+    if management_token_generated {
+        println!("generated management token: {management_token}");
+    }
+    let management_token = Some(management_token);
     let management_credentials = std::env::var("DLLMD_MANAGEMENT_CREDENTIALS")
         .ok()
         .map(|value| serde_json::from_str::<Vec<ManagementCredential>>(&value))
@@ -68,7 +73,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let management_credentials_path = std::env::var("DLLMD_MANAGEMENT_CREDENTIALS_PATH")
         .ok()
         .map(PathBuf::from);
-    let api_key = std::env::var("DLLMD_API_KEY").ok();
+    let (api_key, api_key_generated) = dllm_daemon::local_config::resolve_api_key()?;
+    if api_key_generated {
+        println!("generated api key: {api_key}");
+    }
+    let api_key = Some(api_key);
     let inference_credentials = std::env::var("DLLMD_INFERENCE_CREDENTIALS")
         .ok()
         .map(|value| serde_json::from_str::<Vec<InferenceCredential>>(&value))
