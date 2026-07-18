@@ -112,6 +112,20 @@ struct Args {
     #[arg(long)]
     print_path: bool,
 
+    /// Compute a fitted n_gpu_layers/n_ctx for the resolved model against
+    /// available device memory, print the result as JSON, then exit without
+    /// starting the server.
+    #[arg(long)]
+    fit: bool,
+
+    /// Minimum context size the fit calculation will keep when memory is tight.
+    #[arg(long, default_value_t = 4096)]
+    fit_n_ctx_min: u32,
+
+    /// Minimum free memory (bytes) to leave on each device after fitting.
+    #[arg(long, default_value_t = 1_073_741_824)]
+    fit_margin_bytes: usize,
+
     // ── Multimodal (mtmd) ──────────────────────────────────────────────────
     /// Path to the multimodal projector (mmproj) GGUF file.
     /// Enables the `POST /v1/files` endpoint and image/audio inputs in chat
@@ -151,6 +165,61 @@ enum ModelSource {
         /// Omit to pick interactively.
         model: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct FitReport {
+    n_gpu_layers: u32,
+    n_ctx: u32,
+    peak_memory_bytes: u64,
+    backend: &'static str,
+}
+
+fn active_backend() -> &'static str {
+    if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else if cfg!(feature = "metal") {
+        "metal"
+    } else {
+        "cpu"
+    }
+}
+
+fn run_fit(
+    backend: &LlamaBackend,
+    model_path: &std::path::Path,
+    n_ctx_min: u32,
+    margin_bytes: usize,
+) -> anyhow::Result<FitReport> {
+    let margins = vec![margin_bytes; llama_cpp_4::max_devices()];
+    let options = FitParams::default()
+        .with_n_ctx_min(n_ctx_min)
+        .with_margins(margins);
+    let log_level = options.log_level;
+    let fitted = fit_params(backend, model_path, options)
+        .map_err(|e| anyhow::anyhow!("fit failed: {e}"))?;
+    let n_gpu_layers = fitted.model_params.n_gpu_layers().max(0) as u32;
+    let n_ctx = fitted
+        .context_params
+        .n_ctx()
+        .map(std::num::NonZeroU32::get)
+        .unwrap_or(n_ctx_min);
+    let memory = get_device_memory_data(
+        model_path,
+        &fitted.model_params,
+        &fitted.context_params,
+        log_level,
+    )
+    .map_err(|e| anyhow::anyhow!("device memory query failed: {e}"))?;
+    let peak_memory_bytes = memory.entries.iter().map(|entry| entry.used() as u64).sum();
+    Ok(FitReport {
+        n_gpu_layers,
+        n_ctx,
+        peak_memory_bytes,
+        backend: active_backend(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2292,6 +2361,14 @@ async fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    if args.fit {
+        let backend = LlamaBackend::init().map_err(|e| std::io::Error::other(e.to_string()))?;
+        let report = run_fit(&backend, &model_path, args.fit_n_ctx_min, args.fit_margin_bytes)
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
+
     let model_name = model_path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -2530,5 +2607,22 @@ mod tests {
         scores.sort();
         // Q4_K_M should have the lowest (best) score
         assert!(scores[0].1.contains("Q4_K_M"), "got {scores:?}");
+    }
+
+    // ── fit report ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn fit_report_serializes_expected_shape() {
+        let report = FitReport {
+            n_gpu_layers: 32,
+            n_ctx: 4096,
+            peak_memory_bytes: 4_200_000_000,
+            backend: active_backend(),
+        };
+        let json: serde_json::Value = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["n_gpu_layers"], 32);
+        assert_eq!(json["n_ctx"], 4096);
+        assert_eq!(json["peak_memory_bytes"], 4_200_000_000u64);
+        assert_eq!(json["backend"], "cpu");
     }
 }
