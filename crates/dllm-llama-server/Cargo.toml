@@ -3,6 +3,7 @@ name = "dllm-llama-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
 llama-cpp-4 = { workspace = true, features = ["mtmd", "openmp"] }

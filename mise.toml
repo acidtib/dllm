@@ -42,6 +42,22 @@ run = "cargo run --release --bin dllmd"
 description = "Run the dllm CLI (append args with --)"
 run = "cargo run --release --bin dllm"
 
+[tasks."dev:gpu-nodes"]
+description = "Start the owner GPU dev node (docker compose, GPU 0)"
+run = "mkdir -p .dev-gpu/node-a .dev-gpu/node-b && docker compose -f docker-compose.dev-gpu.yml pull node-a && docker compose -f docker-compose.dev-gpu.yml up -d --no-build node-a"
+
+[tasks."dev:gpu-image:build"]
+description = "Build the CUDA dev image locally"
+run = "docker build -f docker/Dockerfile.dllmd --target runtime-cuda -t dllm:cuda ."
+
+[tasks."dev:gpu-nodes:local"]
+description = "Start the owner GPU dev node from the local CUDA image"
+run = "mkdir -p .dev-gpu/node-a .dev-gpu/node-b && DLLM_DEV_GPU_IMAGE=dllm:cuda DLLM_DEV_GPU_PULL_POLICY=never docker compose -f docker-compose.dev-gpu.yml up -d --no-build node-a"
+
+[tasks."dev:gpu-nodes:down"]
+description = "Stop the GPU dev nodes"
+run = "docker compose -f docker-compose.dev-gpu.yml down"
+
 [tasks.ci]
 description = "Full CI check"
 depends = ["fmt", "lint", "test", "build"]

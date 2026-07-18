@@ -11,3 +11,4 @@ apps/web/node_modules/
 apps/web/dist/
 apps/web/tsconfig.tsbuildinfo
 .superpowers/
+.dev-gpu/

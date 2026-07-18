@@ -16,10 +16,32 @@ node (for example a laptop), and sending your first chat completion request.
 
 ## Quick start with Docker
 
-Build the image from the repository root:
+Published images are available from GitHub Container Registry after running
+the manually triggered `Docker images` workflow:
 
 ```sh
-docker build -t dllm .
+docker pull ghcr.io/acidtib/dllm:cpu
+docker pull ghcr.io/acidtib/dllm:cuda
+docker pull ghcr.io/acidtib/dllm:vulkan
+```
+
+The workflow also publishes immutable `<variant>-<commit-sha>` tags. Use those
+when a deployment must remain pinned to one source revision.
+
+To build locally instead, run from the repository root.
+`docker/Dockerfile.dllmd` has
+three targets sharing one build: `runtime-cpu` (no GPU), `runtime-cuda`
+(NVIDIA), and `runtime-vulkan` (AMD/Intel/NVIDIA via Vulkan).
+
+```sh
+docker build -f docker/Dockerfile.dllmd --target runtime-cpu -t dllm .
+```
+
+For GPU-backed inference, build `runtime-cuda` or `runtime-vulkan` instead.
+See `docs/gpu-two-node-test.md` for a full GPU dev-node walkthrough:
+
+```sh
+docker build -f docker/Dockerfile.dllmd --target runtime-cuda -t dllm-cuda .
 ```
 
 `dllmd` bundles its own inference runtime (`dllm-llama-server`, built from
@@ -27,10 +49,7 @@ vendored llama.cpp source) and starts it automatically once you point it at a
 model, either a mounted GGUF file or a Hugging Face repo id. A model is still
 supplied separately; the image does not include one. `DLLMD_RUNTIME_URL` and
 `DLLMD_RUNTIME_BIN` remain available if you would rather point `dllmd` at an
-external runtime instead. Note that whether a given Docker build of this image
-includes the compiled bundled runtime binary depends on how that image was
-built; check the image you are using if the bundled-runtime path does not
-start as expected.
+external runtime instead.
 
 ### Run the daemon
 

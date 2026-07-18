@@ -1,39 +1,105 @@
-# Stage 1: build dllmd
-FROM rust:1.96-bookworm AS builder
+ARG RUST_VERSION=1.96
+ARG CUDA_VERSION=12.9.1
+ARG UBUNTU_VERSION=24.04
+
+FROM rust:${RUST_VERSION}-bookworm AS app-builder
+ARG RUST_VERSION
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends cmake build-essential libclang-dev \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY . .
-RUN cargo build --release --locked --bin dllmd --bin dllm --bin dllm-llama-server
+RUN cargo build --release --locked --bin dllmd --bin dllm
 
-# Stage 2: minimal runtime
-FROM debian:bookworm-slim
+FROM rust:${RUST_VERSION}-bookworm AS llama-cpu-builder
+ARG RUST_VERSION
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    libgcc-s1 \
-    libgomp1 \
-    libstdc++6 \
-    libssl3 \
-    zlib1g \
-    libbrotli1 \
-    libzstd1 \
+    cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
+COPY . .
+RUN cargo build --release --locked --bin dllm-llama-server
 
-COPY --from=builder /src/target/release/dllmd /usr/local/bin/dllmd
-COPY --from=builder /src/target/release/dllm /usr/local/bin/dllm
-COPY --from=builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS llama-cuda-builder
+ARG RUST_VERSION
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH=/root/.cargo/bin:${PATH}
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+COPY . .
+RUN cargo build --release --locked --bin dllm-llama-server \
+    --features dllm-llama-server/cuda
 
-# Default state and key paths (override with volumes or env vars)
+FROM ubuntu:${UBUNTU_VERSION} AS llama-vulkan-builder
+ARG RUST_VERSION
+WORKDIR /src
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
+    libvulkan-dev glslc spirv-tools \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH=/root/.cargo/bin:${PATH}
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+COPY . .
+RUN cargo build --release --locked --bin dllm-llama-server \
+    --features dllm-llama-server/vulkan
+
+FROM debian:bookworm-slim AS runtime-cpu
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=llama-cpu-builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
 ENV DLLMD_STATE=/var/lib/dllm/state.json
-ENV DLLMD_OWNER_KEY=/var/lib/dllm/owner.key
+ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
 ENV DLLMD_P2P_KEY=/var/lib/dllm/transport.key
-# Bind to loopback by default. For remote access, override to 0.0.0.0:7337
-# and set DLLMD_TLS_CERT, DLLMD_TLS_KEY, DLLMD_MANAGEMENT_TOKEN, and DLLMD_API_KEY.
+# Remote management requires TLS credentials and API tokens.
 ENV DLLMD_BIND=127.0.0.1:7337
-
 RUN mkdir -p /var/lib/dllm
 VOLUME /var/lib/dllm
+EXPOSE 7337 7444
+ENTRYPOINT ["dllmd"]
 
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS runtime-cuda
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=llama-cuda-builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
+ENV DLLMD_STATE=/var/lib/dllm/state.json
+ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
+ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
+ENV DLLMD_P2P_KEY=/var/lib/dllm/transport.key
+ENV DLLMD_BIND=127.0.0.1:7337
+RUN mkdir -p /var/lib/dllm
+VOLUME /var/lib/dllm
+EXPOSE 7337 7444
+ENTRYPOINT ["dllmd"]
+
+FROM ubuntu:${UBUNTU_VERSION} AS runtime-vulkan
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
+    libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=llama-vulkan-builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
+ENV DLLMD_STATE=/var/lib/dllm/state.json
+ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
+ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
+ENV DLLMD_P2P_KEY=/var/lib/dllm/transport.key
+ENV DLLMD_BIND=127.0.0.1:7337
+RUN mkdir -p /var/lib/dllm
+VOLUME /var/lib/dllm
 EXPOSE 7337 7444
 ENTRYPOINT ["dllmd"]
