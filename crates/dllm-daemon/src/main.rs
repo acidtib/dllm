@@ -88,6 +88,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls_key = std::env::var("DLLMD_TLS_KEY").ok();
     let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
     let bind_address: SocketAddr = bind.parse()?;
+    // management_token and api_key are always Some here (local_config generates them
+    // when unset), so the two credential conditions below are effectively always
+    // satisfied and this guard now only enforces the TLS cert/key presence for
+    // non-loopback binds.
     if !bind_address.ip().is_loopback()
         && (!has_management_access(&management_token, &management_credentials)
             || (api_key.is_none() && inference_credentials.is_empty())
