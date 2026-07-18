@@ -218,6 +218,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let owner_key = resolve_path(cli.owner_key, dllm_daemon::default_owner_key_path)?;
     let node_key = resolve_path(cli.node_key, dllm_daemon::default_node_key_path)?;
     let transport_key = resolve_path(cli.transport_key, dllm_daemon::default_transport_key_path)?;
+    let management_token = cli
+        .management_token
+        .clone()
+        .or_else(dllm_daemon::local_config::read_management_token);
     let client = Client::new();
     match cli.command {
         Command::Init => {
@@ -238,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Status { json } => {
             let state = request_json(auth(
                 client.get(format!("{}/v1/status", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&state)?);
@@ -278,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/invitations", cli.daemon))
                     .json(&json!({ "expires_at_unix": expires_at_unix })),
-                &cli.management_token,
+                &management_token,
             ))?;
             let encoded = serde_json::to_vec_pretty(&token)?;
             if let Some(path) = output {
@@ -314,7 +318,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/members/revoke", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -335,7 +339,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "binding_generation": binding_generation,
                         "expires_at_unix": expires_at_unix
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -345,7 +349,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/transport-bindings/revoke", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -362,7 +366,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "node_pubkey": node_pubkey,
                         "max_reservations": max_reservations
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -375,7 +379,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "node_pubkey": node_pubkey,
                         "max_reservations": null
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -388,7 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = assignment_request(
                 &client,
                 &cli.daemon,
-                &cli.management_token,
+                &management_token,
                 "POST",
                 model,
                 node_pubkey,
@@ -404,7 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let response = assignment_request(
                 &client,
                 &cli.daemon,
-                &cli.management_token,
+                &management_token,
                 "DELETE",
                 model,
                 node_pubkey,
@@ -417,7 +421,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/hardware-profiles", cli.daemon))
                     .json(&profile),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -439,21 +443,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "required_memory_bytes": required_memory_bytes,
                         "compatible_backends": backends
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Credentials => {
             let response = request_json(auth(
                 client.get(format!("{}/v1/management/credentials", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::InferencePolicy => {
             let response = request_json(auth(
                 client.get(format!("{}/v1/inference-policy", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -462,7 +466,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/management/credentials", cli.daemon))
                     .json(&json!({ "label": label, "role": role })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -472,21 +476,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "{}/v1/management/credentials/{credential_id}",
                     cli.daemon
                 )),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("revoked credential {credential_id}");
         }
         Command::Drain { placement_id } => {
             let response = request_json(auth(
                 client.post(format!("{}/v1/placements/{placement_id}/drain", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::Resume { placement_id } => {
             let response = request_json(auth(
                 client.delete(format!("{}/v1/placements/{placement_id}/drain", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -600,7 +604,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     client
                         .get(format!("{owner_endpoint}/v1/status"))
                         .header("Accept", "application/json"),
-                    &cli.management_token,
+                    &management_token,
                 ));
                 if let Ok(status) = status {
                     if let Some(members) = status["network"]["state"]["members"].as_array() {
@@ -652,7 +656,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::ListAccessRequests { json } => {
             let response = request_json(auth(
                 client.get(format!("{}/v1/access-requests", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&response)?);
@@ -697,7 +701,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/access-requests/approve", cli.daemon))
                     .json(&body),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -707,7 +711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/access-requests/deny", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -728,7 +732,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "max_requests_per_window": max_per_window,
                         "window_seconds": window_seconds
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -738,7 +742,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .delete(format!("{}/v1/resource-budgets", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -752,7 +756,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/moderation/bans", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey, "reason": reason })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -762,7 +766,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .post(format!("{}/v1/moderation/bans", cli.daemon))
                     .json(&json!({ "node_pubkey": node_pubkey })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -789,7 +793,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             "reported_at_unix": now_unix(),
                         },
                     })),
-                &cli.management_token,
+                &management_token,
             ))?;
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
@@ -798,7 +802,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client
                     .get(format!("{}/v1/abuse-reports", cli.daemon))
                     .header("Accept", "application/json"),
-                &cli.management_token,
+                &management_token,
             ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&reports)?);
@@ -847,7 +851,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             let entries = request_json(auth(
                 client.get(url).header("Accept", "application/json"),
-                &cli.management_token,
+                &management_token,
             ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -878,7 +882,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::PeerStatus { json } => {
             let status: Value = request_json(auth(
                 client.get(format!("{}/v1/peer-network/status", cli.daemon)),
-                &cli.management_token,
+                &management_token,
             ))?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
