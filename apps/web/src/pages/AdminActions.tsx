@@ -30,9 +30,9 @@ export function InvitationSection() {
 }
 
 export function AssignModelSection({
-  ownerPubkey,
+  authorityPubkey,
 }: {
-  ownerPubkey: number[];
+  authorityPubkey: number[];
 }) {
   const [model, setModel] = useState("");
   const [msg, setMsg] = useState("");
@@ -42,7 +42,7 @@ export function AssignModelSection({
     setMsg("");
     setBusy(true);
     try {
-      await assignModel(model.trim(), ownerPubkey);
+      await assignModel(model.trim(), authorityPubkey);
       setMsg("Model assigned");
       setModel("");
     } catch (e) {
@@ -54,7 +54,7 @@ export function AssignModelSection({
 
   return (
     <div className="space-y-3 rounded-lg border border-border bg-surface p-4">
-      <h3 className="text-sm font-semibold">Assign Owner Model</h3>
+      <h3 className="text-sm font-semibold">Assign Authority Model</h3>
       <div className="flex gap-2">
         <Input
           placeholder="model ID"
@@ -75,8 +75,8 @@ export function RecoveryNote() {
     <div className="rounded-lg border border-border bg-surface p-4">
       <h3 className="text-sm font-semibold">Recovery</h3>
       <p className="text-xs text-gray-400">
-        Encrypted backup, restore, and owner transfer are offline CLI operations
-        so owner keys are never sent to this page.
+        Encrypted backup, restore, and authority transfer are offline CLI operations
+        so authority keys are never sent to this page.
       </p>
     </div>
   );

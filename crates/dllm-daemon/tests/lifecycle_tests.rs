@@ -22,7 +22,7 @@ fn api_state() -> api::ApiState {
     api::ApiState {
         store: Arc::new(Mutex::new(NetworkStore::create("test"))),
         state_path: std::env::temp_dir().join("dllmd-lifecycle-test-state.json"),
-        runtime_url: None,
+        runtime_url: Arc::new(RwLock::new(None)),
         admission: Arc::new(Semaphore::new(2)),
         client: reqwest::Client::new(),
         management_credentials: Arc::new(RwLock::new(
@@ -32,10 +32,18 @@ fn api_state() -> api::ApiState {
         peer_api_key: None,
         metrics: Arc::new(api::Metrics::default()),
         public_url: "http://127.0.0.1:7337".into(),
+        bootstrap_multiaddrs: Vec::new(),
+        node_key_path: std::env::temp_dir().join("dllmd-test-node.key"),
+        transport_key_path: std::env::temp_dir().join("dllmd-test-transport.key"),
+        config_path: std::env::temp_dir().join("dllmd-test-config.json"),
+        authority_key_path: std::env::temp_dir().join("dllmd-test-authority.key"),
+        provisional_marker_path: std::env::temp_dir().join("dllmd-test-provisional.json"),
+        onboarding: Arc::new(RwLock::new(api::OnboardingStatus::Inactive)),
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
         peer_nonces: Arc::new(Mutex::new(HashMap::new())),
         peer_quota: Arc::new(Semaphore::new(1)),
         peer: Arc::new(RwLock::new(None)),
+        peer_handle: Arc::new(Mutex::new(None)),
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
         rate_limiter: Arc::new(dllm_daemon::rate_limit::RateLimiter::new()),
         access_request_rate_config: dllm_daemon::rate_limit::RateLimitConfig::default(),
@@ -135,7 +143,7 @@ async fn concurrent_proxy_calls_do_not_mix_responses() {
     tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
 
     let mut state = api_state();
-    state.runtime_url = Some(format!("http://{addr}"));
+    *state.runtime_url.write().await = Some(format!("http://{addr}"));
     state.admission = Arc::new(Semaphore::new(4));
     state.inference_credentials = Arc::new(InferenceRegistry::new(Vec::new(), None, 4));
     let owner = state.store.lock().await.state.state.owner_pubkey;
@@ -209,7 +217,7 @@ async fn upstream_error_releases_admission() {
     tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
 
     let mut state = api_state();
-    state.runtime_url = Some(format!("http://{addr}"));
+    *state.runtime_url.write().await = Some(format!("http://{addr}"));
     state.admission = Arc::new(Semaphore::new(1));
     let owner = state.store.lock().await.state.state.owner_pubkey;
     state
@@ -294,7 +302,7 @@ async fn slow_consumer_does_not_block_other_requests() {
     tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
 
     let mut state = api_state();
-    state.runtime_url = Some(format!("http://{addr}"));
+    *state.runtime_url.write().await = Some(format!("http://{addr}"));
     state.admission = Arc::new(Semaphore::new(2));
     state.inference_credentials = Arc::new(InferenceRegistry::new(Vec::new(), None, 4));
     let owner = state.store.lock().await.state.state.owner_pubkey;

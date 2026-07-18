@@ -2,7 +2,7 @@ use dllm_protocol::{
     now_unix, AbuseReport, AccessRequest, ForwardingPolicy, HardwareProfile, Member, MembershipBan,
     ModelAssignment, NetworkState, Placement, PlacementLifecycle, ResourceBudget,
     SignedAccessRequest, SignedJoinToken, SignedState, StateError, TokenError,
-    TransportEndpointBinding, TransportEndpointRevocation, SCHEMA_VERSION,
+    TransportEndpointBinding, TransportEndpointRevocation, LEGACY_SCHEMA_VERSION, SCHEMA_VERSION,
 };
 use ed25519_dalek::SigningKey;
 use rand::RngCore;
@@ -25,6 +25,8 @@ pub mod local_config;
 pub mod peer_service;
 pub mod rate_limit;
 
+pub const AUTOMATIC_BINDING_LIFETIME_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
 /// Root directory for DLLM's per-user files (state, keys) when no explicit
 /// path is configured via env var or CLI flag. Created eagerly so callers
 /// can `fs::write` into it immediately without a separate mkdir step.
@@ -46,6 +48,44 @@ pub fn default_state_path() -> std::io::Result<PathBuf> {
 
 pub fn default_owner_key_path() -> std::io::Result<PathBuf> {
     Ok(default_dir()?.join("owner.key"))
+}
+
+pub fn default_authority_key_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("authority.key"))
+}
+
+pub fn migrate_legacy_authority_key(
+    authority_path: &Path,
+    legacy_path: &Path,
+) -> std::io::Result<bool> {
+    if authority_path.exists() || !legacy_path.exists() {
+        return Ok(false);
+    }
+    fs::rename(legacy_path, authority_path)?;
+    Ok(true)
+}
+
+pub fn load_or_create_node_key(path: &Path) -> Result<SigningKey, StoreError> {
+    if path.exists() {
+        return NetworkStore::load_owner_key(path);
+    }
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let key = SigningKey::generate(&mut rand::thread_rng());
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    fs::write(temporary.path(), key.to_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
+    }
+    match temporary.persist_noclobber(path) {
+        Ok(_) => Ok(key),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            NetworkStore::load_owner_key(path)
+        }
+        Err(error) => Err(StoreError::Storage(error.error)),
+    }
 }
 
 pub fn default_node_key_path() -> std::io::Result<PathBuf> {
@@ -145,17 +185,17 @@ pub enum StoreError {
     WrongNetwork,
     #[error("join token has already been redeemed")]
     TokenUsed,
-    #[error("owner key must contain exactly 32 bytes")]
+    #[error("authority key must contain exactly 32 bytes")]
     InvalidOwnerKey,
-    #[error("owner key does not match persisted network owner")]
+    #[error("authority key does not match the persisted network authority")]
     OwnerKeyMismatch,
-    #[error("this node does not hold the network owner authority")]
+    #[error("this node does not hold network authority")]
     OwnerAuthorityUnavailable,
     #[error("model assignment node is not a network member")]
     AssignmentNodeUnknown,
     #[error("hardware profile node is not a network member")]
     ProfileNodeUnknown,
-    #[error("new owner must be a current network member")]
+    #[error("new authority must be a current network member")]
     TransferTargetUnknown,
     #[error("transport binding node is not a network member")]
     BindingNodeUnknown,
@@ -163,6 +203,8 @@ pub enum StoreError {
     StaleBindingGeneration { supplied: u64, next: u64 },
     #[error("transport endpoint identity is already bound to another node")]
     TransportPeerIdInUse,
+    #[error("transport endpoint identity is not a valid libp2p peer ID")]
+    InvalidTransportPeerId,
     #[error("transport binding expiry must be later than its issue time")]
     InvalidBindingLifetime,
     #[error("node has no active transport binding")]
@@ -215,6 +257,17 @@ pub struct NetworkStore {
 }
 
 impl NetworkStore {
+    pub fn from_signed_state(state: SignedState) -> Result<Self, StoreError> {
+        state.verify()?;
+        Ok(Self {
+            owner_key: None,
+            state,
+            used_tokens: HashSet::new(),
+            pending_access_requests: Vec::new(),
+            abuse_reports: Vec::new(),
+        })
+    }
+
     pub fn save_owner_key(&self, path: impl AsRef<Path>) -> Result<(), StoreError> {
         let path = path.as_ref();
         let owner_key = self
@@ -269,7 +322,9 @@ impl NetworkStore {
         owner_key_path: impl AsRef<Path>,
     ) -> Result<Self, StoreError> {
         let persisted: PersistedState = serde_json::from_slice(&fs::read(state_path)?)?;
-        if persisted.schema_version != SCHEMA_VERSION {
+        if persisted.schema_version != SCHEMA_VERSION
+            && persisted.schema_version != LEGACY_SCHEMA_VERSION
+        {
             return Err(StoreError::State(StateError::SchemaVersion(
                 persisted.schema_version,
             )));
@@ -290,7 +345,9 @@ impl NetworkStore {
 
     pub fn load_replica(state_path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let persisted: PersistedState = serde_json::from_slice(&fs::read(state_path)?)?;
-        if persisted.schema_version != SCHEMA_VERSION {
+        if persisted.schema_version != SCHEMA_VERSION
+            && persisted.schema_version != LEGACY_SCHEMA_VERSION
+        {
             return Err(StoreError::State(StateError::SchemaVersion(
                 persisted.schema_version,
             )));
@@ -422,7 +479,6 @@ impl NetworkStore {
             .iter()
             .position(|req| req.node_pubkey == node_pubkey)
             .ok_or(StoreError::AccessRequestNotFound)?;
-        self.pending_access_requests.remove(idx);
         let mut next = self.state.state.clone();
         next.generation += 1;
         next.members.push(Member {
@@ -431,7 +487,68 @@ impl NetworkStore {
             relay_endpoint: None,
             joined_generation: next.generation,
         });
-        self.state = self.sign(next)?;
+        let signed = self.sign(next)?;
+        self.state = signed;
+        self.pending_access_requests.remove(idx);
+        Ok(())
+    }
+
+    pub fn approve_access_request_with_transport(
+        &mut self,
+        node_pubkey: [u8; 32],
+        endpoint: String,
+        issued_at_unix: u64,
+        binding_lifetime_secs: u64,
+    ) -> Result<(), StoreError> {
+        let idx = self
+            .pending_access_requests
+            .iter()
+            .position(|request| request.node_pubkey == node_pubkey)
+            .ok_or(StoreError::AccessRequestNotFound)?;
+        let request = self.pending_access_requests[idx].clone();
+        let expires_at_unix = issued_at_unix
+            .checked_add(binding_lifetime_secs)
+            .filter(|expires| *expires > issued_at_unix)
+            .ok_or(StoreError::InvalidBindingLifetime)?;
+        if let Some(peer_id) = request.transport_peer_id.as_deref() {
+            peer_id
+                .parse::<libp2p::PeerId>()
+                .map_err(|_| StoreError::InvalidTransportPeerId)?;
+            if self.state.state.transport_bindings.iter().any(|binding| {
+                binding.transport_peer_id == peer_id && binding.node_pubkey != node_pubkey
+            }) || self
+                .state
+                .state
+                .transport_revocations
+                .iter()
+                .any(|revocation| revocation.transport_peer_id == peer_id)
+            {
+                return Err(StoreError::TransportPeerIdInUse);
+            }
+        }
+
+        let mut next = self.state.state.clone();
+        next.generation += 1;
+        next.members.push(Member {
+            node_pubkey,
+            endpoint,
+            relay_endpoint: None,
+            joined_generation: next.generation,
+        });
+        if let Some(peer_id) = request.transport_peer_id {
+            next.transport_bindings.push(TransportEndpointBinding {
+                node_pubkey,
+                transport_peer_id: peer_id,
+                binding_generation: self.next_binding_generation(node_pubkey),
+                issued_at_unix,
+                expires_at_unix,
+            });
+            next.transport_bindings
+                .sort_by_key(|binding| binding.node_pubkey);
+        }
+        let signed = self.sign(next)?;
+        self.state = signed;
+        self.pending_access_requests.remove(idx);
         Ok(())
     }
 
@@ -1297,6 +1414,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: "hi".into(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         store.submit_access_request(signed).unwrap();
@@ -1314,6 +1432,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         store.submit_access_request(signed).unwrap();
@@ -1322,6 +1441,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 101,
+            transport_peer_id: None,
         };
         let signed2 = SignedAccessRequest::sign(request2, &key);
         assert!(matches!(
@@ -1348,6 +1468,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         assert!(matches!(
@@ -1367,6 +1488,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         store.submit_access_request(signed).unwrap();
@@ -1384,6 +1506,71 @@ mod tests {
     }
 
     #[test]
+    fn approval_atomically_adds_member_and_transport_binding() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        let peer = "12D3KooWSahP5pFRCEfaziPEba7urXGeif6T1y8jmodzdFUvzBHj";
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://member".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+            transport_peer_id: Some(peer.into()),
+        };
+        store
+            .submit_access_request(SignedAccessRequest::sign(request, &key))
+            .unwrap();
+        store
+            .approve_access_request_with_transport(
+                node_pubkey,
+                "http://member".into(),
+                100,
+                AUTOMATIC_BINDING_LIFETIME_SECS,
+            )
+            .unwrap();
+        assert!(store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == node_pubkey));
+        assert!(store.state.state.transport_bindings.iter().any(|binding| {
+            binding.node_pubkey == node_pubkey && binding.transport_peer_id == peer
+        }));
+        assert!(store.list_access_requests().is_empty());
+    }
+
+    #[test]
+    fn failed_transport_approval_rolls_back_state_and_pending_request() {
+        let mut store = NetworkStore::create("test");
+        let key = node_signing_key();
+        let node_pubkey = key.verifying_key().to_bytes();
+        let request = AccessRequest {
+            node_pubkey,
+            requested_endpoint: "http://member".into(),
+            note: String::new(),
+            requested_at_unix: 100,
+            transport_peer_id: Some("not-a-peer-id".into()),
+        };
+        store
+            .submit_access_request(SignedAccessRequest::sign(request, &key))
+            .unwrap();
+        let before = store.state.clone();
+        assert!(matches!(
+            store.approve_access_request_with_transport(
+                node_pubkey,
+                "http://member".into(),
+                100,
+                10
+            ),
+            Err(StoreError::InvalidTransportPeerId)
+        ));
+        assert_eq!(store.state, before);
+        assert_eq!(store.list_access_requests().len(), 1);
+    }
+
+    #[test]
     fn deny_access_request_removes_pending() {
         let mut store = NetworkStore::create("test");
         let key = node_signing_key();
@@ -1393,6 +1580,7 @@ mod tests {
             requested_endpoint: "http://10.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         store.submit_access_request(signed).unwrap();

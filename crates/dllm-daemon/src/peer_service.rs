@@ -357,8 +357,8 @@ async fn serve_inference(
         }
     };
 
-    let runtime_url = match state.runtime_url.as_ref() {
-        Some(url) => url.clone(),
+    let runtime_url = match state.runtime_url.read().await.clone() {
+        Some(url) => url,
         None => {
             let _ = write_frame(
                 stream,

@@ -14,7 +14,7 @@ export interface NetworkState {
   schema_version: number;
   network_id: string;
   name: string;
-  owner_pubkey: number[];
+  authority_pubkey: number[];
   generation: number;
   members: Member[];
   model_assignments: ModelAssignment[];
@@ -156,7 +156,7 @@ export interface HardwareBenchmark {
 export interface NodeStatus {
   node_pubkey: number[];
   endpoint: string;
-  owner: boolean;
+  authority: boolean;
   health: HealthState;
   transport: TransportKind | null;
 }

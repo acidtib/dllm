@@ -4,13 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use uuid::Uuid;
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const LEGACY_SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct NetworkState {
     pub schema_version: u32,
     pub network_id: Uuid,
     pub name: String,
+    #[serde(rename = "authority_pubkey", alias = "owner_pubkey")]
     pub owner_pubkey: [u8; 32],
     pub generation: u64,
     pub members: Vec<Member>,
@@ -58,11 +60,25 @@ pub struct AccessRequest {
     pub requested_endpoint: String,
     pub note: String,
     pub requested_at_unix: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_peer_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignedAccessRequest {
     pub request: AccessRequest,
+    pub signature: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateFetchRequest {
+    pub node_pubkey: [u8; 32],
+    pub requested_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SignedStateFetchRequest {
+    pub request: StateFetchRequest,
     pub signature: Vec<u8>,
 }
 
@@ -194,6 +210,7 @@ pub enum TransportKind {
 pub struct NodeStatus {
     pub node_pubkey: [u8; 32],
     pub endpoint: String,
+    #[serde(rename = "authority", alias = "owner")]
     pub owner: bool,
     pub health: HealthState,
     pub transport: Option<TransportKind>,
@@ -232,11 +249,17 @@ pub struct SignedState {
     pub signature: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StateFetchResponse {
+    pub state: SignedState,
+    pub bootstrap_multiaddrs: Vec<String>,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum StateError {
     #[error("unsupported schema version {0}")]
     SchemaVersion(u32),
-    #[error("state owner key does not match signer")]
+    #[error("state authority key does not match signer")]
     OwnerMismatch,
     #[error("invalid state signature")]
     InvalidSignature,
@@ -275,7 +298,8 @@ pub enum StateError {
 }
 
 impl SignedState {
-    pub fn sign(state: NetworkState, key: &SigningKey) -> Result<Self, StateError> {
+    pub fn sign(mut state: NetworkState, key: &SigningKey) -> Result<Self, StateError> {
+        state.schema_version = SCHEMA_VERSION;
         validate_state(&state, key.verifying_key().as_bytes())?;
         let bytes = serde_json::to_vec(&state).expect("protocol state is serializable");
         let signature = key.sign(&bytes).to_bytes().to_vec();
@@ -286,7 +310,7 @@ impl SignedState {
         validate_state(&self.state, &self.state.owner_pubkey)?;
         let key = VerifyingKey::from_bytes(&self.state.owner_pubkey)
             .map_err(|_| StateError::InvalidSignature)?;
-        let bytes = serde_json::to_vec(&self.state).expect("protocol state is serializable");
+        let bytes = state_signing_bytes(&self.state);
         let signature =
             Signature::from_slice(&self.signature).map_err(|_| StateError::InvalidSignature)?;
         key.verify(&bytes, &signature)
@@ -306,7 +330,7 @@ impl SignedState {
 }
 
 fn validate_state(state: &NetworkState, signer: &[u8; 32]) -> Result<(), StateError> {
-    if state.schema_version != SCHEMA_VERSION {
+    if state.schema_version != SCHEMA_VERSION && state.schema_version != LEGACY_SCHEMA_VERSION {
         return Err(StateError::SchemaVersion(state.schema_version));
     }
     if state.generation == 0 {
@@ -410,6 +434,20 @@ fn validate_state(state: &NetworkState, signer: &[u8; 32]) -> Result<(), StateEr
         }
     }
     Ok(())
+}
+
+fn state_signing_bytes(state: &NetworkState) -> Vec<u8> {
+    if state.schema_version != LEGACY_SCHEMA_VERSION {
+        return serde_json::to_vec(state).expect("protocol state is serializable");
+    }
+    let mut value = serde_json::to_value(state).expect("protocol state is serializable");
+    let object = value
+        .as_object_mut()
+        .expect("network state serializes as an object");
+    if let Some(authority) = object.remove("authority_pubkey") {
+        object.insert("owner_pubkey".into(), authority);
+    }
+    serde_json::to_vec(&value).expect("legacy protocol state is serializable")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,6 +556,33 @@ impl SignedAccessRequest {
     }
 }
 
+const STATE_FETCH_SIGNATURE_DOMAIN: &[u8] = b"dllm-state-fetch-v1";
+
+impl SignedStateFetchRequest {
+    pub fn sign(request: StateFetchRequest, key: &SigningKey) -> Self {
+        let bytes = state_fetch_signing_bytes(&request);
+        let signature = key.sign(&bytes).to_bytes().to_vec();
+        Self { request, signature }
+    }
+
+    pub fn verify(&self) -> Result<(), TokenError> {
+        let key = VerifyingKey::from_bytes(&self.request.node_pubkey)
+            .map_err(|_| TokenError::InvalidSignature)?;
+        let signature =
+            Signature::from_slice(&self.signature).map_err(|_| TokenError::InvalidSignature)?;
+        key.verify(&state_fetch_signing_bytes(&self.request), &signature)
+            .map_err(|_| TokenError::InvalidSignature)
+    }
+}
+
+fn state_fetch_signing_bytes(request: &StateFetchRequest) -> Vec<u8> {
+    let request = serde_json::to_vec(request).expect("state fetch request is serializable");
+    let mut bytes = Vec::with_capacity(STATE_FETCH_SIGNATURE_DOMAIN.len() + request.len());
+    bytes.extend_from_slice(STATE_FETCH_SIGNATURE_DOMAIN);
+    bytes.extend_from_slice(&request);
+    bytes
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -562,6 +627,21 @@ mod tests {
         assert_eq!(signed.verify(), Ok(()));
         signed.state.name = "tampered".into();
         assert_eq!(signed.verify(), Err(StateError::InvalidSignature));
+    }
+
+    #[test]
+    fn legacy_owner_named_state_still_verifies() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let mut legacy = state(&key);
+        legacy.schema_version = LEGACY_SCHEMA_VERSION;
+        let signature = key.sign(&state_signing_bytes(&legacy)).to_bytes().to_vec();
+        let serialized = serde_json::json!({
+            "state": serde_json::from_slice::<serde_json::Value>(&state_signing_bytes(&legacy)).unwrap(),
+            "signature": signature,
+        });
+        assert!(serialized["state"].get("owner_pubkey").is_some());
+        let signed: SignedState = serde_json::from_value(serialized).unwrap();
+        assert_eq!(signed.verify(), Ok(()));
     }
 
     #[test]
@@ -637,6 +717,7 @@ mod tests {
             requested_endpoint: "http://127.0.0.1:7337".into(),
             note: "please let me in".into(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request.clone(), &key);
         assert!(signed.verify().is_ok());
@@ -659,10 +740,38 @@ mod tests {
             requested_endpoint: "http://127.0.0.1:7337".into(),
             note: String::new(),
             requested_at_unix: 100,
+            transport_peer_id: None,
         };
         let signed = SignedAccessRequest::sign(request, &key);
         // Signature was made with `key` but node_pubkey is `other`.
         assert!(signed.verify().is_err());
+    }
+
+    #[test]
+    fn old_access_request_deserializes_without_transport_identity() {
+        let value = serde_json::json!({
+            "node_pubkey": vec![1; 32],
+            "requested_endpoint": "http://127.0.0.1:7337",
+            "note": "legacy",
+            "requested_at_unix": 100
+        });
+        let request: AccessRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(request.transport_peer_id, None);
+    }
+
+    #[test]
+    fn signed_state_fetch_request_verifies_and_detects_tampering() {
+        let key = SigningKey::generate(&mut rand::thread_rng());
+        let request = StateFetchRequest {
+            node_pubkey: key.verifying_key().to_bytes(),
+            requested_at_unix: 100,
+        };
+        let mut signed = SignedStateFetchRequest::sign(request, &key);
+        assert_eq!(signed.verify(), Ok(()));
+        signed.request.requested_at_unix = 101;
+        assert_eq!(signed.verify(), Err(TokenError::InvalidSignature));
+        signed.signature.truncate(10);
+        assert_eq!(signed.verify(), Err(TokenError::InvalidSignature));
     }
 
     #[test]

@@ -28,7 +28,7 @@ export function Overview() {
   }
 
   const network = data.network.state;
-  const ownerKey = fmtPubkey(network.owner_pubkey);
+  const authorityKey = fmtPubkey(network.authority_pubkey);
 
   return (
     <div className="space-y-6">
@@ -52,7 +52,7 @@ export function Overview() {
       <div className="grid grid-cols-3 gap-4">
         <StatCard label="Network" value={network.name} />
         <StatCard label="Generation" value={String(network.generation)} />
-        <StatCard label="Owner" value={ownerKey} mono />
+        <StatCard label="Authority" value={authorityKey} mono />
       </div>
 
       <div className="grid grid-cols-4 gap-4">
@@ -87,7 +87,7 @@ export function Overview() {
 
       <div className="grid grid-cols-2 gap-4">
         <InvitationSection />
-        <AssignModelSection ownerPubkey={network.owner_pubkey} />
+        <AssignModelSection authorityPubkey={network.authority_pubkey} />
       </div>
       <RecoveryNote />
     </div>

@@ -53,15 +53,16 @@ docker run --rm -it \
   dllm
 ```
 
-On first boot, since `~/.dllm` has no `state.json` yet, `dllmd` creates an
-owner identity and a signed network state named `my-network` itself. There is
+On first boot, since `~/.dllm` has no `state.json` yet, `dllmd` creates separate
+node, authority, and transport identities plus a signed provisional network
+state named `my-network`. There is
 no separate network-creation step. `DLLMD_NETWORK` only matters on that first
 boot; once `state.json` exists, the network's name is fixed and later
 restarts just load it (`DLLMD_NETWORK` is ignored at that point).
 
 The daemon starts on `http://127.0.0.1:7337`. It exposes two ports:
-- `7337` (TCP) — HTTP management and inference API.
-- `7444` (TCP+UDP) — libp2p peer transport (when P2P is enabled).
+- `7337` (TCP): HTTP management and inference API.
+- `7444` (TCP+UDP): libp2p peer transport (when P2P is enabled).
 
 > **Do not run `dllm create` against the same state/owner-key files while
 > `dllmd` is already running against them.** `dllm create` writes directly to
@@ -77,7 +78,7 @@ docker run --rm --network host \
   --entrypoint dllm \
   dllm \
   --state /var/lib/dllm/state.json \
-  --owner-key /var/lib/dllm/owner.key \
+  --authority-key /var/lib/dllm/authority.key \
   --daemon http://127.0.0.1:7337 \
   --management-token my-secret-token \
   status
@@ -98,9 +99,9 @@ cargo build --release
 The binaries are at `target/release/dllmd` and `target/release/dllm`.
 
 By default, both `dllmd` and `dllm` store their state and keys under
-`~/.dllm/` (`state.json`, `owner.key`, `node.key`, `transport.key`).
-Override individual paths with `DLLMD_STATE`, `DLLMD_OWNER_KEY`,
-`DLLMD_NODE_KEY`, `DLLMD_P2P_KEY` (`dllmd`) or `--state`, `--owner-key`,
+`~/.dllm/` (`state.json`, `authority.key`, `node.key`, `transport.key`).
+Override individual paths with `DLLMD_STATE`, `DLLMD_AUTHORITY_KEY`,
+`DLLMD_NODE_KEY`, `DLLMD_P2P_KEY` (`dllmd`) or `--state`, `--authority-key`,
 `--node-key`, `--transport-key` (`dllm`).
 
 If `DLLMD_MANAGEMENT_TOKEN` or `DLLMD_API_KEY` aren't set, `dllmd`
@@ -167,7 +168,7 @@ dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token \
   assign my-model --owner
 ```
 
-The owner node will be assigned the model. The daemon resolves the runtime
+The authority node will be assigned the model. The daemon resolves the runtime
 placement automatically.
 
 ## Send a chat completion request
@@ -189,87 +190,45 @@ curl -s http://127.0.0.1:7337/v1/chat/completions \
 For streaming responses, set `"stream": true`. The response arrives as
 Server-Sent Events (SSE).
 
-## Adding a second node (for example a laptop)
+## Adding a second node
 
-Once the owner node is running, you can add another machine to the network.
-
-### Step 1: generate identities on the laptop
-
-On the laptop, build DLLM or copy the binaries. Generate a node identity and
-transport identity:
+The authority daemon must be reachable over HTTPS and must advertise a dialable
+libp2p address. For example:
 
 ```sh
-dllm init
-# Creates ~/.dllm/node.key and ~/.dllm/transport.key, prints both
-# Example output: transport identity 12D3KooW...
+DLLMD_P2P_ADVERTISE=/ip4/192.168.1.10/tcp/7444 dllmd
 ```
 
-Run `dllm init-transport` separately if you only need to create a missing
-transport identity without touching the node identity. It reuses an existing
-transport identity rather than rotating it.
-
-### Step 2: request access
-
-Submit an access request to the owner daemon. The laptop must be able to reach
-the owner's HTTP API (use the LAN IP, not loopback):
+On the joining machine, start the daemon with the authority URL:
 
 ```sh
-dllm request-access http://192.168.1.10:7337
+DLLMD_JOIN_URL=https://authority.example:7337 dllmd
 ```
 
-Or use the guided onboarding command:
+Alternatively, start `dllmd` normally and direct the running local daemon to
+join later:
 
 ```sh
-dllm onboard http://192.168.1.10:7337
+dllmd
+dllm onboard https://authority.example:7337
 ```
 
-`dllm onboard` generates keys if they do not exist, submits the access request,
-and polls for approval. It prints what to do next.
+Keep the joining daemon running while `dllm onboard` waits. Both entry paths
+use the same daemon-owned workflow and preserve existing node and transport
+identities.
 
-### Step 3: approve on the owner node
-
-On the owner machine, list pending requests:
+On the authority machine, list and approve the request:
 
 ```sh
 dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token \
   list-access-requests
-```
-
-Approve the laptop:
-
-```sh
 dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token \
-  approve-access /path/to/laptop-node.key --endpoint http://192.168.1.20:7337
+  approve-access <node-public-key-hex>
 ```
 
-### Step 4: bind the transport identity
-
-The owner binds the laptop's libp2p peer ID so it can participate in the peer
-network:
-
-```sh
-dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token \
-  bind-transport 12D3KooW... --binding-generation 1 --expires-at-unix 2000000000
-```
-
-### Step 5: start the laptop daemon
-
-On the laptop, start `dllmd` pointing at the owner's state as a replica:
-
-```sh
-DLLMD_STATE=/path/to/state.json \
-DLLMD_NODE_KEY=/path/to/dllm-node.key \
-DLLMD_MANAGEMENT_TOKEN=laptop-token \
-DLLMD_RUNTIME_URL=http://127.0.0.1:8081 \
-DLLMD_P2P_ENABLED=true \
-DLLMD_P2P_KEY=/path/to/dllm-transport.key \
-DLLMD_P2P_BOOTSTRAP=/ip4/192.168.1.10/tcp/7444 \
-./dllmd
-```
-
-### Step 6: verify
-
-On the laptop:
+Approval adds membership and the submitted transport identity atomically. The
+joining daemon fetches and verifies the signed state, persists the advertised
+bootstrap addresses, and activates without a restart. Verify it locally:
 
 ```sh
 dllm --daemon http://127.0.0.1:7337 --management-token laptop-token peer-status
@@ -278,13 +237,17 @@ dllm --daemon http://127.0.0.1:7337 --management-token laptop-token peer-status
 Output includes the peer ID, discovery mode, DHT hosting role, forwarding
 eligibility, current path (direct or forwarded), and stream counters.
 
-On the owner:
+On the authority node:
 
 ```sh
 dllm --daemon http://127.0.0.1:7337 --management-token my-secret-token status
 ```
 
-The member count now includes the laptop.
+The member count now includes the joining node.
+
+Manual `dllm init`, `dllm request-access`, state copying, explicit bootstrap
+configuration, and `dllm bind-transport` remain available for troubleshooting
+and advanced recovery.
 
 ## Using the Web UI
 
@@ -300,8 +263,9 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_BIND` | `127.0.0.1:7337` | HTTP listen address |
 | `DLLMD_STATE` | `~/.dllm/state.json` | Path to signed network state |
 | `DLLMD_NETWORK` | generated (`dllm-<word>-<word>`) | Name for the network `dllmd` bootstraps on first boot (only used when `DLLMD_STATE` does not yet exist) |
-| `DLLMD_OWNER_KEY` | `~/.dllm/owner.key` | Owner Ed25519 private key (32 bytes) |
-| `DLLMD_NODE_KEY` | same as owner key | Local node Ed25519 private key |
+| `DLLMD_AUTHORITY_KEY` | `~/.dllm/authority.key` | Authority Ed25519 private key (32 bytes) |
+| `DLLMD_JOIN_URL` | none | HTTPS authority URL for automatic onboarding |
+| `DLLMD_NODE_KEY` | `~/.dllm/node.key` | Local node Ed25519 private key |
 | `DLLMD_MANAGEMENT_TOKEN` | generated, see `~/.dllm/config.json` | Bearer token for management API |
 | `DLLMD_API_KEY` | generated, see `~/.dllm/config.json` | Bearer token for inference API |
 | `DLLMD_RUNTIME_URL` | none | URL of an external, separately managed runtime server |
@@ -316,6 +280,7 @@ requests, budgets, moderation tools, and the audit log.
 | `DLLMD_P2P_PORT` | `7444` | libp2p listen port |
 | `DLLMD_P2P_KEY` | `~/.dllm/transport.key` | libp2p Ed25519 identity |
 | `DLLMD_P2P_BOOTSTRAP` | none | Comma-separated bootstrap multiaddrs |
+| `DLLMD_P2P_ADVERTISE` | none | Comma-separated dialable authority multiaddrs returned during onboarding |
 | `DLLMD_P2P_DISCOVERY_MODE` | `listed` | `listed` or `unlisted` |
 | `DLLMD_P2P_DHT_HOSTING` | `true` | `true` = DHT server, `false` = client only |
 | `DLLMD_ACCESS_REQUEST_RATE_LIMIT` | `10` | Max access requests per window |

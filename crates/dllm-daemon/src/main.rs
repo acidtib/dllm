@@ -27,12 +27,6 @@ use tokio::{
     sync::{Mutex, Semaphore},
 };
 
-/// Lifetime for the owner's self-signed transport binding created at
-/// bootstrap. Long enough to never expire in practice; the owner can
-/// revoke or rebind at any time via `dllm bind-transport --owner` /
-/// `dllm revoke-transport --owner`.
-const OWNER_SELF_BINDING_LIFETIME_SECS: u64 = 100 * 365 * 24 * 60 * 60;
-
 #[derive(Deserialize)]
 struct AdditionalNetworkConfig {
     name: String,
@@ -50,18 +44,39 @@ struct AdditionalNetworkConfig {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().any(|argument| argument == "--help" || argument == "-h") {
+        println!("dllmd\n\nSelf-hosted inference network daemon\n\nConfiguration is provided through DLLMD_* environment variables. See docs/getting-started.md.");
+        return Ok(());
+    }
     let _ = rustls::crypto::ring::default_provider().install_default();
     let bind = std::env::var("DLLMD_BIND").unwrap_or_else(|_| "127.0.0.1:7337".into());
     let state_path = match std::env::var("DLLMD_STATE") {
         Ok(value) => PathBuf::from(value),
         Err(_) => dllm_daemon::default_state_path()?,
     };
-    let owner_key_path = match std::env::var("DLLMD_OWNER_KEY") {
-        Ok(value) => PathBuf::from(value),
-        Err(_) => dllm_daemon::default_owner_key_path()?,
+    let owner_key_path = if let Ok(value) = std::env::var("DLLMD_AUTHORITY_KEY") {
+        PathBuf::from(value)
+    } else if let Ok(value) = std::env::var("DLLMD_OWNER_KEY") {
+        eprintln!("warning: DLLMD_OWNER_KEY is deprecated, use DLLMD_AUTHORITY_KEY");
+        PathBuf::from(value)
+    } else {
+        let authority = dllm_daemon::default_authority_key_path()?;
+        let legacy = dllm_daemon::default_owner_key_path()?;
+        if dllm_daemon::migrate_legacy_authority_key(&authority, &legacy)? {
+            eprintln!("warning: migrated legacy owner.key to authority.key");
+        }
+        authority
     };
     let network_name =
         std::env::var("DLLMD_NETWORK").unwrap_or_else(|_| dllm_daemon::generate_network_name());
+    let joining_at_start = std::env::var("DLLMD_JOIN_URL").is_ok();
+    let node_key_path = std::env::var("DLLMD_NODE_KEY")
+        .map(PathBuf::from)
+        .unwrap_or(dllm_daemon::default_node_key_path()?);
+    dllm_daemon::load_or_create_node_key(&node_key_path)?;
+    let transport_key_path = resolve_transport_key_path()?;
+    load_or_create_identity(&transport_key_path)?;
+    let config_path = dllm_daemon::default_config_path()?;
     let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
     let admission_limit = std::env::var("DLLMD_ADMISSION_LIMIT")
         .ok()
@@ -95,6 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tls_cert = std::env::var("DLLMD_TLS_CERT").ok();
     let tls_key = std::env::var("DLLMD_TLS_KEY").ok();
     let public_url = std::env::var("DLLMD_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
+    let bootstrap_multiaddrs = advertised_p2p_addresses()?;
     let bind_address: SocketAddr = bind.parse()?;
     // management_token and api_key are always Some here (local_config generates them
     // when unset), so the two credential conditions below are effectively always
@@ -111,7 +127,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .into(),
         );
     }
-    let store = if state_path.exists() {
+    let state_preexisted = state_path.exists();
+    let store = if state_preexisted {
         if owner_key_path.exists() {
             NetworkStore::load(&state_path, &owner_key_path)?
         } else {
@@ -120,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let mut store = NetworkStore::create(network_name);
         store.save_owner_key(&owner_key_path)?;
-        if env_bool("DLLMD_P2P_ENABLED", true)? {
+        if env_bool("DLLMD_P2P_ENABLED", true)? && !joining_at_start {
             let transport_key_path = resolve_transport_key_path()?;
             let transport_key = load_or_create_identity(&transport_key_path)?;
             let local_peer = transport_key.public().to_peer_id();
@@ -132,95 +149,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 local_peer.to_string(),
                 binding_generation,
                 issued_at,
-                issued_at + OWNER_SELF_BINDING_LIFETIME_SECS,
+                issued_at + dllm_daemon::AUTOMATIC_BINDING_LIFETIME_SECS,
             )?;
         }
         store.save(&state_path)?;
         store
     };
-    let p2p_requested = env_bool("DLLMD_P2P_ENABLED", true)?;
+    let provisional_marker_path = state_path.with_extension("provisional.json");
+    if !state_preexisted {
+        write_provisional_marker(&provisional_marker_path, &store)?;
+    }
+    let p2p_requested = env_bool("DLLMD_P2P_ENABLED", true)? && !joining_at_start;
     let peer_bundle: Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>> =
         Arc::new(tokio::sync::RwLock::new(None));
-    let mut peer_handle: Option<PeerNodeHandle> = None;
-    if let Some((handle, bundle)) = try_start_peer(&store, &owner_key_path, admission_limit)? {
-        peer_handle = Some(handle);
-        *peer_bundle.write().await = Some(bundle);
+    let peer_handle: Arc<Mutex<Option<PeerNodeHandle>>> = Arc::new(Mutex::new(None));
+    if p2p_requested {
+        if let Some((handle, bundle)) = try_start_peer(&store, &owner_key_path, admission_limit)? {
+            *peer_handle.lock().await = Some(handle);
+            *peer_bundle.write().await = Some(bundle);
+        }
     }
 
     let mut runtime_worker = None;
-    if runtime_url.is_none() {
-        if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
-            // DLLMD_RUNTIME_BIN is an explicit request for an external runtime.
-            // Only start it if a model is also configured; never fall through
-            // to the bundled binary here, even if misconfigured.
-            if let Ok(model) = std::env::var("DLLMD_MODEL_PATH") {
-                let config = LlamaCppConfig {
-                    binary: binary.into(),
-                    model: model.into(),
-                    host: "127.0.0.1".into(),
-                    port: std::env::var("DLLMD_RUNTIME_PORT")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(8081),
-                    gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
-                    context_size: std::env::var("DLLMD_CONTEXT_SIZE")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(2048),
-                    extra_args: vec![],
-                };
-                let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
-                runtime_url = Some(worker.endpoint().to_owned());
-                runtime_worker = Some(worker);
-            }
-        } else {
-            let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
-            let hf_model = std::env::var("DLLMD_HF_MODEL").ok();
-            let model_source = match (model_path, hf_model) {
-                (Some(_), Some(_)) => {
-                    return Err("DLLMD_MODEL_PATH and DLLMD_HF_MODEL are mutually exclusive".into());
-                }
-                (Some(path), None) => Some(BundledModelSource::Local(path.into())),
-                (None, Some(repo)) => Some(BundledModelSource::HuggingFace(repo)),
-                (None, None) => None,
-            };
-            if let Some(model) = model_source {
-                let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
-                    && std::env::var("HF_HOME").is_err()
-                {
-                    Some(dllm_daemon::default_dir()?.join("models"))
-                } else {
-                    None
-                };
-                let config = BundledRuntimeConfig {
-                    binary: bundled_runtime_binary()?,
-                    model,
-                    host: "127.0.0.1".into(),
-                    port: std::env::var("DLLMD_RUNTIME_PORT")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(8081),
-                    gpu_layers: std::env::var("DLLMD_GPU_LAYERS")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(38),
-                    context_size: std::env::var("DLLMD_CONTEXT_SIZE")
-                        .ok()
-                        .and_then(|value| value.parse().ok())
-                        .unwrap_or(2048)
-                        .into(),
-                    api_key: None,
-                    parallel: 1,
-                    mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
-                    hf_home,
-                };
-                let worker =
-                    RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
-                runtime_url = Some(worker.endpoint().to_owned());
-                runtime_worker = Some(worker);
-            }
-        }
+    if !joining_at_start {
+        (runtime_url, runtime_worker) = start_configured_runtime().await?;
     }
+    let runtime_url = Arc::new(tokio::sync::RwLock::new(runtime_url));
+    let runtime_worker = Arc::new(Mutex::new(runtime_worker));
     let primary_state = api::ApiState {
         store: Arc::new(Mutex::new(store)),
         state_path: state_path.clone(),
@@ -240,10 +195,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer_api_key: peer_api_key.clone(),
         metrics: Arc::new(api::Metrics::default()),
         public_url: public_url.clone(),
+        bootstrap_multiaddrs: bootstrap_multiaddrs.clone(),
+        node_key_path: node_key_path.clone(),
+        transport_key_path: transport_key_path.clone(),
+        config_path: config_path.clone(),
+        authority_key_path: owner_key_path.clone(),
+        provisional_marker_path: provisional_marker_path.clone(),
+        onboarding: Arc::new(tokio::sync::RwLock::new(api::OnboardingStatus::Inactive)),
         replica_loads: Arc::new(Mutex::new(HashMap::new())),
         peer_nonces: Arc::new(Mutex::new(HashMap::new())),
         peer_quota: Arc::new(Semaphore::new(admission_limit)),
         peer: peer_bundle.clone(),
+        peer_handle: peer_handle.clone(),
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
         rate_limiter: Arc::new(RateLimiter::new()),
         access_request_rate_config: RateLimitConfig {
@@ -264,6 +227,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             10 * 1024 * 1024, // 10 MB rotation threshold
         ))),
     };
+    if let Ok(authority_url) = std::env::var("DLLMD_JOIN_URL") {
+        let _ = api::start_onboarding_workflow(primary_state.clone(), authority_url)
+            .await
+            .map_err(|(_, message)| message)?;
+        spawn_runtime_activation(
+            primary_state.onboarding.clone(),
+            runtime_url.clone(),
+            runtime_worker.clone(),
+        );
+    }
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
         .map(|value| serde_json::from_str::<Vec<AdditionalNetworkConfig>>(&value))
@@ -319,10 +292,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 peer_api_key: peer_api_key.clone(),
                 metrics: Arc::new(api::Metrics::default()),
                 public_url: network_public_url,
+                bootstrap_multiaddrs: Vec::new(),
+                node_key_path: node_key_path.clone(),
+                transport_key_path: transport_key_path.clone(),
+                config_path: config_path.clone(),
+                authority_key_path: config.owner_key_path.clone(),
+                provisional_marker_path: additional_state_path.with_extension("provisional.json"),
+                onboarding: Arc::new(tokio::sync::RwLock::new(api::OnboardingStatus::Inactive)),
                 replica_loads: Arc::new(Mutex::new(HashMap::new())),
                 peer_nonces: Arc::new(Mutex::new(HashMap::new())),
                 peer_quota: Arc::new(Semaphore::new(admission_limit)),
                 peer: Arc::new(tokio::sync::RwLock::new(None)),
+                peer_handle: Arc::new(Mutex::new(None)),
                 budget_enforcer: Arc::new(BudgetEnforcer::new()),
                 rate_limiter: Arc::new(RateLimiter::new()),
                 access_request_rate_config: RateLimitConfig::default(),
@@ -342,13 +323,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             primary_state.clone(),
         );
     }
-    if p2p_requested && peer_handle.is_none() {
+    if p2p_requested || joining_at_start {
         spawn_peer_watcher(
             state_path.clone(),
             owner_key_path.clone(),
             admission_limit,
             peer_bundle.clone(),
             primary_state.clone(),
+            peer_handle.clone(),
         );
     }
 
@@ -375,10 +357,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown())
         .await?;
     }
-    if let Some(worker) = runtime_worker {
+    if let Some(worker) = runtime_worker.lock().await.take() {
         worker.shutdown().await?;
     }
-    if let Some(peer) = peer_handle {
+    if let Some(peer) = peer_handle.lock().await.take() {
         peer.abort();
     }
     Ok(())
@@ -400,6 +382,162 @@ fn bundled_runtime_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(candidate)
 }
 
+async fn start_configured_runtime(
+) -> Result<(Option<String>, Option<RuntimeWorker>), Box<dyn std::error::Error>> {
+    if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
+        return Ok((Some(runtime_url), None));
+    }
+    if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
+        let Ok(model) = std::env::var("DLLMD_MODEL_PATH") else {
+            return Ok((None, None));
+        };
+        let config = LlamaCppConfig {
+            binary: binary.into(),
+            model: model.into(),
+            host: "127.0.0.1".into(),
+            port: std::env::var("DLLMD_RUNTIME_PORT")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(8081),
+            gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
+            context_size: std::env::var("DLLMD_CONTEXT_SIZE")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(2048),
+            extra_args: vec![],
+        };
+        let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
+        return Ok((Some(worker.endpoint().to_owned()), Some(worker)));
+    }
+
+    let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
+    let hf_model = std::env::var("DLLMD_HF_MODEL").ok();
+    let model = match (model_path, hf_model) {
+        (Some(_), Some(_)) => {
+            return Err("DLLMD_MODEL_PATH and DLLMD_HF_MODEL are mutually exclusive".into());
+        }
+        (Some(path), None) => Some(BundledModelSource::Local(path.into())),
+        (None, Some(repo)) => Some(BundledModelSource::HuggingFace(repo)),
+        (None, None) => None,
+    };
+    let Some(model) = model else {
+        return Ok((None, None));
+    };
+    let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
+        && std::env::var("HF_HOME").is_err()
+    {
+        Some(dllm_daemon::default_dir()?.join("models"))
+    } else {
+        None
+    };
+    let config = BundledRuntimeConfig {
+        binary: bundled_runtime_binary()?,
+        model,
+        host: "127.0.0.1".into(),
+        port: std::env::var("DLLMD_RUNTIME_PORT")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8081),
+        gpu_layers: std::env::var("DLLMD_GPU_LAYERS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(38),
+        context_size: std::env::var("DLLMD_CONTEXT_SIZE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2048)
+            .into(),
+        api_key: None,
+        parallel: 1,
+        mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
+        hf_home,
+    };
+    let worker = RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
+    Ok((Some(worker.endpoint().to_owned()), Some(worker)))
+}
+
+fn spawn_runtime_activation(
+    onboarding: Arc<tokio::sync::RwLock<api::OnboardingStatus>>,
+    runtime_url: Arc<tokio::sync::RwLock<Option<String>>>,
+    runtime_worker: Arc<Mutex<Option<RuntimeWorker>>>,
+) {
+    tokio::spawn(async move {
+        loop {
+            let status = onboarding.read().await.clone();
+            match status {
+                api::OnboardingStatus::Active { .. } => break,
+                api::OnboardingStatus::Failed { detail, .. } => {
+                    eprintln!("runtime activation skipped: onboarding failed: {detail}");
+                    return;
+                }
+                _ => tokio::time::sleep(Duration::from_millis(250)).await,
+            }
+        }
+        let activation = start_configured_runtime()
+            .await
+            .map_err(|error| error.to_string());
+        match activation {
+            Ok((url, worker)) => {
+                *runtime_url.write().await = url;
+                *runtime_worker.lock().await = worker;
+                println!("onboarding activation completed");
+            }
+            Err(error) => {
+                eprintln!("runtime activation failed: {error}");
+            }
+        }
+    });
+}
+
+fn advertised_p2p_addresses() -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let Some(value) = std::env::var("DLLMD_P2P_ADVERTISE")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Ok(Vec::new());
+    };
+    let transport_key = load_or_create_identity(&resolve_transport_key_path()?)?;
+    let peer_id = transport_key.public().to_peer_id();
+    value
+        .split(',')
+        .map(str::trim)
+        .map(|address| {
+            let address: Multiaddr = address.parse()?;
+            let rendered = address.to_string();
+            if rendered.contains("/ip4/0.0.0.0/") || rendered.contains("/ip6/::/") {
+                return Err("DLLMD_P2P_ADVERTISE must contain dialable addresses".into());
+            }
+            let with_peer = if rendered.contains("/p2p/") {
+                if !rendered.ends_with(&format!("/p2p/{peer_id}")) {
+                    return Err("advertised P2P address contains a different peer identity".into());
+                }
+                rendered
+            } else {
+                format!("{rendered}/p2p/{peer_id}")
+            };
+            with_peer.parse::<Multiaddr>()?;
+            Ok(with_peer)
+        })
+        .collect()
+}
+
+fn write_provisional_marker(
+    path: &Path,
+    store: &NetworkStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let temporary = tempfile::NamedTempFile::new_in(parent)?;
+    std::fs::write(
+        temporary.path(),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "generation": store.state.state.generation,
+            "authority_pubkey": store.state.state.owner_pubkey,
+        }))?,
+    )?;
+    temporary.persist(path).map_err(|error| error.error)?;
+    Ok(())
+}
+
 fn peer_config(
     store: &NetworkStore,
     owner_key_path: &Path,
@@ -408,9 +546,18 @@ fn peer_config(
         return Ok(None);
     }
     let key_path = resolve_transport_key_path()?;
-    let local_node_key_path = std::env::var("DLLMD_NODE_KEY")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| owner_key_path.to_path_buf());
+    let local_node_key_path = if let Ok(path) = std::env::var("DLLMD_NODE_KEY") {
+        PathBuf::from(path)
+    } else if owner_key_path.exists()
+        && NetworkStore::load_owner_key(owner_key_path)?
+            .verifying_key()
+            .to_bytes()
+            == store.state.state.owner_pubkey
+    {
+        owner_key_path.to_path_buf()
+    } else {
+        dllm_daemon::default_node_key_path()?
+    };
     let local_node = NetworkStore::load_owner_key(local_node_key_path)?
         .verifying_key()
         .to_bytes();
@@ -420,14 +567,14 @@ fn peer_config(
         Ok(_) => {}
         Err(StoreError::TransportIdentityUnauthorized) => {
             println!(
-                "P2P enabled but this node is not yet authorized (waiting on owner approval) -- continuing without P2P"
+                "P2P enabled but this node is not yet authorized, waiting on authority approval"
             );
             return Ok(None);
         }
         Err(error) => return Err(error.into()),
     }
 
-    let bootstrap = std::env::var("DLLMD_P2P_BOOTSTRAP")
+    let environment_bootstrap = std::env::var("DLLMD_P2P_BOOTSTRAP")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .map(|value| {
@@ -438,6 +585,19 @@ fn peer_config(
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
+    let config_bootstrap = dllm_daemon::default_config_path()
+        .ok()
+        .and_then(|path| dllm_daemon::local_config::LocalConfig::load(&path).ok())
+        .and_then(|config| config.p2p_bootstrap)
+        .filter(|addresses| !addresses.is_empty())
+        .map(|addresses| {
+            addresses
+                .into_iter()
+                .map(|address| address.parse::<Multiaddr>())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    let bootstrap = environment_bootstrap.or(config_bootstrap);
     let mut eligible_forwarders = HashSet::new();
     for policy in &store.state.state.forwarding_policy {
         if let Some(binding) = store
@@ -554,6 +714,7 @@ fn spawn_peer_watcher(
     admission_limit: usize,
     peer_bundle: Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>>,
     api_state: api::ApiState,
+    peer_handle: Arc<Mutex<Option<PeerNodeHandle>>>,
 ) {
     tokio::spawn(async move {
         let (tx, mut rx) = tokio::sync::mpsc::channel::<notify::Result<notify::Event>>(16);
@@ -587,6 +748,7 @@ fn spawn_peer_watcher(
             admission_limit,
             &peer_bundle,
             &api_state,
+            &peer_handle,
         )
         .await
         {
@@ -608,6 +770,7 @@ fn spawn_peer_watcher(
                 admission_limit,
                 &peer_bundle,
                 &api_state,
+                &peer_handle,
             )
             .await
             {
@@ -623,12 +786,13 @@ async fn try_activate_watched_peer(
     admission_limit: usize,
     peer_bundle: &Arc<tokio::sync::RwLock<Option<dllm_daemon::peer_service::PeerBundle>>>,
     api_state: &api::ApiState,
+    peer_handle: &Arc<Mutex<Option<PeerNodeHandle>>>,
 ) -> bool {
-    let reloaded = if owner_key_path.exists() {
-        NetworkStore::load(state_path, owner_key_path)
-    } else {
-        NetworkStore::load_replica(state_path)
-    };
+    if peer_bundle.read().await.is_some() {
+        return false;
+    }
+    let reloaded = NetworkStore::load(state_path, owner_key_path)
+        .or_else(|_| NetworkStore::load_replica(state_path));
     let Ok(reloaded) = reloaded else {
         return false;
     };
@@ -638,7 +802,7 @@ async fn try_activate_watched_peer(
         Ok(Some((handle, bundle))) => {
             let client = bundle.client.clone();
             *peer_bundle.write().await = Some(bundle);
-            drop(handle);
+            *peer_handle.lock().await = Some(handle);
             let _dispatcher =
                 dllm_daemon::peer_service::spawn_dispatcher(client, api_state.clone());
             println!("P2P authorized -- peer transport is now active");
@@ -676,4 +840,38 @@ fn has_management_access(
 
 async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn runtime_activation_waits_until_onboarding_is_active() {
+        let onboarding = Arc::new(tokio::sync::RwLock::new(api::OnboardingStatus::Joining {
+            authority_url: "https://authority.example".into(),
+            detail: "waiting".into(),
+        }));
+        let runtime_url = Arc::new(tokio::sync::RwLock::new(Some("not-started".into())));
+        let runtime_worker = Arc::new(Mutex::new(None));
+        spawn_runtime_activation(onboarding.clone(), runtime_url.clone(), runtime_worker);
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(runtime_url.read().await.as_deref(), Some("not-started"));
+
+        *onboarding.write().await = api::OnboardingStatus::Active {
+            authority_url: "https://authority.example".into(),
+        };
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if runtime_url.read().await.as_deref() != Some("not-started") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(runtime_url.read().await.is_none());
+    }
 }

@@ -7,6 +7,8 @@ use std::path::Path;
 pub struct LocalConfig {
     pub management_token: Option<String>,
     pub api_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p2p_bootstrap: Option<Vec<String>>,
 }
 
 impl LocalConfig {
@@ -24,14 +26,24 @@ impl LocalConfig {
     }
 
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        fs::write(path, serde_json::to_vec_pretty(self)?)?;
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let temporary = tempfile::NamedTempFile::new_in(parent)?;
+        fs::write(temporary.path(), serde_json::to_vec_pretty(self)?)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o600))?;
         }
+        temporary.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
+}
+
+pub fn update_p2p_bootstrap(path: &Path, addresses: Vec<String>) -> std::io::Result<()> {
+    let mut config = LocalConfig::load(path)?;
+    config.p2p_bootstrap = Some(addresses);
+    config.save(path)
 }
 
 fn generate_token() -> String {
@@ -156,6 +168,7 @@ mod tests {
         let config = LocalConfig {
             management_token: Some("mgmt-123".into()),
             api_key: Some("api-456".into()),
+            p2p_bootstrap: None,
         };
         config.save(&path).unwrap();
         let loaded = LocalConfig::load(&path).unwrap();
@@ -184,6 +197,7 @@ mod tests {
         let existing = LocalConfig {
             management_token: Some("from-file".into()),
             api_key: None,
+            p2p_bootstrap: None,
         };
         existing.save(&path).unwrap();
         let (value, generated) = resolve_token_in(
@@ -241,6 +255,7 @@ mod tests {
         let existing = LocalConfig {
             management_token: Some("from-file".into()),
             api_key: None,
+            p2p_bootstrap: None,
         };
         existing.save(&path).unwrap();
         let value = read_management_token_in(Some("from-env".to_string()), &path);
@@ -253,6 +268,7 @@ mod tests {
         let existing = LocalConfig {
             management_token: Some("from-file".into()),
             api_key: None,
+            p2p_bootstrap: None,
         };
         existing.save(&path).unwrap();
         let value = read_management_token_in(None, &path);
@@ -264,5 +280,33 @@ mod tests {
         let (_dir, path) = temp_config_path();
         let value = read_management_token_in(None, &path);
         assert!(value.is_none());
+    }
+
+    #[test]
+    fn bootstrap_update_preserves_credentials() {
+        let (_dir, path) = temp_config_path();
+        let existing = LocalConfig {
+            management_token: Some("management".into()),
+            api_key: Some("inference".into()),
+            p2p_bootstrap: None,
+        };
+        existing.save(&path).unwrap();
+        update_p2p_bootstrap(&path, vec!["/ip4/127.0.0.1/tcp/4001".into()]).unwrap();
+        let updated = LocalConfig::load(&path).unwrap();
+        assert_eq!(updated.management_token.as_deref(), Some("management"));
+        assert_eq!(updated.api_key.as_deref(), Some("inference"));
+        assert_eq!(
+            updated.p2p_bootstrap,
+            Some(vec!["/ip4/127.0.0.1/tcp/4001".into()])
+        );
+    }
+
+    #[test]
+    fn bootstrap_update_does_not_replace_malformed_config() {
+        let (_dir, path) = temp_config_path();
+        fs::write(&path, b"{bad-json").unwrap();
+        let error = update_p2p_bootstrap(&path, Vec::new()).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(fs::read(&path).unwrap(), b"{bad-json");
     }
 }

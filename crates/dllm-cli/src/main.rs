@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use dllm_daemon::{backup, NetworkStore};
 use dllm_protocol::{now_unix, AccessRequest, SignedAccessRequest, SignedJoinToken};
-use ed25519_dalek::SigningKey;
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
 use std::{fs, path::PathBuf};
@@ -19,7 +18,11 @@ struct Cli {
     management_token: Option<String>,
     #[arg(long, help = "Defaults to ~/.dllm/state.json")]
     state: Option<PathBuf>,
-    #[arg(long, help = "Defaults to ~/.dllm/owner.key")]
+    #[arg(
+        long = "authority-key",
+        alias = "owner-key",
+        help = "Defaults to ~/.dllm/authority.key"
+    )]
     owner_key: Option<PathBuf>,
     #[arg(long, help = "Defaults to ~/.dllm/node.key")]
     node_key: Option<PathBuf>,
@@ -62,35 +65,35 @@ enum Command {
         binding_generation: u64,
         #[arg(long)]
         expires_at_unix: u64,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
     RevokeTransport {
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
     SetForwarder {
         max_reservations: u32,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
     RemoveForwarder {
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
     Assign {
         model: String,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
     Unassign {
         model: String,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
@@ -132,18 +135,20 @@ enum Command {
         #[arg(long)]
         passphrase_file: PathBuf,
     },
+    #[command(name = "transfer-authority", alias = "transfer-owner")]
     TransferOwner {
         new_owner_key: PathBuf,
         #[arg(long)]
         old_owner_endpoint: String,
     },
     Onboard {
-        owner_endpoint: String,
+        authority_url: String,
         #[arg(long)]
         timeout: Option<u64>,
     },
+    OnboardingStatus,
     RequestAccess {
-        owner_endpoint: String,
+        authority_url: String,
         #[arg(long)]
         note: Option<String>,
     },
@@ -160,7 +165,7 @@ enum Command {
         node_key: PathBuf,
     },
     SetBudget {
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
         #[arg(long)]
@@ -171,7 +176,7 @@ enum Command {
         window_seconds: u32,
     },
     RemoveBudget {
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
         node_key: Option<PathBuf>,
     },
@@ -179,12 +184,12 @@ enum Command {
         node_key: PathBuf,
         #[arg(long)]
         reason: String,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
     },
     UnbanNode {
         node_key: PathBuf,
-        #[arg(long)]
+        #[arg(long = "authority", alias = "owner")]
         owner: bool,
     },
     ReportAbuse {
@@ -215,7 +220,15 @@ enum Command {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let state = resolve_path(cli.state, dllm_daemon::default_state_path)?;
-    let owner_key = resolve_path(cli.owner_key, dllm_daemon::default_owner_key_path)?;
+    let owner_key = match cli.owner_key {
+        Some(path) => path,
+        None => {
+            let authority = dllm_daemon::default_authority_key_path()?;
+            let legacy = dllm_daemon::default_owner_key_path()?;
+            dllm_daemon::migrate_legacy_authority_key(&authority, &legacy)?;
+            authority
+        }
+    };
     let node_key = resolve_path(cli.node_key, dllm_daemon::default_node_key_path)?;
     let transport_key = resolve_path(cli.transport_key, dllm_daemon::default_transport_key_path)?;
     let management_token = cli
@@ -225,9 +238,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     match cli.command {
         Command::Init => {
-            let key = SigningKey::generate(&mut rand::thread_rng());
-            write_private_key(&node_key, &key.to_bytes())?;
-            println!("created node identity {}", node_key.display());
+            let existed = node_key.exists();
+            dllm_daemon::load_or_create_node_key(&node_key)?;
+            println!(
+                "{} node identity {}",
+                if existed { "using" } else { "created" },
+                node_key.display()
+            );
             let transport = dllm_transport::peer::load_or_create_identity(&transport_key)?;
             println!("transport identity {}", transport.public().to_peer_id());
         }
@@ -525,76 +542,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("restored control plane from {}", input.display());
         }
         Command::Onboard {
-            owner_endpoint,
+            authority_url,
             timeout,
         } => {
             let timeout = timeout.unwrap_or(300);
-            // Step 1: ensure node identity
-            if !node_key.exists() {
-                println!("no node identity found, creating one...");
-                let key = SigningKey::generate(&mut rand::thread_rng());
-                write_private_key(&node_key, &key.to_bytes())?;
-                println!("created node identity {}", node_key.display());
-            } else {
-                println!("using node identity {}", node_key.display());
-            }
-            // Step 2: ensure transport identity
-            let transport_peer_id = if transport_key.exists() {
-                let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
-                let pid = key.public().to_peer_id();
-                println!("using transport identity {pid}");
-                pid
-            } else {
-                println!("no transport identity found, creating one...");
-                let key = dllm_transport::peer::load_or_create_identity(&transport_key)?;
-                let pid = key.public().to_peer_id();
-                println!("created transport identity {pid}");
-                pid
-            };
-            // Step 3: submit access request
-            let node_signing_key = NetworkStore::load_owner_key(&node_key)?;
-            let node_pubkey = node_signing_key.verifying_key().to_bytes();
-            let request = AccessRequest {
-                node_pubkey,
-                requested_endpoint: cli.node_endpoint.clone(),
-                note: "onboard".into(),
-                requested_at_unix: now_unix(),
-            };
-            let signed = SignedAccessRequest::sign(request, &node_signing_key);
-            let response = request_json(auth(
+            request_json(auth(
                 client
-                    .post(format!("{owner_endpoint}/v1/access-requests"))
-                    .json(&json!({ "request": signed })),
-                &None,
-            ));
-            match response {
-                Ok(_) => println!("access request submitted"),
-                Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("AccessRequestAlreadyPending") {
-                        println!("access request already pending");
-                    } else if msg.contains("NodeIsBanned") {
-                        return Err("this node is banned from the network".into());
-                    } else if msg.contains("AlreadyMember") {
-                        println!("already a member, no request needed");
-                    } else {
-                        return Err(format!("access request failed: {msg}").into());
-                    }
-                }
-            }
-            // Step 4: poll for approval
-            let pk_hex: String = node_pubkey
-                .iter()
-                .take(4)
-                .map(|b| format!("{b:02x}"))
-                .collect::<Vec<_>>()
-                .join("");
-            println!();
-            println!("polling for approval (timeout {timeout}s)...");
-            println!("the owner must run: dllm approve-access <your-node-key>");
-            println!("your node key fingerprint: {pk_hex}...");
-            println!("your transport peer id: {transport_peer_id}");
-            println!();
+                    .post(format!("{}/v1/onboarding/start", cli.daemon))
+                    .json(&json!({ "authority_url": authority_url })),
+                &management_token,
+            ))?;
+            println!("access request submitted, waiting for authority approval");
             let start = std::time::Instant::now();
             let deadline = std::time::Duration::from_secs(timeout);
             loop {
@@ -604,34 +562,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::thread::sleep(std::time::Duration::from_secs(3));
                 let status: Result<Value, _> = request_json(auth(
                     client
-                        .get(format!("{owner_endpoint}/v1/status"))
+                        .get(format!("{}/v1/onboarding/status", cli.daemon))
                         .header("Accept", "application/json"),
                     &management_token,
                 ));
                 if let Ok(status) = status {
-                    if let Some(members) = status["network"]["state"]["members"].as_array() {
-                        let pk_bytes: Vec<serde_json::Value> = node_pubkey
-                            .iter()
-                            .map(|b| serde_json::Value::from(*b))
-                            .collect();
-                        if members
-                            .iter()
-                            .any(|m| m["node_pubkey"].as_array() == Some(&pk_bytes))
-                        {
-                            println!("approved! you are now a member of the network.");
-                            println!();
-                            println!("next steps:");
-                            println!("  dllm bind-transport {transport_peer_id} --binding-generation 1 --expires-at-unix <future> --owner");
-                            println!("  (the owner runs this to bind your transport identity)");
-                            println!("  then start your daemon and verify: dllm peer-status");
+                    match status["state"].as_str() {
+                        Some("active") => {
+                            println!("onboarding active");
                             return Ok(());
                         }
+                        Some("failed") => {
+                            return Err(status["detail"]
+                                .as_str()
+                                .unwrap_or("onboarding failed")
+                                .into());
+                        }
+                        _ => {}
                     }
                 }
             }
         }
+        Command::OnboardingStatus => {
+            let response = request_json(auth(
+                client.get(format!("{}/v1/onboarding/status", cli.daemon)),
+                &management_token,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&response)?);
+        }
         Command::RequestAccess {
-            owner_endpoint,
+            authority_url,
             note,
         } => {
             let node_pubkey = read_key(node_key.clone())?;
@@ -644,12 +604,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 requested_endpoint: cli.node_endpoint.clone(),
                 note: note.unwrap_or_default(),
                 requested_at_unix: now_unix(),
+                transport_peer_id: Some(
+                    dllm_transport::peer::load_or_create_identity(&transport_key)?
+                        .public()
+                        .to_peer_id()
+                        .to_string(),
+                ),
             };
             let node_signing_key = NetworkStore::load_owner_key(&node_key)?;
             let signed = SignedAccessRequest::sign(request, &node_signing_key);
             let response = request_json(auth(
                 client
-                    .post(format!("{owner_endpoint}/v1/access-requests"))
+                    .post(format!("{authority_url}/v1/access-requests"))
                     .json(&json!({ "request": signed })),
                 &None,
             ))?;
@@ -674,27 +640,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("{}", "-".repeat(80));
                     let now = dllm_protocol::now_unix();
                     for req in requests {
-                        let pk = req["request"]["node_pubkey"]
+                        let pk = req["node_pubkey"]
                             .as_array()
                             .map(|a| format_hex(a))
                             .unwrap_or_else(|| "unknown".into());
-                        let ep = req["request"]["requested_endpoint"]
-                            .as_str()
-                            .unwrap_or("(none)");
-                        let ts = req["request"]["timestamp"].as_u64().unwrap_or(0);
+                        let ep = req["requested_endpoint"].as_str().unwrap_or("(none)");
+                        let ts = req["requested_at_unix"].as_u64().unwrap_or(0);
                         let age = if ts > 0 && ts < now {
                             format_age(now - ts)
                         } else {
                             "just now".into()
                         };
-                        let note = req["request"]["note"].as_str().unwrap_or("");
+                        let note = req["note"].as_str().unwrap_or("");
                         println!("{pk:<20}  {ep:<30}  {age:<12}  {note}");
                     }
                 }
             }
         }
         Command::ApproveAccess { node_key, endpoint } => {
-            let node_pubkey = read_key(node_key)?;
+            let node_pubkey = read_public_key_arg(node_key)?;
             let mut body = json!({ "node_pubkey": node_pubkey });
             if let Some(ep) = endpoint {
                 body["endpoint"] = json!(ep);
@@ -708,7 +672,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&response)?);
         }
         Command::DenyAccess { node_key } => {
-            let node_pubkey = read_key(node_key)?;
+            let node_pubkey = read_public_key_arg(node_key)?;
             let response = request_json(auth(
                 client
                     .post(format!("{}/v1/access-requests/deny", cli.daemon))
@@ -965,7 +929,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             store.save(&state)?;
             store.save_owner_key(&owner_key)?;
             println!(
-                "transferred ownership at generation {}",
+                "transferred authority at generation {}",
                 store.state.state.generation
             );
         }
@@ -981,16 +945,6 @@ fn resolve_path(
         Some(path) => Ok(path),
         None => default(),
     }
-}
-
-fn write_private_key(path: &PathBuf, bytes: &[u8; 32]) -> Result<(), Box<dyn std::error::Error>> {
-    fs::write(path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
 }
 
 fn assignment_request(
@@ -1034,7 +988,7 @@ fn assignment_key(
             .to_bytes()
             .to_vec()),
         (false, Some(path)) => read_key(path),
-        _ => Err("select exactly one assignment target: --owner or NODE_KEY".into()),
+        _ => Err("select exactly one assignment target: --authority or NODE_KEY".into()),
     }
 }
 
@@ -1043,6 +997,26 @@ fn read_key(path: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         .verifying_key()
         .to_bytes()
         .to_vec())
+}
+
+fn read_public_key_arg(value: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    if value.exists() {
+        return read_key(value);
+    }
+    let value = value
+        .to_str()
+        .ok_or("node public key must be UTF-8 or an existing key path")?;
+    if value.len() != 64 {
+        return Err(
+            "node public key must be 64 hexadecimal characters or an existing key path".into(),
+        );
+    }
+    let bytes = hex::decode(value)?;
+    let _: [u8; 32] = bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| "node public key must contain 32 bytes")?;
+    Ok(bytes)
 }
 
 fn request_json(

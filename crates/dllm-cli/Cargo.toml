@@ -10,6 +10,7 @@ dllm-protocol.workspace = true
 dllm-transport.workspace = true
 dllm-daemon.workspace = true
 ed25519-dalek.workspace = true
+hex = "0.4"
 rand.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 serde_json.workspace = true

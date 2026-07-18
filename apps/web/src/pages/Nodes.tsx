@@ -39,7 +39,7 @@ export function Nodes() {
           >
             <div>
               <p className="font-mono text-sm">
-                {node.owner ? "[owner] " : ""}
+                {node.authority ? "[authority] " : ""}
                 {fmtPubkey(node.node_pubkey)}...
               </p>
               <p className="text-xs text-gray-400">
@@ -47,7 +47,7 @@ export function Nodes() {
                 {node.endpoint}
               </p>
             </div>
-            {!node.owner && (
+            {!node.authority && (
               <Button
                 variant="destructive"
                 size="sm"

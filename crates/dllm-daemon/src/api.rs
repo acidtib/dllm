@@ -19,9 +19,9 @@ use axum::{
     Json, Router,
 };
 use dllm_protocol::{
-    now_ms, now_unix, HardwareProfile, HealthState, ManagementStatus, NodeStatus,
+    now_ms, now_unix, AccessRequest, HardwareProfile, HealthState, ManagementStatus, NodeStatus,
     PlacementLifecycle, PlacementStatus, ResourceBudget, SignedAccessRequest, SignedJoinToken,
-    TransportKind, WorkerStatus,
+    SignedStateFetchRequest, StateFetchRequest, StateFetchResponse, TransportKind, WorkerStatus,
 };
 use futures_util::{future::join_all, StreamExt};
 use hmac::{Hmac, Mac};
@@ -42,7 +42,7 @@ use tokio::sync::{Mutex, RwLock, Semaphore};
 pub struct ApiState {
     pub store: Arc<Mutex<NetworkStore>>,
     pub state_path: PathBuf,
-    pub runtime_url: Option<String>,
+    pub runtime_url: Arc<RwLock<Option<String>>>,
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
     pub management_credentials: Arc<RwLock<CredentialRegistry>>,
@@ -50,10 +50,18 @@ pub struct ApiState {
     pub peer_api_key: Option<String>,
     pub metrics: Arc<Metrics>,
     pub public_url: String,
+    pub bootstrap_multiaddrs: Vec<String>,
+    pub node_key_path: PathBuf,
+    pub transport_key_path: PathBuf,
+    pub config_path: PathBuf,
+    pub authority_key_path: PathBuf,
+    pub provisional_marker_path: PathBuf,
+    pub onboarding: Arc<RwLock<OnboardingStatus>>,
     pub replica_loads: Arc<Mutex<HashMap<uuid::Uuid, Arc<AtomicU64>>>>,
     pub peer_nonces: Arc<Mutex<HashMap<String, u64>>>,
     pub peer_quota: Arc<Semaphore>,
     pub peer: Arc<RwLock<Option<PeerBundle>>>,
+    pub peer_handle: Arc<Mutex<Option<dllm_transport::peer::PeerNodeHandle>>>,
 
     pub budget_enforcer: Arc<BudgetEnforcer>,
     pub rate_limiter: Arc<RateLimiter<String>>,
@@ -68,6 +76,29 @@ pub struct Metrics {
     upstream_failures: AtomicU64,
     request_bytes: AtomicU64,
     response_bytes: AtomicU64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", tag = "state")]
+pub enum OnboardingStatus {
+    #[default]
+    Inactive,
+    Joining {
+        authority_url: String,
+        detail: String,
+    },
+    Active {
+        authority_url: String,
+    },
+    Failed {
+        authority_url: String,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Deserialize)]
+struct StartOnboardingRequest {
+    authority_url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,6 +248,7 @@ pub fn router(state: ApiState) -> Router {
             axum::routing::delete(revoke_credential),
         )
         .route("/v1/moderation/bans", post(ban_node).delete(unban_node))
+        .route("/v1/onboarding/start", post(start_onboarding))
         .route(
             "/v1/abuse-reports",
             get(list_abuse_reports).post(submit_abuse_report),
@@ -264,12 +296,15 @@ pub fn router(state: ApiState) -> Router {
             rate_limit_state,
             rate_limit_access_request,
         ));
+    let mode_state = state.onboarding.clone();
     Router::new()
         .route("/", get(ui))
         .route("/health", get(|| async { StatusCode::OK }))
         .route("/health/runtime", get(runtime_health))
+        .route("/v1/onboarding/status", get(onboarding_status))
         .route("/metrics", get(metrics))
         .route("/v1/members/join", post(join))
+        .route("/v1/state/fetch", post(fetch_state))
         .merge(access_request_route)
         .merge(viewer)
         .merge(operator)
@@ -277,7 +312,333 @@ pub fn router(state: ApiState) -> Router {
         .merge(inference)
         .merge(peer)
         .fallback(get(spa_fallback))
+        .route_layer(middleware::from_fn_with_state(
+            mode_state,
+            require_active_mode,
+        ))
         .with_state(state)
+}
+
+async fn require_active_mode(
+    State(onboarding): State<Arc<RwLock<OnboardingStatus>>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    let allowed = matches!(
+        request.uri().path(),
+        "/health" | "/v1/onboarding/status" | "/v1/onboarding/start"
+    );
+    if !allowed && matches!(*onboarding.read().await, OnboardingStatus::Joining { .. }) {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "daemon is joining a network",
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+async fn onboarding_status(State(state): State<ApiState>) -> Json<OnboardingStatus> {
+    Json(state.onboarding.read().await.clone())
+}
+
+async fn start_onboarding(
+    State(state): State<ApiState>,
+    Json(request): Json<StartOnboardingRequest>,
+) -> Result<(StatusCode, Json<OnboardingStatus>), (StatusCode, String)> {
+    start_onboarding_workflow(state, request.authority_url).await
+}
+
+pub async fn start_onboarding_workflow(
+    state: ApiState,
+    authority_url: String,
+) -> Result<(StatusCode, Json<OnboardingStatus>), (StatusCode, String)> {
+    let authority_url = authority_url.trim_end_matches('/').to_owned();
+    let parsed_url = reqwest::Url::parse(&authority_url)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "invalid authority URL".into()))?;
+    let is_loopback_host = matches!(
+        parsed_url.host_str(),
+        Some("127.0.0.1") | Some("localhost") | Some("::1")
+    );
+    let allowed =
+        parsed_url.scheme() == "https" || (parsed_url.scheme() == "http" && is_loopback_host);
+    if !allowed {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "remote onboarding requires HTTPS".into(),
+        ));
+    }
+    {
+        let current = state.onboarding.read().await;
+        match &*current {
+            OnboardingStatus::Joining {
+                authority_url: active,
+                ..
+            }
+            | OnboardingStatus::Active {
+                authority_url: active,
+            } if active == &authority_url => {
+                return Ok((StatusCode::OK, Json(current.clone())));
+            }
+            OnboardingStatus::Joining { .. } => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "onboarding is already running for another authority".into(),
+                ));
+            }
+            OnboardingStatus::Active {
+                authority_url: active,
+            } => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "already an active member of {active}; switching networks requires manual intervention"
+                    ),
+                ));
+            }
+            _ => {}
+        }
+    }
+    {
+        let store = state.store.lock().await;
+        if store.owner_key.is_some() {
+            let marker = std::fs::read(&state.provisional_marker_path).map_err(|_| {
+                (StatusCode::CONFLICT, "this is an established authority network and cannot be abandoned automatically".into())
+            })?;
+            let marker: serde_json::Value = serde_json::from_slice(&marker).map_err(|_| {
+                (
+                    StatusCode::CONFLICT,
+                    "the provisional network marker is invalid".into(),
+                )
+            })?;
+            if !store.state.state.members.is_empty()
+                || marker["generation"].as_u64() != Some(store.state.state.generation)
+                || marker["authority_pubkey"] != serde_json::json!(store.state.state.owner_pubkey)
+            {
+                return Err((
+                    StatusCode::CONFLICT,
+                    "the provisional network has changed and must be migrated explicitly".into(),
+                ));
+            }
+            let archive = state
+                .state_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("archive")
+                .join(format!("provisional-{}", now_unix()));
+            std::fs::create_dir_all(&archive)
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            std::fs::copy(&state.state_path, archive.join("state.json"))
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            std::fs::copy(&state.authority_key_path, archive.join("authority.key"))
+                .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+            // The running peer transport (if any) is left alone here and only torn
+            // down once run_onboarding actually confirms the new network, so a
+            // failed join doesn't leave P2P permanently disabled.
+        }
+    }
+    let joining = OnboardingStatus::Joining {
+        authority_url: authority_url.clone(),
+        detail: "submitting access request".into(),
+    };
+    *state.onboarding.write().await = joining.clone();
+    let task_state = state.clone();
+    tokio::spawn(async move {
+        if let Err(detail) = run_onboarding(task_state.clone(), authority_url.clone()).await {
+            *task_state.onboarding.write().await = OnboardingStatus::Failed {
+                authority_url,
+                detail,
+            };
+        }
+    });
+    Ok((StatusCode::ACCEPTED, Json(joining)))
+}
+
+async fn run_onboarding(state: ApiState, authority_url: String) -> Result<(), String> {
+    let node_key =
+        NetworkStore::load_owner_key(&state.node_key_path).map_err(|error| error.to_string())?;
+    let transport_key = dllm_transport::peer::load_or_create_identity(&state.transport_key_path)
+        .map_err(|error| error.to_string())?;
+    let node_pubkey = node_key.verifying_key().to_bytes();
+    let access = SignedAccessRequest::sign(
+        AccessRequest {
+            node_pubkey,
+            requested_endpoint: state.public_url.clone(),
+            note: "onboard".into(),
+            requested_at_unix: now_unix(),
+            transport_peer_id: Some(transport_key.public().to_peer_id().to_string()),
+        },
+        &node_key,
+    );
+    // Bounds both loops below so a bad authority_url, a denied request, or a
+    // clock-skewed node fails into OnboardingStatus::Failed (which unblocks
+    // require_active_mode) instead of retrying forever.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+    let mut retry_seconds = 1;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("timed out submitting access request after 10 minutes".into());
+        }
+        match state
+            .client
+            .post(format!("{authority_url}/v1/access-requests"))
+            .json(&serde_json::json!({ "request": access }))
+            .send()
+            .await
+        {
+            Ok(response)
+                if response.status().is_success() || response.status() == StatusCode::CONFLICT =>
+            {
+                break;
+            }
+            Ok(response) if response.status() == StatusCode::FORBIDDEN => {
+                return Err(format!(
+                    "access request rejected with {}",
+                    response.status()
+                ));
+            }
+            _ => {
+                *state.onboarding.write().await = OnboardingStatus::Joining {
+                    authority_url: authority_url.clone(),
+                    detail: "retrying access request".into(),
+                };
+                tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
+                retry_seconds = (retry_seconds * 2).min(30);
+            }
+        }
+    }
+    *state.onboarding.write().await = OnboardingStatus::Joining {
+        authority_url: authority_url.clone(),
+        detail: "waiting for approval".into(),
+    };
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(
+                "timed out waiting for approval after 10 minutes; the request may still be \
+                 pending or may have been declined, check with the network authority"
+                    .into(),
+            );
+        }
+        let fetch = SignedStateFetchRequest::sign(
+            StateFetchRequest {
+                node_pubkey,
+                requested_at_unix: now_unix(),
+            },
+            &node_key,
+        );
+        if let Ok(response) = state
+            .client
+            .post(format!("{authority_url}/v1/state/fetch"))
+            .json(&fetch)
+            .send()
+            .await
+        {
+            let status = response.status();
+            if status.is_success() {
+                let fetched: StateFetchResponse =
+                    response.json().await.map_err(|error| error.to_string())?;
+                fetched.state.verify().map_err(|error| error.to_string())?;
+                if !fetched
+                    .state
+                    .state
+                    .members
+                    .iter()
+                    .any(|member| member.node_pubkey == node_pubkey)
+                {
+                    return Err("fetched state does not include the local node".into());
+                }
+                for address in &fetched.bootstrap_multiaddrs {
+                    address
+                        .parse::<dllm_transport::peer::Multiaddr>()
+                        .map_err(|error| error.to_string())?;
+                }
+                crate::local_config::update_p2p_bootstrap(
+                    &state.config_path,
+                    fetched.bootstrap_multiaddrs,
+                )
+                .map_err(|error| error.to_string())?;
+                let replica = NetworkStore::from_signed_state(fetched.state)
+                    .map_err(|error| error.to_string())?;
+                // The fetched state verified and includes this node, so the join is
+                // confirmed: safe to retire any previous peer transport now. The
+                // state-file write below wakes spawn_peer_watcher, which starts a
+                // fresh peer for the new network.
+                if let Some(handle) = state.peer_handle.lock().await.take() {
+                    handle.abort();
+                }
+                *state.peer.write().await = None;
+                replica
+                    .save(&state.state_path)
+                    .map_err(|error| error.to_string())?;
+                *state.store.lock().await = replica;
+                if state.provisional_marker_path.exists() {
+                    std::fs::remove_file(&state.provisional_marker_path)
+                        .map_err(|error| error.to_string())?;
+                }
+                *state.onboarding.write().await = OnboardingStatus::Active { authority_url };
+                return Ok(());
+            }
+            // A clock-skewed or otherwise invalid signature won't heal by
+            // retrying, and a ban is a terminal answer -- both fail fast
+            // instead of retrying until the deadline. "not a current member"
+            // (still pending review) keeps retrying below.
+            if status == StatusCode::UNAUTHORIZED {
+                let detail = response.text().await.unwrap_or_default();
+                return Err(format!(
+                    "state fetch was rejected as unauthorized ({detail}); check that this \
+                     node's clock is in sync with the authority"
+                ));
+            }
+            if status == StatusCode::FORBIDDEN {
+                let detail = response.text().await.unwrap_or_default();
+                if detail.contains("banned") {
+                    return Err(format!("access denied: {detail}"));
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+
+async fn fetch_state(
+    State(state): State<ApiState>,
+    Json(request): Json<SignedStateFetchRequest>,
+) -> Result<Json<StateFetchResponse>, (StatusCode, &'static str)> {
+    request
+        .verify()
+        .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid state fetch signature"))?;
+    let now = now_unix();
+    if request.request.requested_at_unix.abs_diff(now) > 60 {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "state fetch timestamp is outside the allowed window",
+        ));
+    }
+    let store = state.store.lock().await;
+    let node_pubkey = request.request.node_pubkey;
+    if store
+        .state
+        .state
+        .banned
+        .iter()
+        .any(|ban| ban.node_pubkey == node_pubkey)
+    {
+        return Err((StatusCode::FORBIDDEN, "node is banned"));
+    }
+    let member = node_pubkey == store.state.state.owner_pubkey
+        || store
+            .state
+            .state
+            .members
+            .iter()
+            .any(|member| member.node_pubkey == node_pubkey);
+    if !member {
+        return Err((StatusCode::FORBIDDEN, "node is not a current member"));
+    }
+    Ok(Json(StateFetchResponse {
+        state: store.state.clone(),
+        bootstrap_multiaddrs: state.bootstrap_multiaddrs.clone(),
+    }))
 }
 
 pub fn multi_network_router(primary: ApiState, additional: Vec<(uuid::Uuid, ApiState)>) -> Router {
@@ -311,7 +672,7 @@ async fn peer_network_status(
 }
 
 async fn runtime_is_ready(state: &ApiState) -> bool {
-    match state.runtime_url.as_ref() {
+    match state.runtime_url.read().await.clone() {
         Some(url) => state
             .client
             .get(format!("{url}/health"))
@@ -734,7 +1095,12 @@ async fn approve_access_request(
             pending.requested_endpoint.clone()
         }
     };
-    store.approve_access_request(node_pubkey, endpoint)?;
+    store.approve_access_request_with_transport(
+        node_pubkey,
+        endpoint,
+        now_unix(),
+        crate::AUTOMATIC_BINDING_LIFETIME_SECS,
+    )?;
     store.save(&state.state_path)?;
     Ok(Json(MutationResponse {
         generation: store.state.state.generation,
@@ -1518,12 +1884,9 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
     let mut candidates = Vec::new();
     for placement in placements {
         let (runtime_url, peer, ready) = if placement.node_pubkey == owner {
-            if state.runtime_url.is_some() {
-                (
-                    state.runtime_url.clone().unwrap_or_default(),
-                    false,
-                    runtime_is_ready(state).await,
-                )
+            let local_runtime = state.runtime_url.read().await.clone();
+            if let Some(runtime_url) = local_runtime {
+                (runtime_url, false, runtime_is_ready(state).await)
             } else {
                 // We are a replica without a local runtime. Route to the owner via libp2p.
                 let peer_id = state
@@ -1795,6 +2158,7 @@ impl IntoResponse for ApiError {
             Self::Store(
                 StoreError::BindingNodeUnknown
                 | StoreError::InvalidBindingLifetime
+                | StoreError::InvalidTransportPeerId
                 | StoreError::TransportPeerIdInUse
                 | StoreError::ForwardingNodeUnknown
                 | StoreError::State(dllm_protocol::StateError::InvalidTransportPeerId),
@@ -1804,12 +2168,15 @@ impl IntoResponse for ApiError {
                 "transport binding generation is stale",
             )
                 .into_response(),
+            Self::Store(
+                StoreError::AccessRequestAlreadyPending | StoreError::AccessRequestAlreadyMember,
+            ) => (StatusCode::CONFLICT, "access request already exists").into_response(),
             Self::Store(StoreError::BindingNotFound) => {
                 (StatusCode::NOT_FOUND, "active transport binding not found").into_response()
             }
             Self::Store(StoreError::OwnerAuthorityUnavailable) => (
                 StatusCode::FORBIDDEN,
-                "this node does not hold owner authority",
+                "this node does not hold network authority",
             )
                 .into_response(),
             Self::Store(error) => {
@@ -1878,7 +2245,7 @@ mod tests {
         ApiState {
             store: Arc::new(Mutex::new(NetworkStore::create("test"))),
             state_path: std::env::temp_dir().join("dllmd-api-test-state.json"),
-            runtime_url,
+            runtime_url: Arc::new(RwLock::new(runtime_url)),
             admission: Arc::new(Semaphore::new(1)),
             client: reqwest::Client::new(),
             management_credentials: Arc::new(RwLock::new(
@@ -1889,10 +2256,18 @@ mod tests {
             peer_api_key: None,
             metrics: Arc::new(Metrics::default()),
             public_url: "http://127.0.0.1:7337".into(),
+            bootstrap_multiaddrs: Vec::new(),
+            node_key_path: std::env::temp_dir().join("dllmd-test-node.key"),
+            transport_key_path: std::env::temp_dir().join("dllmd-test-transport.key"),
+            config_path: std::env::temp_dir().join("dllmd-test-config.json"),
+            authority_key_path: std::env::temp_dir().join("dllmd-test-authority.key"),
+            provisional_marker_path: std::env::temp_dir().join("dllmd-test-provisional.json"),
+            onboarding: Arc::new(RwLock::new(OnboardingStatus::Inactive)),
             replica_loads: Arc::new(Mutex::new(HashMap::new())),
             peer_nonces: Arc::new(Mutex::new(HashMap::new())),
             peer_quota: Arc::new(Semaphore::new(1)),
             peer: Arc::new(RwLock::new(None)),
+            peer_handle: Arc::new(Mutex::new(None)),
             budget_enforcer: Arc::new(crate::budget::BudgetEnforcer::new()),
             rate_limiter: Arc::new(crate::rate_limit::RateLimiter::new()),
             access_request_rate_config: crate::rate_limit::RateLimitConfig::default(),
@@ -1935,6 +2310,60 @@ mod tests {
                 peak_memory_bytes: 2_000_000_000,
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn state_fetch_requires_a_signed_current_member() {
+        let mut state = state(None, None);
+        state.bootstrap_multiaddrs = vec![format!("/ip4/127.0.0.1/tcp/7444/p2p/{PEER_A}")];
+        let member_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let member = member_key.verifying_key().to_bytes();
+        {
+            let mut store = state.store.lock().await;
+            let token = store.issue_join_token("http://authority".into(), None);
+            store
+                .redeem_join_token(token, member, "http://member".into())
+                .unwrap();
+        }
+        let signed = SignedStateFetchRequest::sign(
+            StateFetchRequest {
+                node_pubkey: member,
+                requested_at_unix: now_unix(),
+            },
+            &member_key,
+        );
+        let response = router(state.clone())
+            .oneshot(
+                Request::post("/v1/state/fetch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&signed).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let fetched: StateFetchResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(fetched.bootstrap_multiaddrs, state.bootstrap_multiaddrs);
+
+        let unknown_key = ed25519_dalek::SigningKey::generate(&mut rand::thread_rng());
+        let unknown = SignedStateFetchRequest::sign(
+            StateFetchRequest {
+                node_pubkey: unknown_key.verifying_key().to_bytes(),
+                requested_at_unix: now_unix(),
+            },
+            &unknown_key,
+        );
+        let response = router(state)
+            .oneshot(
+                Request::post("/v1/state/fetch")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_vec(&unknown).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
