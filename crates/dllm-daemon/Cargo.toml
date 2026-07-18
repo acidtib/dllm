@@ -18,6 +18,7 @@ futures-util.workspace = true
 hex = "0.4"
 hmac = "0.12"
 libp2p = { version = "0.56.0", features = ["tokio"] }
+notify = "8.2.0"
 rand.workspace = true
 reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
 rust-embed = "8"

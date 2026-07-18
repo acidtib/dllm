@@ -143,6 +143,17 @@ impl PeerClient {
     }
 }
 
+/// Everything ApiState needs once the local node's transport identity is
+/// authorized: diagnostics, the client used to reach other peers, and the
+/// auth view used to resolve peer IDs. Always populated or cleared
+/// together, since they share one lifecycle (the running libp2p node).
+#[derive(Clone)]
+pub struct PeerBundle {
+    pub diagnostics: tokio::sync::watch::Receiver<dllm_transport::peer::PeerDiagnostics>,
+    pub client: PeerClient,
+    pub auth_view: AuthView,
+}
+
 /// Spawn a background task that dispatches incoming stream events.
 pub fn spawn_dispatcher(peer_client: PeerClient, state: ApiState) -> tokio::task::JoinHandle<()> {
     let handle = peer_client.handle.clone();
