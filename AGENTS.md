@@ -20,6 +20,8 @@
 
 - `dllmd` (daemon) and `dllm` (CLI) are the only binaries users must install
   and operate. `dllm-dev-probe` is a diagnostic tool, not for production use.
+- `dllm-llama-server` is the bundled inference runtime `dllmd` spawns
+  automatically; it is not a binary users install or invoke directly.
 - Do not introduce a dedicated relay, discovery, bootstrap, or coordination
   service as a requirement.
 - Ordinary participating `dllmd` nodes provide discovery, NAT traversal, and
@@ -37,15 +39,20 @@
 ## Workspace crates
 
 ```
-crates/dllm-protocol  — Shared types: network state, membership, identity,
-                          policy, signed tokens, transport identity bindings
-crates/dllm-daemon     — Node daemon: API server, credentials, inference
-                          registry, network store (binary name: dllmd)
-crates/dllm-cli        — CLI client (binary name: dllm)
-crates/dllm-runtime    — Inference runtime: manages llama.cpp child processes
-crates/dllm-transport  — libp2p peer transport layer
-crates/dllm-probe      — Standalone libp2p diagnostic tool (binary name:
-                          dllm-dev-probe)
+crates/dllm-protocol     — Shared types: network state, membership, identity,
+                            policy, signed tokens, transport identity bindings
+crates/dllm-daemon       — Node daemon: API server, credentials, inference
+                            registry, network store (binary name: dllmd)
+crates/dllm-cli          — CLI client (binary name: dllm)
+crates/dllm-runtime      — Inference runtime: manages llama.cpp child processes
+                            (bundled dllm-llama-server, or an external
+                            llama-server-compatible binary)
+crates/dllm-transport    — libp2p peer transport layer
+crates/dllm-probe        — Standalone libp2p diagnostic tool (binary name:
+                            dllm-dev-probe)
+crates/dllm-llama-server — Bundled OpenAI-compatible llama.cpp server,
+                            vendored from llama-cpp-rs (binary name:
+                            dllm-llama-server)
 ```
 
 ## Key directories
@@ -58,21 +65,12 @@ scripts/     — Container and helper scripts
 apps/web/    — Web UI
 ```
 
-## Phase workflow
-
-- Each phase has an engineering log at `docs/PHASE<N>.md` with acceptance
-  criteria and a milestone checklist. Use the current phase's log as the
-  active implementation sequence.
-- A milestone is complete only after its implementation, automated coverage,
-  applicable physical validation, diagnostics, evidence, and cleanup pass.
-- Store structured milestone evidence under
-  `docs/results/phase<N>-results/<milestone>/summary.json`.
-- Physical validation may use SSH for deployment, administration, inspection,
-  and cleanup only.
-- Remove remote test services, binaries, temporary state, keys, firewall rules,
-  and listeners after validation.
-
 ## Task runner
+
+Building requires CMake, a C++ compiler, and `libclang` (for bindgen), since
+`dllm-llama-server` compiles llama.cpp from source. On Debian/Ubuntu:
+`sudo apt-get install -y cmake build-essential libclang-dev`. `mise install`
+does not provision these.
 
 Use [Mise](https://mise.jdx.dev/) to run project-wide tasks. After installing Mise, run:
 
