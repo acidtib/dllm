@@ -6,7 +6,7 @@ use dllm_daemon::{
     credentials::{CredentialRegistry, ManagementCredential},
     inference::{InferenceCredential, InferenceRegistry},
     rate_limit::{RateLimitConfig, RateLimiter},
-    NetworkStore,
+    NetworkStore, StoreError,
 };
 use dllm_protocol::now_unix;
 use dllm_runtime::{BundledModelSource, BundledRuntimeConfig, LlamaCppConfig, RuntimeWorker};
@@ -409,7 +409,16 @@ fn peer_config(
         .to_bytes();
     let transport_key = load_or_create_identity(&key_path)?;
     let local_peer = transport_key.public().to_peer_id();
-    store.authorize_transport_endpoint(local_node, &local_peer.to_string(), now_unix())?;
+    match store.authorize_transport_endpoint(local_node, &local_peer.to_string(), now_unix()) {
+        Ok(_) => {}
+        Err(StoreError::TransportIdentityUnauthorized) => {
+            println!(
+                "P2P enabled but this node is not yet authorized (waiting on owner approval) -- continuing without P2P"
+            );
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    }
 
     let bootstrap = std::env::var("DLLMD_P2P_BOOTSTRAP")
         .ok()
