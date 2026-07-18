@@ -44,6 +44,15 @@ See `docs/gpu-two-node-test.md` for a full GPU dev-node walkthrough:
 docker build -f docker/Dockerfile.dllmd --target runtime-cuda -t dllm-cuda .
 ```
 
+The CUDA target defaults to compute capability `61`, matching the GTX 1080
+development host and avoiding an expensive all-architectures llama.cpp build.
+Set `CUDA_ARCHITECTURES` explicitly for other hardware, for example:
+
+```sh
+docker build -f docker/Dockerfile.dllmd --target runtime-cuda \
+  --build-arg CUDA_ARCHITECTURES=86 -t dllm-cuda .
+```
+
 `dllmd` bundles its own inference runtime (`dllm-llama-server`, built from
 vendored llama.cpp source) and starts it automatically once you point it at a
 model, either a mounted GGUF file or a Hugging Face repo id. A model is still

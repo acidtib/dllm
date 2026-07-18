@@ -1,5 +1,6 @@
 ARG RUST_VERSION=1.96
 ARG CUDA_VERSION=12.9.1
+ARG CUDA_ARCHITECTURES=61
 ARG UBUNTU_VERSION=24.04
 
 FROM oven/bun:1 AS web-builder
@@ -33,6 +34,7 @@ RUN cargo build --release --locked --bin dllm-llama-server
 
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS llama-cuda-builder
 ARG RUST_VERSION
+ARG CUDA_ARCHITECTURES
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
@@ -41,6 +43,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
 ENV PATH=/root/.cargo/bin:${PATH}
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+ENV CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 COPY . .
 RUN cargo build --release --locked --bin dllm-llama-server \
     --features dllm-llama-server/cuda
