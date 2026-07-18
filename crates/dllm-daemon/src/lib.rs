@@ -55,6 +55,10 @@ pub fn default_transport_key_path() -> std::io::Result<PathBuf> {
     Ok(default_dir()?.join("transport.key"))
 }
 
+pub fn default_config_path() -> std::io::Result<PathBuf> {
+    Ok(default_dir()?.join("config.json"))
+}
+
 #[cfg(test)]
 mod default_dir_tests {
     use super::default_dir_in;
