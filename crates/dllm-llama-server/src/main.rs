@@ -198,8 +198,8 @@ fn run_fit(
         .with_n_ctx_min(n_ctx_min)
         .with_margins(margins);
     let log_level = options.log_level;
-    let fitted = fit_params(backend, model_path, options)
-        .map_err(|e| anyhow::anyhow!("fit failed: {e}"))?;
+    let fitted =
+        fit_params(backend, model_path, options).map_err(|e| anyhow::anyhow!("fit failed: {e}"))?;
     let n_gpu_layers = fitted.model_params.n_gpu_layers().max(0) as u32;
     let n_ctx = fitted
         .context_params
@@ -2363,8 +2363,13 @@ async fn main() -> std::io::Result<()> {
 
     if args.fit {
         let backend = LlamaBackend::init().map_err(|e| std::io::Error::other(e.to_string()))?;
-        let report = run_fit(&backend, &model_path, args.fit_n_ctx_min, args.fit_margin_bytes)
-            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let report = run_fit(
+            &backend,
+            &model_path,
+            args.fit_n_ctx_min,
+            args.fit_margin_bytes,
+        )
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
     }
