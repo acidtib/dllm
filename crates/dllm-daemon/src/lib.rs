@@ -60,6 +60,58 @@ pub fn default_config_path() -> std::io::Result<PathBuf> {
     Ok(default_dir()?.join("config.json"))
 }
 
+/// Default network name used at bootstrap when DLLMD_NETWORK isn't set.
+pub fn generate_network_name() -> String {
+    generate_network_name_with(&mut rand::thread_rng())
+}
+
+fn generate_network_name_with(rng: &mut impl rand::Rng) -> String {
+    let adjective = NETWORK_NAME_ADJECTIVES[rng.gen_range(0..NETWORK_NAME_ADJECTIVES.len())];
+    let noun = NETWORK_NAME_NOUNS[rng.gen_range(0..NETWORK_NAME_NOUNS.len())];
+    format!("dllm-{adjective}-{noun}")
+}
+
+const NETWORK_NAME_ADJECTIVES: &[&str] = &[
+    "amber", "ancient", "azure", "bold", "brave", "bright", "calm", "cedar", "clear",
+    "coral", "crisp", "deep", "dusky", "eager", "fierce", "gentle", "golden", "grand",
+    "hidden", "keen", "lively", "lucid", "misty", "noble", "quiet", "rapid", "rugged",
+    "sharp", "silent", "silver", "steady", "sturdy", "swift", "vivid", "warm", "wild",
+    "wise",
+];
+
+const NETWORK_NAME_NOUNS: &[&str] = &[
+    "badger", "beacon", "bison", "canyon", "cedar", "comet", "crane", "delta", "ember",
+    "falcon", "fjord", "forge", "glacier", "grove", "harbor", "heron", "island", "juniper",
+    "lantern", "lynx", "meadow", "mesa", "meteor", "otter", "peak", "pine", "quartz",
+    "raven", "reef", "ridge", "river", "sparrow", "summit", "tundra", "valley", "willow",
+    "wolf",
+];
+
+#[cfg(test)]
+mod network_name_tests {
+    use super::{generate_network_name_with, NETWORK_NAME_ADJECTIVES, NETWORK_NAME_NOUNS};
+    use rand::SeedableRng;
+
+    #[test]
+    fn produces_dllm_prefixed_adjective_noun_name() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let name = generate_network_name_with(&mut rng);
+        let rest = name.strip_prefix("dllm-").expect("missing dllm- prefix");
+        let parts: Vec<&str> = rest.split('-').collect();
+        assert_eq!(parts.len(), 2);
+        assert!(NETWORK_NAME_ADJECTIVES.contains(&parts[0]));
+        assert!(NETWORK_NAME_NOUNS.contains(&parts[1]));
+    }
+
+    #[test]
+    fn varies_across_calls() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let names: std::collections::HashSet<String> =
+            (0..20).map(|_| generate_network_name_with(&mut rng)).collect();
+        assert!(names.len() > 1);
+    }
+}
+
 #[cfg(test)]
 mod default_dir_tests {
     use super::default_dir_in;
