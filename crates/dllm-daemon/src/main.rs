@@ -26,6 +26,12 @@ use tokio::{
     sync::{Mutex, Semaphore},
 };
 
+/// Lifetime for the owner's self-signed transport binding created at
+/// bootstrap. Long enough to never expire in practice; the owner can
+/// revoke or rebind at any time via `dllm bind-transport --owner` /
+/// `dllm revoke-transport --owner`.
+const OWNER_SELF_BINDING_LIFETIME_SECS: u64 = 100 * 365 * 24 * 60 * 60;
+
 #[derive(Deserialize)]
 struct AdditionalNetworkConfig {
     name: String,
@@ -110,8 +116,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             NetworkStore::load_replica(&state_path)?
         }
     } else {
-        let store = NetworkStore::create(network_name);
+        let mut store = NetworkStore::create(network_name);
         store.save_owner_key(&owner_key_path)?;
+        if env_bool("DLLMD_P2P_ENABLED", false)? {
+            let transport_key_path = resolve_transport_key_path()?;
+            let transport_key = load_or_create_identity(&transport_key_path)?;
+            let local_peer = transport_key.public().to_peer_id();
+            let owner_pubkey = store.state.state.owner_pubkey;
+            let issued_at = now_unix();
+            let binding_generation = store.next_binding_generation(owner_pubkey);
+            store.bind_transport_endpoint(
+                owner_pubkey,
+                local_peer.to_string(),
+                binding_generation,
+                issued_at,
+                issued_at + OWNER_SELF_BINDING_LIFETIME_SECS,
+            )?;
+        }
         store.save(&state_path)?;
         store
     };
