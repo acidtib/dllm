@@ -21,6 +21,7 @@ pub mod backup;
 pub mod budget;
 pub mod credentials;
 pub mod inference;
+pub mod local_config;
 pub mod peer_service;
 pub mod rate_limit;
 
