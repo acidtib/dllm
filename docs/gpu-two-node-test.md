@@ -23,17 +23,19 @@ mise run dev:gpu-nodes
 ```
 
 This creates `.dev-gpu/node-a/` and `.dev-gpu/node-b/` as the host user, pulls
-`ghcr.io/acidtib/dllm:cuda`, and starts node-a detached on GPU 0.
+`ghcr.io/acidtib/dllm:cuda-sm61`, and starts node-a detached on GPU 0.
 `.dev-gpu/node-a/` holds its state and keys. On first boot it downloads the
 model, creates its identities, and self-binds as owner of a new network.
 
-The `Docker images` GitHub Actions workflow is manually triggered from the
-Actions tab. It builds and publishes `:cpu`, `:cuda`, and `:vulkan` tags, plus
-immutable tags containing the source commit SHA. To test a specific build or
-another registry, set `DLLM_DEV_GPU_IMAGE` before running the Mise task:
+The `CUDA runtime images` GitHub Actions workflow is manually triggered from
+the Actions tab. It builds the selected architecture-specific runtime and
+publishes the corresponding DLLM image. The regular `Docker images` workflow
+reuses the `sm61` runtime rather than recompiling CUDA. To test a specific
+build or another registry, set `DLLM_DEV_GPU_IMAGE` before running the Mise
+task:
 
 ```sh
-DLLM_DEV_GPU_IMAGE=ghcr.io/acidtib/dllm:cuda-<commit-sha> \
+DLLM_DEV_GPU_IMAGE=ghcr.io/acidtib/dllm:cuda-sm61-<commit-sha> \
   mise run dev:gpu-nodes
 ```
 

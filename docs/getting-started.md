@@ -21,12 +21,23 @@ the manually triggered `Docker images` workflow:
 
 ```sh
 docker pull ghcr.io/acidtib/dllm:cpu
-docker pull ghcr.io/acidtib/dllm:cuda
+docker pull ghcr.io/acidtib/dllm:cuda-sm61
 docker pull ghcr.io/acidtib/dllm:vulkan
 ```
 
-The workflow also publishes immutable `<variant>-<commit-sha>` tags. Use those
-when a deployment must remain pinned to one source revision.
+CUDA images are architecture-specific. The suffix is the NVIDIA compute
+capability, such as `sm61` for Pascal or `sm86` for Ampere. The `CUDA runtime
+images` workflow publishes one image per selected architecture. It compiles
+the expensive CUDA runtime separately so routine DLLM image builds can reuse
+it. The workflows also publish tags containing the source commit SHA. Use
+those when a deployment must remain pinned to one source revision.
+
+Available CUDA tags are `cuda-sm61`, `cuda-sm70`, `cuda-sm75`, `cuda-sm80`,
+`cuda-sm86`, `cuda-sm89`, `cuda-sm90`, `cuda-sm100`, and `cuda-sm120`. Select
+the tag matching the GPU's compute capability. Increment the workflow's
+runtime version input when llama.cpp, its Rust wrapper, CUDA, NCCL, or the
+runtime build configuration changes. Routine DLLM source changes do not need
+a new CUDA runtime version.
 
 To build locally instead, run from the repository root.
 `docker/Dockerfile.dllmd` has
@@ -41,16 +52,23 @@ For GPU-backed inference, build `runtime-cuda` or `runtime-vulkan` instead.
 See `docs/gpu-two-node-test.md` for a full GPU dev-node walkthrough:
 
 ```sh
-docker build -f docker/Dockerfile.dllmd --target runtime-cuda -t dllm-cuda .
+docker build -f docker/Dockerfile.cuda-runtime \
+  --build-arg CUDA_ARCHITECTURES=61 -t dllm:cuda-runtime-sm61-v1 .
+docker build -f docker/Dockerfile.dllmd --target runtime-cuda \
+  --build-arg CUDA_RUNTIME_IMAGE=dllm:cuda-runtime-sm61-v1 \
+  -t dllm:cuda-sm61 .
 ```
 
-The CUDA target defaults to compute capability `61`, matching the GTX 1080
+The CUDA runtime defaults to compute capability `61`, matching the GTX 1080
 development host and avoiding an expensive all-architectures llama.cpp build.
-Set `CUDA_ARCHITECTURES` explicitly for other hardware, for example:
+Set `CUDA_ARCHITECTURES` on the runtime build for other hardware, for example:
 
 ```sh
+docker build -f docker/Dockerfile.cuda-runtime \
+  --build-arg CUDA_ARCHITECTURES=86 -t dllm:cuda-runtime-sm86-v1 .
 docker build -f docker/Dockerfile.dllmd --target runtime-cuda \
-  --build-arg CUDA_ARCHITECTURES=86 -t dllm-cuda .
+  --build-arg CUDA_RUNTIME_IMAGE=dllm:cuda-runtime-sm86-v1 \
+  -t dllm:cuda-sm86 .
 ```
 
 `dllmd` bundles its own inference runtime (`dllm-llama-server`, built from

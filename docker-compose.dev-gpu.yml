@@ -1,6 +1,6 @@
 services:
   node-a:
-    image: ${DLLM_DEV_GPU_IMAGE:-ghcr.io/acidtib/dllm:cuda}
+    image: ${DLLM_DEV_GPU_IMAGE:-ghcr.io/acidtib/dllm:cuda-sm61}
     pull_policy: ${DLLM_DEV_GPU_PULL_POLICY:-always}
     network_mode: host
     environment:
@@ -24,7 +24,7 @@ services:
               capabilities: ["gpu"]
 
   node-b:
-    image: ${DLLM_DEV_GPU_IMAGE:-ghcr.io/acidtib/dllm:cuda}
+    image: ${DLLM_DEV_GPU_IMAGE:-ghcr.io/acidtib/dllm:cuda-sm61}
     pull_policy: ${DLLM_DEV_GPU_PULL_POLICY:-always}
     network_mode: host
     environment:
