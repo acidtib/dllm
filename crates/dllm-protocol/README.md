@@ -12,4 +12,7 @@ Defines the core data structures and validation logic for network state, members
 - `SignedState` - Owner-signed state with signature verification
 - `JoinToken` / `SignedJoinToken` - Single-use membership tokens
 - `TransportEndpointBinding` - Transport identity bindings
+- `HardwareProfile` / `HardwareBenchmark` - Per-node accelerator and measured throughput data used for placement
+- `ModelAssignment` / `Placement` - Model-to-node assignment and versioned placement state
+- `Member` / `NodeStatus` - Network membership and node health/reachability
 - `now_unix()` / `now_ms()` - Time utilities
