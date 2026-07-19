@@ -78,10 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     load_or_create_identity(&transport_key_path)?;
     let config_path = dllm_daemon::default_config_path()?;
     let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
-    let admission_limit = std::env::var("DLLMD_ADMISSION_LIMIT")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(1);
+    let admission_limit = parse_env("DLLMD_ADMISSION_LIMIT", 1);
     let (management_token, management_token_generated) =
         dllm_daemon::local_config::resolve_management_token()?;
     if management_token_generated {
@@ -619,15 +616,9 @@ async fn start_configured_runtime(
             binary: binary.into(),
             model: model.into(),
             host: "127.0.0.1".into(),
-            port: std::env::var("DLLMD_RUNTIME_PORT")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(8081),
+            port: parse_env("DLLMD_RUNTIME_PORT", 8081),
             gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
-            context_size: std::env::var("DLLMD_CONTEXT_SIZE")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(2048),
+            context_size: parse_env("DLLMD_CONTEXT_SIZE", 2048),
             extra_args: vec![],
         };
         let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
@@ -685,14 +676,8 @@ async fn start_configured_runtime(
         let request = dllm_runtime::FitRequest {
             binary: bundled_runtime_binary()?,
             model: model.clone(),
-            n_ctx_min: std::env::var("DLLMD_FIT_N_CTX_MIN")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(4096),
-            margin_bytes: std::env::var("DLLMD_FIT_MARGIN_BYTES")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(1_073_741_824),
+            n_ctx_min: parse_env("DLLMD_FIT_N_CTX_MIN", 4096),
+            margin_bytes: parse_env("DLLMD_FIT_MARGIN_BYTES", 1_073_741_824),
         };
         match dllm_runtime::run_fit(&request).await {
             Ok(report) => Some(report),
@@ -714,10 +699,7 @@ async fn start_configured_runtime(
         binary: bundled_runtime_binary()?,
         model,
         host: "127.0.0.1".into(),
-        port: std::env::var("DLLMD_RUNTIME_PORT")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(8081),
+        port: parse_env("DLLMD_RUNTIME_PORT", 8081),
         gpu_layers,
         context_size: Some(context_size),
         api_key: None,
@@ -1094,6 +1076,13 @@ async fn try_activate_watched_peer(
     }
 }
 
+fn parse_env<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
 fn env_bool(name: &str, default: bool) -> Result<bool, Box<dyn std::error::Error>> {
     match std::env::var(name) {
         Ok(value) => match value.as_str() {
@@ -1307,5 +1296,16 @@ mod tests {
         assert_eq!(resolve_gpu_config(None, None, None, Some(&fit)), (20, 8192));
         // nothing available, hardcoded fallback
         assert_eq!(resolve_gpu_config(None, None, None, None), (38, 2048));
+    }
+
+    #[test]
+    fn parse_env_falls_back_to_default_on_missing_or_invalid_value() {
+        assert_eq!(parse_env::<u32>("DLLM_TEST_PARSE_ENV_UNSET_VAR", 7), 7);
+        std::env::set_var("DLLM_TEST_PARSE_ENV_VALID", "42");
+        assert_eq!(parse_env::<u32>("DLLM_TEST_PARSE_ENV_VALID", 7), 42);
+        std::env::set_var("DLLM_TEST_PARSE_ENV_INVALID", "not-a-number");
+        assert_eq!(parse_env::<u32>("DLLM_TEST_PARSE_ENV_INVALID", 7), 7);
+        std::env::remove_var("DLLM_TEST_PARSE_ENV_VALID");
+        std::env::remove_var("DLLM_TEST_PARSE_ENV_INVALID");
     }
 }
