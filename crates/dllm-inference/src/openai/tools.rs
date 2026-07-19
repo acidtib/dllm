@@ -23,10 +23,9 @@
 //! `role: "tool"` messages are passed through to `apply_chat_template` as-is
 //! (llama.cpp Jinja templates for Llama-3.1, Qwen2.5 etc. handle them natively).
 
+use crate::InferenceError;
 use serde_json::{json, Value};
 use std::fmt::Write as _;
-
-use crate::{bad_request, HttpError};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -113,38 +112,45 @@ impl ToolCall {
 // Parsing helpers
 // ---------------------------------------------------------------------------
 
-pub fn parse_tools(req: &Value) -> Result<Vec<ToolDef>, HttpError> {
+pub fn parse_tools(req: &Value) -> Result<Vec<ToolDef>, InferenceError> {
     match req.get("tools") {
         None | Some(Value::Null) => Ok(vec![]),
         Some(Value::Array(arr)) => arr
             .iter()
-            .map(|v| ToolDef::from_value(v).ok_or_else(|| bad_request("invalid tool definition")))
+            .map(|v| {
+                ToolDef::from_value(v)
+                    .ok_or_else(|| InferenceError::invalid("invalid tool definition"))
+            })
             .collect(),
-        _ => Err(bad_request("'tools' must be an array")),
+        _ => Err(InferenceError::invalid("'tools' must be an array")),
     }
 }
 
-pub fn parse_tool_choice(req: &Value) -> Result<ToolChoice, HttpError> {
+pub fn parse_tool_choice(req: &Value) -> Result<ToolChoice, InferenceError> {
     match req.get("tool_choice") {
         None | Some(Value::Null) => Ok(ToolChoice::Auto),
         Some(Value::String(s)) => match s.as_str() {
             "none" => Ok(ToolChoice::None),
             "auto" => Ok(ToolChoice::Auto),
             "required" => Ok(ToolChoice::Required),
-            other => Err(bad_request(format!("unknown tool_choice '{other}'"))),
+            other => Err(InferenceError::invalid(format!(
+                "unknown tool_choice '{other}'"
+            ))),
         },
         Some(v) if v.is_object() => {
             if v.get("type").and_then(Value::as_str) == Some("function") {
                 let name = v
                     .pointer("/function/name")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| bad_request("tool_choice.function.name is required"))?;
+                    .ok_or_else(|| {
+                        InferenceError::invalid("tool_choice.function.name is required")
+                    })?;
                 Ok(ToolChoice::Function(name.to_owned()))
             } else {
-                Err(bad_request("unsupported tool_choice type"))
+                Err(InferenceError::invalid("unsupported tool_choice type"))
             }
         }
-        _ => Err(bad_request(
+        _ => Err(InferenceError::invalid(
             "'tool_choice' must be \"none\"/\"auto\"/\"required\" or an object",
         )),
     }
@@ -217,11 +223,11 @@ pub fn inject_tools(messages: &mut Vec<(String, String)>, tools: &[ToolDef], cho
 /// - Assistant messages with `tool_calls` (serialised as `<tool_call>` blocks).
 /// - `role: "tool"` messages (passed through unchanged for Jinja templates that
 ///   understand them; the content is the tool result).
-pub fn normalise_messages(req: &Value) -> Result<Vec<(String, String)>, HttpError> {
+pub fn normalise_messages(req: &Value) -> Result<Vec<(String, String)>, InferenceError> {
     let arr = req
         .get("messages")
         .and_then(Value::as_array)
-        .ok_or_else(|| bad_request("'messages' must be an array"))?;
+        .ok_or_else(|| InferenceError::invalid("'messages' must be an array"))?;
 
     let mut out = Vec::with_capacity(arr.len());
 
@@ -229,7 +235,7 @@ pub fn normalise_messages(req: &Value) -> Result<Vec<(String, String)>, HttpErro
         let role = m
             .get("role")
             .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("each message must have a 'role' string"))?
+            .ok_or_else(|| InferenceError::invalid("each message must have a 'role' string"))?
             .to_owned();
 
         // --- assistant messages that carry tool_calls -----------------------
@@ -272,7 +278,11 @@ pub fn normalise_messages(req: &Value) -> Result<Vec<(String, String)>, HttpErro
             let content = match m.get("content") {
                 Some(Value::String(s)) => s.clone(),
                 Some(Value::Null) | None => String::new(),
-                _ => return Err(bad_request("tool message 'content' must be a string")),
+                _ => {
+                    return Err(InferenceError::invalid(
+                        "tool message 'content' must be a string",
+                    ))
+                }
             };
             let tool_call_id = m.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
             // Pass as "tool" role — the Jinja template handles it.
@@ -302,7 +312,7 @@ pub fn normalise_messages(req: &Value) -> Result<Vec<(String, String)>, HttpErro
                 .collect::<String>(),
             Some(Value::Null) | None => String::new(),
             _ => {
-                return Err(bad_request(
+                return Err(InferenceError::invalid(
                     "message 'content' must be a string or array of content parts",
                 ))
             }
@@ -411,11 +421,11 @@ pub enum ImageSource {
 pub fn normalise_messages_multimodal(
     req: &Value,
     media_marker: &str,
-) -> Result<(Vec<(String, String)>, Vec<ImageSource>), HttpError> {
+) -> Result<(Vec<(String, String)>, Vec<ImageSource>), InferenceError> {
     let arr = req
         .get("messages")
         .and_then(Value::as_array)
-        .ok_or_else(|| bad_request("'messages' must be an array"))?;
+        .ok_or_else(|| InferenceError::invalid("'messages' must be an array"))?;
 
     let mut out = Vec::with_capacity(arr.len());
     let mut sources: Vec<ImageSource> = Vec::new();
@@ -424,7 +434,7 @@ pub fn normalise_messages_multimodal(
         let role = m
             .get("role")
             .and_then(Value::as_str)
-            .ok_or_else(|| bad_request("each message must have a 'role' string"))?
+            .ok_or_else(|| InferenceError::invalid("each message must have a 'role' string"))?
             .to_owned();
 
         // ── assistant messages with tool_calls (same as normalise_messages) ─
@@ -462,7 +472,11 @@ pub fn normalise_messages_multimodal(
             let content = match m.get("content") {
                 Some(Value::String(s)) => s.clone(),
                 Some(Value::Null) | None => String::new(),
-                _ => return Err(bad_request("tool message 'content' must be a string")),
+                _ => {
+                    return Err(InferenceError::invalid(
+                        "tool message 'content' must be a string",
+                    ))
+                }
             };
             out.push((role, content));
             continue;
@@ -485,7 +499,9 @@ pub fn normalise_messages_multimodal(
                                 .and_then(|u| u.get("url"))
                                 .and_then(Value::as_str)
                                 .ok_or_else(|| {
-                                    bad_request("image_url part must have an 'image_url.url' field")
+                                    InferenceError::invalid(
+                                        "image_url part must have an 'image_url.url' field",
+                                    )
                                 })?;
                             sources.push(ImageSource::Url(url.to_owned()));
                             text.push_str(media_marker);
@@ -496,7 +512,7 @@ pub fn normalise_messages_multimodal(
                                 .and_then(|f| f.get("file_id"))
                                 .and_then(Value::as_str)
                                 .ok_or_else(|| {
-                                    bad_request(
+                                    InferenceError::invalid(
                                         "image_file part must have an 'image_file.file_id' field",
                                     )
                                 })?;
@@ -511,7 +527,7 @@ pub fn normalise_messages_multimodal(
 
             Some(Value::Null) | None => String::new(),
             _ => {
-                return Err(bad_request(
+                return Err(InferenceError::invalid(
                     "message 'content' must be a string or array of content parts",
                 ))
             }
@@ -531,8 +547,6 @@ pub fn normalise_messages_multimodal(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    // ── extract_tool_calls ───────────────────────────────────────────────────
 
     #[test]
     fn single_tool_call() {
@@ -571,18 +585,15 @@ mod tests {
     fn no_tool_calls_returns_full_text() {
         let out = "Hello! How can I help you today?";
         let (pre, calls) = extract_tool_calls(out);
-        // pre is only set when at least one <tool_call> is found
         assert!(calls.is_empty());
         assert_eq!(pre, "");
     }
 
     #[test]
     fn arguments_as_string_passthrough() {
-        // Some models emit arguments already as a JSON string (re-serialised).
         let out = r#"<tool_call>{"name":"fn","arguments":"{\"k\":\"v\"}"}</tool_call>"#;
         let (_, calls) = extract_tool_calls(out);
         assert_eq!(calls.len(), 1);
-        // arguments should be the raw value, not double-encoded
         assert!(calls[0].arguments.contains("k"));
     }
 
@@ -593,12 +604,8 @@ mod tests {
         let (_, c1) = extract_tool_calls(out1);
         std::thread::sleep(std::time::Duration::from_nanos(1));
         let (_, c2) = extract_tool_calls(out2);
-        // IDs are derived from subsecond time + name hash; not guaranteed unique
-        // in a nanosecond, but should differ across different names.
-        let _ = (c1, c2); // just ensure no panic
+        let _ = (c1, c2);
     }
-
-    // ── parse_tools ──────────────────────────────────────────────────────────
 
     #[test]
     fn parse_tools_openai_format() {
@@ -645,8 +652,6 @@ mod tests {
         assert!(parse_tools(&req).is_err());
     }
 
-    // ── parse_tool_choice ────────────────────────────────────────────────────
-
     #[test]
     fn tool_choice_strings() {
         for (s, expected) in [
@@ -680,8 +685,6 @@ mod tests {
         assert!(parse_tool_choice(&req).is_err());
     }
 
-    // ── inject_tools ─────────────────────────────────────────────────────────
-
     #[test]
     fn inject_creates_system_message_when_none_exists() {
         let tools = vec![ToolDef {
@@ -708,7 +711,6 @@ mod tests {
             ("user".into(), "hi".into()),
         ];
         inject_tools(&mut msgs, &tools, &ToolChoice::Auto);
-        // Still exactly one system message at position 0
         assert_eq!(msgs[0].0, "system");
         assert!(msgs[0].1.contains("<tools>"));
         assert!(msgs[0].1.contains("You are helpful."));
@@ -723,7 +725,6 @@ mod tests {
         }];
         let mut msgs: Vec<(String, String)> = vec![("user".into(), "hi".into())];
         inject_tools(&mut msgs, &tools, &ToolChoice::None);
-        // No system message injected
         assert_eq!(msgs[0].0, "user");
     }
 
@@ -738,8 +739,6 @@ mod tests {
         inject_tools(&mut msgs, &tools, &ToolChoice::Required);
         assert!(msgs[0].1.contains("MUST call"));
     }
-
-    // ── normalise_messages ───────────────────────────────────────────────────
 
     #[test]
     fn normalise_plain_messages() {
@@ -804,8 +803,6 @@ mod tests {
         let msgs = normalise_messages(&req).unwrap();
         assert_eq!(msgs[0].1, "Hello world");
     }
-
-    // ── ToolDef round-trip ───────────────────────────────────────────────────
 
     #[test]
     fn tool_def_round_trip() {

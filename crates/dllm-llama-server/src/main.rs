@@ -46,11 +46,12 @@
     clippy::case_sensitive_file_extension_comparisons
 )]
 
-mod tools;
-
 use actix_multipart::Multipart;
 use actix_web::{http::StatusCode, web, App, HttpRequest, HttpResponse, HttpServer};
 use clap::Parser;
+#[cfg(feature = "mtmd")]
+use dllm_inference::openai::ImageSource;
+use dllm_inference::openai::{self, PreparedChat};
 use dllm_inference::{InferenceError, InferenceModel, InferenceParams, ModelConfig, ModelSource};
 use futures_util::{stream, StreamExt as _};
 use serde_json::{json, Value};
@@ -62,9 +63,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{mpsc, RwLock, Semaphore};
-use tools::{extract_tool_calls, inject_tools, normalise_messages, parse_tool_choice, parse_tools};
-#[cfg(feature = "mtmd")]
-use tools::{normalise_messages_multimodal, ImageSource};
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -303,30 +301,6 @@ fn check_auth(req: &HttpRequest, state: &AppState) -> Option<HttpError> {
 }
 
 // ---------------------------------------------------------------------------
-// Request parsing
-// ---------------------------------------------------------------------------
-
-/// `OpenAI` uses `max_tokens`; newer clients may send `max_completion_tokens`.
-/// Used for the early sampling-parameter gate before prompt rendering.
-fn parse_max_tokens(req: &Value) -> Result<u32, HttpError> {
-    let raw = req
-        .get("max_completion_tokens")
-        .or_else(|| req.get("max_tokens"));
-    match raw {
-        None | Some(Value::Null) => Ok(1024),
-        Some(v) => {
-            let n = v
-                .as_u64()
-                .ok_or_else(|| bad_request("'max_tokens' must be a positive integer"))?;
-            if n == 0 {
-                return Err(bad_request("'max_tokens' must be > 0"));
-            }
-            u32::try_from(n).map_err(|_| bad_request("'max_tokens' is too large"))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Multimodal helpers (compiled only when the `mtmd` feature is active)
 // ---------------------------------------------------------------------------
 
@@ -490,320 +464,61 @@ async fn chat_completions(
         Err(e) => return error_response(bad_request(format!("invalid JSON: {e}"))),
     };
 
-    let streaming = parsed
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-
-    // ── Early parameter validation ────────────────────────────────────────────
-    // Validate sampling params *before* the expensive apply_chat_template call.
-    // This guarantees that invalid values (e.g. temperature < 0) return the
-    // correct 400 response rather than a 500 from a later failure.
-    {
-        let temperature = parsed
-            .get("temperature")
-            .and_then(Value::as_f64)
-            .unwrap_or(1.0) as f32;
-        if temperature < 0.0 {
-            return error_response(bad_request("'temperature' must be >= 0"));
-        }
-        let top_p = parsed.get("top_p").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-        if !(0.0 < top_p && top_p <= 1.0) {
-            return error_response(bad_request("'top_p' must be in (0, 1]"));
-        }
-        let top_k = parsed.get("top_k").and_then(Value::as_i64).unwrap_or(0) as i32;
-        if top_k < 0 {
-            return error_response(bad_request("'top_k' must be >= 0"));
-        }
-        if let Err(e) = parse_max_tokens(&parsed) {
-            return error_response(e);
-        }
-        if matches!(
-            parsed.get("grammar"),
-            Some(v) if !v.is_string() && !v.is_null()
-        ) {
-            return error_response(bad_request("'grammar' must be a GBNF string"));
-        }
-    }
-
-    // ── Parse tools ──────────────────────────────────────────────────────────
-    let tool_defs = match parse_tools(&parsed) {
-        Ok(t) => t,
-        Err(e) => return error_response(e),
-    };
-    let tool_choice = match parse_tool_choice(&parsed) {
-        Ok(c) => c,
-        Err(e) => return error_response(e),
-    };
-
-    // ── Parse messages (with multimodal support when available) ─────────────
-    // Always run the multimodal parser so we can count image parts, even when
-    // there is no projector — the count is used only for the warning.
-    #[cfg(feature = "mtmd")]
-    let (base_msg_pairs, image_sources) = {
-        let marker = dllm_inference::mtmd_default_marker();
-        tracing::debug!("mtmd media marker: {:?}", marker);
-        let (pairs, sources) = match normalise_messages_multimodal(&parsed, &marker) {
-            Ok(r) => r,
-            Err(e) => return error_response(e),
-        };
-        if !sources.is_empty() {
-            tracing::info!(
-                n_images = sources.len(),
-                mtmd_ctx_present = state.engine.has_mtmd(),
-                "Detected multimodal content in request"
-            );
-        }
-        if !sources.is_empty() && !state.engine.has_mtmd() {
-            tracing::warn!(
-                n_images = sources.len(),
-                "Request contains image(s) but the server was started without --mmproj. \
-                 Images will be IGNORED and the prompt processed as plain text. \
-                 Restart with `--mmproj <path-to-mmproj.gguf>` and a vision-capable model \
-                 to enable multimodal inference."
-            );
-            // Fall back to the text-only normaliser so markers are not left in the prompt.
-            match normalise_messages(&parsed) {
-                Ok(text_pairs) => (text_pairs, vec![]),
-                Err(e) => return error_response(e),
-            }
-        } else {
-            (pairs, sources)
-        }
-    };
-
-    #[cfg(not(feature = "mtmd"))]
-    let base_msg_pairs = match normalise_messages(&parsed) {
-        Ok(m) => m,
-        Err(e) => return error_response(e),
-    };
-
-    // ── Build prompt from messages ───────────────────────────────────────────
-    let prompt = {
-        let mut msg_pairs = base_msg_pairs;
-
-        // Inject tool definitions + usage instructions into the system message.
-        inject_tools(&mut msg_pairs, &tool_defs, &tool_choice);
-
-        let template_override = match parsed.get("chat_template") {
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(Value::Null) | None => None,
-            _ => return error_response(bad_request("'chat_template' must be a string")),
-        };
-        match state
-            .engine
-            .render_prompt(template_override.as_deref(), &msg_pairs)
-        {
-            Ok(p) => p,
-            Err(e) => return error_response(http_from(e)),
-        }
-    };
-
-    // ── Sampling params ───────────────────────────────────────────────────────
-    let mut params = match InferenceParams::from_request(&parsed, prompt) {
+    // Validation, tools, message normalization, and prompt rendering are shared
+    // with the daemon's embedded runtime through the openai module.
+    #[allow(unused_mut)]
+    let mut prepared = match openai::prepare_chat(&state.engine, &parsed) {
         Ok(p) => p,
         Err(e) => return error_response(http_from(e)),
     };
 
-    // ── Resolve image sources → raw bytes (mtmd path only) ───────────────────
+    // Resolve image sources to bytes: file-id lookups use this server's file
+    // store, URLs are fetched here.
     #[cfg(feature = "mtmd")]
-    if !image_sources.is_empty() {
-        tracing::info!("Resolving {} image source(s)…", image_sources.len());
-        match resolve_image_sources(image_sources, &state.file_store).await {
-            Ok(bytes) => {
-                tracing::info!(
-                    "Images ready: {} image(s), sizes: {:?}",
-                    bytes.len(),
-                    bytes.iter().map(|b| b.len()).collect::<Vec<_>>()
-                );
-                params.image_bytes = bytes;
-            }
+    if !prepared.image_sources.is_empty() {
+        let sources = std::mem::take(&mut prepared.image_sources);
+        tracing::info!("Resolving {} image source(s)…", sources.len());
+        match resolve_image_sources(sources, &state.file_store).await {
+            Ok(bytes) => prepared.params.image_bytes = bytes,
             Err(e) => return error_response(e),
         }
     }
 
-    // When tools are in play, give the model enough room to think and then emit
-    // a complete tool call (thinking models need extra tokens for their
-    // reasoning block before the tool call). Grammar-based forcing is
-    // intentionally NOT used: GBNF grammars conflict with special tokens such
-    // as <tool_call> and prevent thinking models from emitting reasoning. The
-    // system-prompt injection is sufficient for capable models.
-    if !tool_defs.is_empty() && params.max_tokens < 1024 {
-        params.max_tokens = 1024;
-    }
-
-    let model_name = parsed
-        .get("model")
-        .and_then(Value::as_str)
-        .unwrap_or(state.engine.model_name())
-        .to_owned();
-    let has_tools = !tool_defs.is_empty();
-    let created = now_secs();
-    let id = format!("chatcmpl-{created}");
-
-    if streaming {
-        run_chat_stream(state, params, id, model_name, created, has_tools).await
+    if prepared.meta.streaming {
+        run_chat_stream(state, prepared).await
     } else {
-        run_chat_blocking(state, params, id, model_name, created, has_tools).await
+        run_chat_blocking(state, prepared).await
     }
 }
 
-async fn run_chat_blocking(
-    state: web::Data<AppState>,
-    params: InferenceParams,
-    id: String,
-    model_name: String,
-    created: u64,
-    has_tools: bool,
-) -> HttpResponse {
+async fn run_chat_blocking(state: web::Data<AppState>, prepared: PreparedChat) -> HttpResponse {
     let permit = state.inference_semaphore.clone().acquire_owned().await;
     let state2 = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut raw = String::new();
-        let outcome = state2.engine.generate(&params, |piece| {
-            raw.push_str(piece);
-            true
-        });
-        outcome.map(|(tokens, reason)| (raw, tokens, reason))
+        openai::chat_blocking(&state2.engine, &prepared)
     })
     .await;
 
     match result {
-        Ok(Ok((raw_output, completion_tokens, finish_reason))) => {
-            let prompt_tokens = 0u32; // cheap approximation; full count needs a 2nd tokenise pass
-
-            // Parse tool calls out of the raw output.
-            let (content, tool_calls) = if has_tools {
-                extract_tool_calls(&raw_output)
-            } else {
-                (raw_output, vec![])
-            };
-
-            let (final_finish, message) = if tool_calls.is_empty() {
-                (
-                    finish_reason.as_str(),
-                    json!({ "role": "assistant", "content": content }),
-                )
-            } else {
-                let calls_json: Vec<Value> =
-                    tool_calls.iter().map(tools::ToolCall::to_value).collect();
-                (
-                    "tool_calls",
-                    json!({
-                        "role": "assistant",
-                        "content": if content.is_empty() { Value::Null } else { Value::String(content) },
-                        "tool_calls": calls_json
-                    }),
-                )
-            };
-
-            HttpResponse::Ok().content_type("application/json").body(
-                json!({
-                    "id": id,
-                    "object": "chat.completion",
-                    "created": created,
-                    "model": model_name,
-                    "choices": [{"index": 0, "message": message, "finish_reason": final_finish}],
-                    "usage": {
-                        "prompt_tokens": prompt_tokens,
-                        "completion_tokens": completion_tokens,
-                        "total_tokens": prompt_tokens + completion_tokens
-                    }
-                })
-                .to_string(),
-            )
-        }
+        Ok(Ok(value)) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(value.to_string()),
         Ok(Err(e)) => error_response(http_from(e)),
         Err(e) => error_response(internal_error(format!("inference task panicked: {e}"))),
     }
 }
 
-async fn run_chat_stream(
-    state: web::Data<AppState>,
-    params: InferenceParams,
-    id: String,
-    model_name: String,
-    created: u64,
-    has_tools: bool,
-) -> HttpResponse {
+async fn run_chat_stream(state: web::Data<AppState>, prepared: PreparedChat) -> HttpResponse {
     let (tx, rx) = mpsc::channel::<web::Bytes>(32);
-    let id2 = id.clone();
-    let model2 = model_name.clone();
 
     let permit = state.inference_semaphore.clone().acquire_owned().await;
     let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        const OBJ: &str = "chat.completion.chunk";
-
-        // First chunk: role delta.
-        let _ = tx.blocking_send(sse_chunk(&json!({
-            "id": id2, "object": OBJ, "created": created, "model": model2,
-            "choices": [{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]
-        })));
-
-        // Collect the whole output when tools are present so we can parse tool
-        // calls before streaming; otherwise stream token-by-token.
-        let mut finish_reason = dllm_inference::FinishReason::Stop;
-
-        if has_tools {
-            // Buffered mode: collect, parse, then emit.
-            let mut raw = String::new();
-            if let Ok((_, fr)) = state2.engine.generate(&params, |piece| {
-                raw.push_str(piece);
-                true
-            }) {
-                finish_reason = fr;
-            }
-
-            let (content, tool_calls) = extract_tool_calls(&raw);
-
-            if tool_calls.is_empty() {
-                // No tool calls — stream content as a single delta.
-                let _ = tx.blocking_send(sse_chunk(&json!({
-                    "id": id2, "object": OBJ, "created": created, "model": model2,
-                    "choices": [{"index":0,"delta":{"content":content},"finish_reason":null}]
-                })));
-                let _ = tx.blocking_send(sse_chunk(&json!({
-                    "id": id2, "object": OBJ, "created": created, "model": model2,
-                    "choices": [{"index":0,"delta":{},"finish_reason":finish_reason.as_str()}]
-                })));
-            } else {
-                // Emit tool_calls delta.
-                let calls_json: Vec<Value> =
-                    tool_calls.iter().map(tools::ToolCall::to_value).collect();
-                let content_val = if content.is_empty() {
-                    Value::Null
-                } else {
-                    Value::String(content)
-                };
-                let _ = tx.blocking_send(sse_chunk(&json!({
-                    "id": id2, "object": OBJ, "created": created, "model": model2,
-                    "choices": [{"index":0,"delta":{"content":content_val,"tool_calls":calls_json},"finish_reason":null}]
-                })));
-                let _ = tx.blocking_send(sse_chunk(&json!({
-                    "id": id2, "object": OBJ, "created": created, "model": model2,
-                    "choices": [{"index":0,"delta":{},"finish_reason":"tool_calls"}]
-                })));
-            }
-        } else {
-            // Pure streaming: emit each token piece immediately.
-            if let Ok((_, fr)) = state2.engine.generate(&params, |piece| {
-                tx.blocking_send(sse_chunk(&json!({
-                    "id": id2, "object": OBJ, "created": created, "model": model2,
-                    "choices": [{"index":0,"delta":{"content":piece},"finish_reason":null}]
-                })))
-                .is_ok()
-            }) {
-                finish_reason = fr;
-            }
-            let _ = tx.blocking_send(sse_chunk(&json!({
-                "id": id2, "object": OBJ, "created": created, "model": model2,
-                "choices": [{"index":0,"delta":{},"finish_reason":finish_reason.as_str()}]
-            })));
-        }
-
+        openai::chat_stream(&state2.engine, &prepared, |chunk| {
+            tx.blocking_send(sse_chunk(&chunk)).is_ok()
+        });
         let _ = tx.blocking_send(sse_done());
     });
 

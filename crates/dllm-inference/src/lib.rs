@@ -27,6 +27,7 @@
 mod embed;
 mod fit;
 mod generate;
+pub mod openai;
 mod resolve;
 mod tokenize;
 
