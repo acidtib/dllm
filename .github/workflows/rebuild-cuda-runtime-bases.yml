@@ -1,4 +1,4 @@
-name: CUDA runtime images
+name: Rebuild CUDA runtime bases
 
 on:
   workflow_dispatch:

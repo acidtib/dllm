@@ -17,7 +17,7 @@ node (for example a laptop), and sending your first chat completion request.
 ## Quick start with Docker
 
 Published images are available from GitHub Container Registry after running
-the manually triggered `Docker images` workflow:
+the manually triggered `Publish DLLM images` workflow:
 
 ```sh
 docker pull ghcr.io/acidtib/dllm:cpu
@@ -26,11 +26,11 @@ docker pull ghcr.io/acidtib/dllm:vulkan
 ```
 
 CUDA images are architecture-specific. The suffix is the NVIDIA compute
-capability, such as `sm61` for Pascal or `sm86` for Ampere. The `CUDA runtime
-images` workflow publishes one image per selected architecture. It compiles
-the expensive CUDA runtime separately so routine DLLM image builds can reuse
-it. The workflows also publish tags containing the source commit SHA. Use
-those when a deployment must remain pinned to one source revision.
+capability, such as `sm61` for Pascal or `sm86` for Ampere. The `Rebuild CUDA
+runtime bases` workflow publishes one image per selected architecture. It
+compiles the expensive CUDA runtime separately so routine DLLM image builds
+can reuse it. The workflows also publish tags containing the source commit
+SHA. Use those when a deployment must remain pinned to one source revision.
 
 Available CUDA tags are `cuda-sm61`, `cuda-sm70`, `cuda-sm75`, `cuda-sm80`,
 `cuda-sm86`, `cuda-sm89`, `cuda-sm90`, `cuda-sm100`, and `cuda-sm120`. Select

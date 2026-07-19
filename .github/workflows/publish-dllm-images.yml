@@ -1,4 +1,4 @@
-name: Docker images
+name: Publish DLLM images
 
 on:
   workflow_dispatch:
