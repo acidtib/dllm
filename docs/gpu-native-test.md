@@ -20,30 +20,24 @@ and bounded-wait timeout.
 
 Three checks (error mapping, local model resolution, parameter validation) run
 without a model. The rest are gated on `DLLM_TEST_MODEL` so CI stays green
-without one. Run the full suite against a real model:
+without one. Run the model-backed suite single-threaded (llama.cpp contexts are
+not thread-safe; the parallel harness segfaults on GPU backends):
 
 ```sh
 DLLM_TEST_MODEL=/path/to/model.gguf \
-  cargo test -p dllm-daemon --test embedded_runtime_tests -- --nocapture
+  cargo test -p dllm-daemon --test embedded_runtime_tests -- --test-threads=1
 ```
 
-Build with an accelerator feature to exercise that backend:
+The suite loads on CPU by default. To offload to the accelerator, build with the
+backend feature and set `DLLM_TEST_GPU_LAYERS` (e.g. `99`):
 
 ```sh
-# CUDA
-DLLM_TEST_MODEL=/path/to/model.gguf \
-  cargo test -p dllm-daemon --features cuda --test embedded_runtime_tests -- --nocapture
 # Vulkan
-DLLM_TEST_MODEL=/path/to/model.gguf \
-  cargo test -p dllm-daemon --features vulkan --test embedded_runtime_tests -- --nocapture
-```
-
-The suite loads on CPU by default. To offload to the accelerator, set
-`DLLM_TEST_GPU_LAYERS` (e.g. `99`) so the same suite runs on the GPU:
-
-```sh
 DLLM_TEST_MODEL=/path/to/model.gguf DLLM_TEST_GPU_LAYERS=99 \
-  cargo test -p dllm-daemon --features vulkan --test embedded_runtime_tests
+  cargo test -p dllm-daemon --features vulkan --test embedded_runtime_tests -- --test-threads=1
+# CUDA
+DLLM_TEST_MODEL=/path/to/model.gguf DLLM_TEST_GPU_LAYERS=99 \
+  cargo test -p dllm-daemon --features cuda --test embedded_runtime_tests -- --test-threads=1
 ```
 
 ## Hardware matrix
@@ -56,7 +50,7 @@ enumerates devices and then aborts on first compute).
 | Backend          | Host / GPU                    | Suite | Inference | Multi-GPU enumerated | NCCL | Notes |
 |------------------|-------------------------------|-------|-----------|----------------------|------|-------|
 | CPU              | x86-64 (CachyOS)              | pass  | pass      | n/a                  | n/a  | Qwen2.5-0.5B-Instruct Q4_K_M, 12/12 tests in ~9s |
-| Vulkan           | 2x GTX 1080                   |       |           |                      | n/a  | DLLM_TEST_GPU_LAYERS=99 |
+| Vulkan           | 2x GTX 1080                   | pass  | pass      | pass                 | n/a  | Vulkan 1.x; both GPUs enumerated, 25 layers split across Vulkan0/Vulkan1, 12/12 tests in ~5s, DLLM_TEST_GPU_LAYERS=99 |
 | CUDA single-GPU  | (fill in)                     |       |           | n/a                  |      |       |
 | CUDA multi-GPU   | (fill in)                     |       |           |                      |      |       |
 
@@ -96,7 +90,12 @@ fallback evidence here once the probe lands:
 
 - Conformance suite: added; runs on any host, model-backed cases gated on
   `DLLM_TEST_MODEL`.
-- CPU / Vulkan / CUDA evidence: pending a run on the appropriate hardware.
-- Do not remove the sibling `dllm-llama-server` runtime (Task 8) until the
-  conformance and lifecycle tests pass on the target backends and this matrix is
-  filled in.
+- CPU: pass (12/12).
+- Vulkan: pass (12/12) on 2x GTX 1080, including automatic multi-GPU layer split
+  across both devices. NCCL is CUDA-only, so it is n/a for Vulkan.
+- CUDA single-GPU and multi-GPU (with NCCL): pending a supported NVIDIA runner.
+  CUDA 13.3 dropped Pascal (SM 6.1), so these GTX 1080s cannot run the release
+  CUDA kernels (see docs/universal-runtime-feasibility.md); use a GPU in the
+  release SM set or a CUDA 12.x toolkit.
+- Do not remove the sibling `dllm-llama-server` runtime (Task 8) until the CUDA
+  rows are filled in on a supported NVIDIA runner.

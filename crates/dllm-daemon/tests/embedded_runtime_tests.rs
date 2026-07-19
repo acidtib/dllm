@@ -8,11 +8,17 @@
 //!
 //! The model-backed tests are gated on the `DLLM_TEST_MODEL` environment
 //! variable pointing at a local GGUF file. Without it they print a skip notice
-//! and pass, so CI stays green on machines without a model. Run the full suite
-//! with, for example:
+//! and pass, so CI stays green on machines without a model.
+//!
+//! Run model-backed cases single-threaded: llama.cpp contexts are not
+//! thread-safe, and the raw-model checks bypass the runtime's serialization, so
+//! the default parallel harness can race concurrent contexts on the same
+//! backend (this segfaults on Vulkan/CUDA). The daemon itself serializes
+//! generation with a semaphore, so this only affects the test harness.
 //!
 //! ```sh
-//! DLLM_TEST_MODEL=/path/to/model.gguf cargo test -p dllm-daemon --test embedded_runtime_tests
+//! DLLM_TEST_MODEL=/path/to/model.gguf \
+//!   cargo test -p dllm-daemon --test embedded_runtime_tests -- --test-threads=1
 //! ```
 
 use dllm_daemon::embedded_runtime::{active_backend, EmbeddedRuntime};
