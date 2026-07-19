@@ -1411,18 +1411,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "dllm-inference"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "encoding_rs",
+ "hf-hub",
+ "llama-cpp-4",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "dllm-llama-server"
 version = "0.1.0"
 dependencies = [
  "actix-multipart",
  "actix-web",
- "anyhow",
  "base64",
  "clap",
- "encoding_rs",
+ "dllm-inference",
  "futures-util",
- "hf-hub",
- "llama-cpp-4",
  "reqwest 0.13.4",
  "serde",
  "serde_json",

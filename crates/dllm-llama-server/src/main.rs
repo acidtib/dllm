@@ -1,4 +1,9 @@
-//! OpenAI-compatible chat/completion/embedding server using llama.cpp.
+//! OpenAI-compatible chat/completion/embedding HTTP server.
+//!
+//! This binary is a thin HTTP adapter over the `dllm-inference` library, which
+//! owns all llama.cpp state and generation. The server handles request parsing,
+//! auth, streaming, the OpenAI protocol shaping (tool calls, message
+//! normalization), and the uploaded-file store.
 //!
 //! # Endpoints
 //!
@@ -25,9 +30,6 @@
 //! # Hugging Face (interactive quant picker)
 //! cargo run -p dllm-llama-server -- hf-model unsloth/Qwen3.5-397B-A17B-GGUF
 //!
-//! # Hugging Face (pick quant by name, download all shards)
-//! cargo run -p dllm-llama-server -- hf-model unsloth/Qwen3.5-397B-A17B-GGUF Q4_K_M
-//!
 //! # With GPU + auth key
 //! cargo run -p dllm-llama-server --features metal -- \
 //!     --n-gpu-layers 99 --api-key secret \
@@ -48,11 +50,9 @@ mod tools;
 
 use actix_multipart::Multipart;
 use actix_web::{http::StatusCode, web, App, HttpRequest, HttpResponse, HttpServer};
-use anyhow::{Context as _, Result};
 use clap::Parser;
+use dllm_inference::{InferenceError, InferenceModel, InferenceParams, ModelConfig, ModelSource};
 use futures_util::{stream, StreamExt as _};
-use hf_hub::api::sync::{Api, ApiBuilder};
-use llama_cpp_4::prelude::*;
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -104,11 +104,6 @@ struct Args {
 
     /// Resolve (and download) the model, print its absolute local path to
     /// stdout, then exit without starting the server.
-    /// Useful for scripts that need the cache path before launching.
-    ///
-    /// Example:
-    ///   MODEL=$(cargo run -p dllm-llama-server -- --print-path \
-    ///               hf-model bartowski/Llama-3.2-1B-Instruct-GGUF `Q4_K_M`)
     #[arg(long)]
     print_path: bool,
 
@@ -142,11 +137,11 @@ struct Args {
     no_mmproj_gpu: bool,
 
     #[command(subcommand)]
-    model: ModelSource,
+    model: ModelArg,
 }
 
 #[derive(clap::Subcommand, Debug)]
-enum ModelSource {
+enum ModelArg {
     /// Load a model from a local file path.
     Local {
         /// Path to the GGUF model file.
@@ -167,14 +162,17 @@ enum ModelSource {
     },
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-struct FitReport {
-    n_gpu_layers: u32,
-    n_ctx: u32,
-    peak_memory_bytes: u64,
-    backend: &'static str,
+impl ModelArg {
+    fn into_source(self) -> ModelSource {
+        match self {
+            ModelArg::Local { path } => ModelSource::Local(path),
+            ModelArg::HuggingFace { repo, model } => ModelSource::HuggingFace { repo, model },
+        }
+    }
 }
 
+/// Compile-time backend label. Backend selection becomes runtime discovery in
+/// `dllmd`; this binary still reports the accelerator it was built for.
 fn active_backend() -> &'static str {
     if cfg!(feature = "cuda") {
         "cuda"
@@ -185,363 +183,6 @@ fn active_backend() -> &'static str {
     } else {
         "cpu"
     }
-}
-
-fn run_fit(
-    backend: &LlamaBackend,
-    model_path: &std::path::Path,
-    n_ctx_min: u32,
-    margin_bytes: usize,
-) -> anyhow::Result<FitReport> {
-    let margins = vec![margin_bytes; llama_cpp_4::max_devices()];
-    let options = FitParams::default()
-        .with_n_ctx_min(n_ctx_min)
-        .with_margins(margins);
-    let log_level = options.log_level;
-    let fitted =
-        fit_params(backend, model_path, options).map_err(|e| anyhow::anyhow!("fit failed: {e}"))?;
-    let n_gpu_layers = fitted.model_params.n_gpu_layers().max(0) as u32;
-    let n_ctx = fitted
-        .context_params
-        .n_ctx()
-        .map(std::num::NonZeroU32::get)
-        .unwrap_or(n_ctx_min);
-    let memory = get_device_memory_data(
-        model_path,
-        &fitted.model_params,
-        &fitted.context_params,
-        log_level,
-    )
-    .map_err(|e| anyhow::anyhow!("device memory query failed: {e}"))?;
-    let peak_memory_bytes = memory.entries.iter().map(|entry| entry.used() as u64).sum();
-    Ok(FitReport {
-        n_gpu_layers,
-        n_ctx,
-        peak_memory_bytes,
-        backend: active_backend(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// HuggingFace model selection
-// ---------------------------------------------------------------------------
-
-const QUANT_PREFERENCE: &[&str] = &[
-    "Q4_K_M", "Q4_K_S", "Q4_0", "Q5_K_M", "Q5_K_S", "Q5_0", "Q3_K_M", "Q3_K_S", "Q8_0", "Q6_K",
-    "Q2_K", "IQ4_XS", "IQ3_M",
-];
-
-#[derive(Debug)]
-struct ModelGroup {
-    label: String,
-    files: Vec<String>,
-}
-
-impl ModelGroup {
-    fn preference_score(&self) -> usize {
-        QUANT_PREFERENCE
-            .iter()
-            .position(|q| self.label.to_uppercase().contains(q))
-            .unwrap_or(usize::MAX)
-    }
-}
-
-fn collect_groups(all_ggufs: Vec<String>) -> Vec<ModelGroup> {
-    use std::collections::BTreeMap;
-    let mut map: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for path in all_ggufs {
-        let key = if let Some(slash) = path.find('/') {
-            path[..slash].to_string()
-        } else {
-            let stem = path.trim_end_matches(".gguf");
-            if let Some(of_pos) = stem.rfind("-of-") {
-                let before_of = &stem[..of_pos];
-                if let Some(dash) = before_of.rfind('-') {
-                    let shard_num = &before_of[dash + 1..];
-                    if shard_num.chars().all(|c| c.is_ascii_digit()) {
-                        before_of[..dash].to_string()
-                    } else {
-                        stem.to_string()
-                    }
-                } else {
-                    stem.to_string()
-                }
-            } else {
-                stem.to_string()
-            }
-        };
-        map.entry(key).or_default().push(path);
-    }
-    map.into_iter()
-        .map(|(key, mut files)| {
-            files.sort();
-            let shard_info = if files.len() > 1 {
-                format!("  [{} shards]", files.len())
-            } else {
-                String::new()
-            };
-            ModelGroup {
-                label: format!("{key}{shard_info}"),
-                files,
-            }
-        })
-        .collect()
-}
-
-fn prompt_user(groups: &[ModelGroup]) -> anyhow::Result<usize> {
-    use std::io::{self, IsTerminal as _, Write};
-    eprintln!("\nAvailable models in repo:");
-    for (i, g) in groups.iter().enumerate() {
-        eprintln!("  {:>2})  {}", i + 1, g.label);
-    }
-    if !io::stdin().is_terminal() {
-        let best = groups
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, g)| g.preference_score())
-            .map_or(0, |(i, _)| i);
-        eprintln!("\nNon-interactive — auto-selected: {}", groups[best].label);
-        return Ok(best);
-    }
-    loop {
-        eprint!("\nSelect a model [1–{}]: ", groups.len());
-        io::stderr().flush().ok();
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-        match line.trim().parse::<usize>() {
-            Ok(n) if n >= 1 && n <= groups.len() => return Ok(n - 1),
-            _ => eprintln!("  Enter a number between 1 and {}.", groups.len()),
-        }
-    }
-}
-
-fn resolve_hf(api: &Api, repo: &str, model: Option<String>) -> anyhow::Result<PathBuf> {
-    let api_repo = api.model(repo.to_string());
-    // Exact .gguf filename → download directly.
-    if let Some(ref filename) = model {
-        if filename.ends_with(".gguf") {
-            return api_repo
-                .get(filename)
-                .with_context(|| format!("failed to download '{filename}' from '{repo}'"));
-        }
-    }
-    let info = api_repo
-        .info()
-        .with_context(|| format!("failed to fetch repo info for '{repo}'"))?;
-    let all_ggufs: Vec<String> = info
-        .siblings
-        .into_iter()
-        .map(|s| s.rfilename)
-        .filter(|n| n.ends_with(".gguf"))
-        .collect();
-    if all_ggufs.is_empty() {
-        anyhow::bail!("no .gguf files found in repo '{repo}'");
-    }
-    let groups = collect_groups(all_ggufs);
-    let chosen_idx = if let Some(filter) = model {
-        let filter_up = filter.to_uppercase();
-        groups
-            .iter()
-            .position(|g| {
-                let label_key = g.label.split_whitespace().next().unwrap_or(&g.label);
-                label_key.to_uppercase() == filter_up
-                    || label_key.to_uppercase().contains(&filter_up)
-            })
-            .with_context(|| {
-                let available: Vec<_> = groups
-                    .iter()
-                    .map(|g| {
-                        g.label
-                            .split_whitespace()
-                            .next()
-                            .unwrap_or(&g.label)
-                            .to_string()
-                    })
-                    .collect();
-                format!(
-                    "no group matching '{filter}' in '{repo}'. Available: {}",
-                    available.join(", ")
-                )
-            })?
-    } else if groups.len() == 1 {
-        eprintln!("Auto-selected: {}", groups[0].label);
-        0
-    } else {
-        prompt_user(&groups)?
-    };
-    let group = &groups[chosen_idx];
-    eprintln!("\nDownloading: {}", group.label);
-    let mut first_path: Option<PathBuf> = None;
-    for (i, file) in group.files.iter().enumerate() {
-        if group.files.len() > 1 {
-            eprintln!("  shard {}/{}: {file}", i + 1, group.files.len());
-        }
-        let path = api
-            .model(repo.to_string())
-            .get(file)
-            .with_context(|| format!("failed to download shard '{file}'"))?;
-        if first_path.is_none() {
-            first_path = Some(path);
-        }
-    }
-    first_path.ok_or_else(|| anyhow::anyhow!("no files downloaded"))
-}
-
-impl ModelSource {
-    fn resolve(self) -> anyhow::Result<PathBuf> {
-        match self {
-            ModelSource::Local { path } => Ok(path),
-            ModelSource::HuggingFace { repo, model } => {
-                let api = ApiBuilder::new()
-                    .with_progress(true)
-                    .build()
-                    .context("failed to build HF API client")?;
-                resolve_hf(&api, &repo, model)
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// mmproj auto-detection and download
-// ---------------------------------------------------------------------------
-
-/// Try to download the best mmproj GGUF from a HuggingFace repo.
-///
-/// Lists the repo's files, picks the best `mmproj-*.gguf` by the same
-/// preference order as [`find_mmproj_in_dir`], downloads (or retrieves from
-/// local cache) and returns its path.
-#[cfg(feature = "mtmd")]
-fn download_mmproj_from_hf(repo: &str) -> Option<PathBuf> {
-    let api = match ApiBuilder::new().with_progress(true).build() {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!("Could not build HF API client for mmproj lookup: {e}");
-            return None;
-        }
-    };
-    let api_repo = api.model(repo.to_string());
-
-    let info = match api_repo.info() {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!("Could not fetch repo info for '{repo}': {e}");
-            return None;
-        }
-    };
-
-    // Collect all mmproj GGUF filenames from the repo listing.
-    let mut candidates: Vec<String> = info
-        .siblings
-        .into_iter()
-        .map(|s| s.rfilename)
-        .filter(|name| name.starts_with("mmproj") && name.ends_with(".gguf"))
-        .collect();
-
-    if candidates.is_empty() {
-        tracing::warn!(
-            "No mmproj-*.gguf files found in repo '{repo}'. \
-             The repo may not include a vision projector."
-        );
-        return None;
-    }
-
-    // Sort by preference (same order as MMPROJ_PREFER).
-    candidates.sort_by(|a, b| {
-        let score = |name: &str| {
-            MMPROJ_PREFER
-                .iter()
-                .position(|suf| name.ends_with(suf))
-                .unwrap_or(MMPROJ_PREFER.len())
-        };
-        score(a).cmp(&score(b)).then_with(|| a.cmp(b))
-    });
-
-    let chosen = &candidates[0];
-    tracing::info!(
-        "Downloading mmproj '{chosen}' from '{repo}'{}…",
-        if candidates.len() > 1 {
-            format!(
-                " ({} candidates; use --mmproj to override)",
-                candidates.len()
-            )
-        } else {
-            String::new()
-        }
-    );
-
-    match api_repo.get(chosen) {
-        Ok(path) => {
-            tracing::info!("mmproj cached at: {}", path.display());
-            Some(path)
-        }
-        Err(e) => {
-            tracing::warn!("Failed to download '{chosen}' from '{repo}': {e}");
-            None
-        }
-    }
-}
-
-#[cfg(feature = "mtmd")]
-/// Preference order when multiple mmproj files are found in the same directory.
-/// Earlier entries win.
-const MMPROJ_PREFER: &[&str] = &[
-    "-F16.gguf",
-    "-f16.gguf",
-    "-BF16.gguf",
-    "-bf16.gguf",
-    "-F32.gguf",
-    "-f32.gguf",
-];
-
-/// Scan `dir` for files whose names start with `mmproj` and end with `.gguf`.
-/// Returns the best match according to [`MMPROJ_PREFER`], or the first
-/// alphabetically if none of the preferred suffixes match.
-///
-/// Skips the directory silently if it cannot be read.
-#[cfg(feature = "mtmd")]
-fn find_mmproj_in_dir(dir: &std::path::Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(dir).ok()?;
-    let mut candidates: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().and_then(|e| e.to_str()) == Some("gguf")
-                && p.file_name()
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.starts_with("mmproj"))
-                    .unwrap_or(false)
-        })
-        .collect();
-
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // Sort by preference, then alphabetically for a stable result.
-    candidates.sort_by(|a, b| {
-        let score = |p: &PathBuf| {
-            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            MMPROJ_PREFER
-                .iter()
-                .position(|suf| name.ends_with(suf))
-                .unwrap_or(MMPROJ_PREFER.len())
-        };
-        score(a).cmp(&score(b)).then_with(|| a.cmp(b))
-    });
-
-    let chosen = candidates.remove(0);
-    if !candidates.is_empty() {
-        tracing::info!(
-            "Auto-detected mmproj: {} ({} other candidate(s) in same dir; \
-             use --mmproj to override)",
-            chosen.display(),
-            candidates.len()
-        );
-    } else {
-        tracing::info!("Auto-detected mmproj: {}", chosen.display());
-    }
-    Some(chosen)
 }
 
 // ---------------------------------------------------------------------------
@@ -577,20 +218,13 @@ fn gen_file_id(data: &[u8]) -> String {
 // ---------------------------------------------------------------------------
 
 struct AppState {
-    backend: LlamaBackend,
-    model: LlamaModel,
-    chat_template: Option<String>,
-    model_name: String,
-    default_ctx_size: Option<NonZeroU32>,
+    engine: InferenceModel,
     /// Limits the number of concurrent inference calls.
     inference_semaphore: Arc<Semaphore>,
     /// Optional bearer token that every request must present.
     api_key: Option<String>,
     /// In-memory store for files uploaded via `POST /v1/files`.
     file_store: Arc<RwLock<HashMap<String, FileEntry>>>,
-    /// Multimodal context — `Some` when `--mmproj` is provided.
-    #[cfg(feature = "mtmd")]
-    mtmd_ctx: Option<MtmdContext>,
 }
 
 // ---------------------------------------------------------------------------
@@ -625,6 +259,16 @@ fn internal_error(msg: impl Into<String>) -> HttpError {
         status: StatusCode::INTERNAL_SERVER_ERROR,
         r#type: "server_error",
         message: msg.into(),
+    }
+}
+
+/// Map a library error onto the matching HTTP status: a caller mistake is 400,
+/// an internal failure is 500.
+fn http_from(err: InferenceError) -> HttpError {
+    if err.is_invalid() {
+        bad_request(err.to_string())
+    } else {
+        internal_error(err.to_string())
     }
 }
 
@@ -663,6 +307,7 @@ fn check_auth(req: &HttpRequest, state: &AppState) -> Option<HttpError> {
 // ---------------------------------------------------------------------------
 
 /// `OpenAI` uses `max_tokens`; newer clients may send `max_completion_tokens`.
+/// Used for the early sampling-parameter gate before prompt rendering.
 fn parse_max_tokens(req: &Value) -> Result<u32, HttpError> {
     let raw = req
         .get("max_completion_tokens")
@@ -681,112 +326,8 @@ fn parse_max_tokens(req: &Value) -> Result<u32, HttpError> {
     }
 }
 
-fn parse_stop_sequences(req: &Value) -> Result<Vec<String>, HttpError> {
-    match req.get("stop") {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::String(s)) => Ok(vec![s.clone()]),
-        Some(Value::Array(arr)) => arr
-            .iter()
-            .map(|v| match v {
-                Value::String(s) => Ok(s.clone()),
-                _ => Err(bad_request("each element of 'stop' must be a string")),
-            })
-            .collect(),
-        _ => Err(bad_request("'stop' must be a string or array of strings")),
-    }
-}
-
-/// Convert `(role, content)` pairs into the `LlamaChatMessage` vec that
-/// `apply_chat_template` expects.
-fn to_chat_messages(pairs: Vec<(String, String)>) -> Result<Vec<LlamaChatMessage>, HttpError> {
-    pairs
-        .into_iter()
-        .map(|(role, content)| {
-            LlamaChatMessage::new(role.clone(), content)
-                .map_err(|e| bad_request(format!("invalid message (role={role}): {e}")))
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
-// Core inference engine
-// ---------------------------------------------------------------------------
-
-/// All sampling / generation parameters extracted from a request.
-#[allow(unused)]
-struct InferenceParams {
-    prompt: String,
-    temperature: f32,
-    top_p: f32,
-    top_k: i32,
-    seed: u32,
-    max_tokens: u32,
-    stop_seqs: Vec<String>,
-    /// Optional GBNF grammar string.
-    grammar: Option<String>,
-    /// Raw bytes for each media item (image or audio), in the order their
-    /// markers appear in `prompt`.  Populated only when the `mtmd` feature is
-    /// active and the request contains multimodal content.
-    image_bytes: Vec<Vec<u8>>,
-}
-
-impl InferenceParams {
-    fn from_request(req: &Value, prompt: String) -> Result<Self, HttpError> {
-        let temperature = req
-            .get("temperature")
-            .and_then(Value::as_f64)
-            .unwrap_or(1.0) as f32;
-        if temperature < 0.0 {
-            return Err(bad_request("'temperature' must be >= 0"));
-        }
-        let top_p = req.get("top_p").and_then(Value::as_f64).unwrap_or(1.0) as f32;
-        if !(0.0 < top_p && top_p <= 1.0) {
-            return Err(bad_request("'top_p' must be in (0, 1]"));
-        }
-        let top_k = req.get("top_k").and_then(Value::as_i64).unwrap_or(0) as i32;
-        if top_k < 0 {
-            return Err(bad_request("'top_k' must be >= 0"));
-        }
-        let seed = req.get("seed").and_then(Value::as_u64).unwrap_or(0) as u32;
-        let max_tokens = parse_max_tokens(req)?;
-        let grammar = match req.get("grammar") {
-            Some(Value::String(s)) => Some(s.clone()),
-            Some(Value::Null) | None => None,
-            _ => return Err(bad_request("'grammar' must be a GBNF string")),
-        };
-        let stop_seqs = parse_stop_sequences(req)?;
-        Ok(InferenceParams {
-            prompt,
-            temperature,
-            top_p,
-            top_k,
-            seed,
-            max_tokens,
-            stop_seqs,
-            grammar,
-            image_bytes: Vec::new(), // populated later by the multimodal path
-        })
-    }
-}
-
-/// Why the decode loop stopped.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FinishReason {
-    Stop,
-    Length,
-}
-
-impl FinishReason {
-    fn as_str(self) -> &'static str {
-        match self {
-            FinishReason::Stop => "stop",
-            FinishReason::Length => "length",
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Multimodal helpers  (compiled only when the `mtmd` feature is active)
+// Multimodal helpers (compiled only when the `mtmd` feature is active)
 // ---------------------------------------------------------------------------
 
 /// Decode a `data:` URI or fetch an `http(s)://` URL, returning raw bytes.
@@ -910,392 +451,6 @@ async fn resolve_image_sources(
     Ok(out)
 }
 
-/// Multimodal inference: encode images with mtmd, then decode as normal.
-///
-/// Works like [`run_inference`] but uses `mtmd_tokenize` + `mtmd_helper_eval_chunks`
-/// for the prefill step instead of a plain `llama_decode`.
-#[cfg(feature = "mtmd")]
-fn run_inference_multimodal<F>(
-    state: &AppState,
-    params: &InferenceParams,
-    on_piece: F,
-) -> Result<(u32, FinishReason), HttpError>
-where
-    F: FnMut(&str) -> bool,
-{
-    let mut on_piece = on_piece;
-    let mtmd_ctx = state
-        .mtmd_ctx
-        .as_ref()
-        .expect("run_inference_multimodal called without mtmd_ctx");
-
-    // Vision models often embed 256–1024 tokens per image, so default to 8 K.
-    const MM_DEFAULT_CTX: u32 = 8192;
-    let n_ctx = state
-        .default_ctx_size
-        .map_or_else(
-            || state.model.n_ctx_train().min(MM_DEFAULT_CTX),
-            NonZeroU32::get,
-        )
-        .max(n_ctx_for_params(params));
-
-    let n_batch = n_ctx.min(2048);
-
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(n_ctx))
-        .with_n_batch(n_batch);
-
-    let mut ctx = state
-        .model
-        .new_context(&state.backend, ctx_params)
-        .map_err(|e| internal_error(format!("context init: {e}")))?;
-
-    // ── Load bitmaps from raw bytes ───────────────────────────────────────────
-    let bitmaps: Vec<MtmdBitmap> = params
-        .image_bytes
-        .iter()
-        .enumerate()
-        .map(|(i, bytes)| {
-            MtmdBitmap::from_buf(mtmd_ctx, bytes)
-                .map_err(|e| internal_error(format!("bitmap {i}: {e}")))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    // ── Tokenize (text + image markers → chunks) ──────────────────────────────
-    let input_text = MtmdInputText::new(&params.prompt, true, true);
-    let bitmap_refs: Vec<&MtmdBitmap> = bitmaps.iter().collect();
-    let mut chunks = MtmdInputChunks::new();
-    mtmd_ctx
-        .tokenize(&input_text, &bitmap_refs, &mut chunks)
-        .map_err(|e| internal_error(format!("mtmd_tokenize: {e}")))?;
-
-    tracing::info!(
-        "run_inference_multimodal: {} image(s), prompt_len={}",
-        params.image_bytes.len(),
-        params.prompt.len()
-    );
-
-    // ── Evaluate all chunks (encodes images + decodes everything) ─────────────
-    let mut n_past: i32 = 0;
-    tracing::info!("Calling eval_chunks…");
-    mtmd_ctx
-        .eval_chunks(
-            ctx.as_ptr(),
-            &chunks,
-            /* n_past */ 0,
-            /* seq_id */ 0,
-            n_batch as i32,
-            /* logits_last */ true,
-            &mut n_past,
-        )
-        .map_err(|e| internal_error(format!("mtmd_eval_chunks: {e}")))?;
-    tracing::info!("eval_chunks done, n_past={n_past}");
-
-    // ── Sampler chain ─────────────────────────────────────────────────────────
-    let mut chain: Vec<LlamaSampler> = Vec::new();
-    if let Some(gbnf) = &params.grammar {
-        chain.push(LlamaSampler::grammar(&state.model, gbnf, "root"));
-    }
-    if params.temperature > 0.0 {
-        if params.top_k > 0 {
-            chain.push(LlamaSampler::top_k(params.top_k));
-        }
-        if params.top_p < 1.0 {
-            chain.push(LlamaSampler::top_p(params.top_p, 1));
-        }
-        chain.push(LlamaSampler::temp(params.temperature));
-        chain.push(LlamaSampler::dist(params.seed));
-    } else {
-        chain.push(LlamaSampler::greedy());
-    }
-    let sampler = LlamaSampler::chain_simple(chain);
-
-    // ── Decode loop (identical structure to run_inference) ────────────────────
-    let max_pos = n_past + params.max_tokens as i32;
-    let mut completion_tokens: u32 = 0;
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    let mut finish_reason = FinishReason::Stop;
-
-    let max_stop_len = params.stop_seqs.iter().map(|s| s.len()).max().unwrap_or(0);
-    let mut window = String::new();
-    let mut cancelled = false;
-
-    let mut batch = LlamaBatch::new(1, 0);
-
-    'decode: loop {
-        if n_past >= max_pos {
-            finish_reason = FinishReason::Length;
-            break;
-        }
-
-        // -1 means "sample from the last position with logits computed".
-        // After eval_chunks this is always correct, matching the mtmd-cli.cpp pattern.
-        let token = sampler.sample(&ctx, -1);
-        if state.model.is_eog_token(token) {
-            break;
-        }
-
-        let bytes = state
-            .model
-            .token_to_bytes(token, Special::Plaintext)
-            .map_err(|e| internal_error(format!("token_to_bytes: {e}")))?;
-        let mut piece = String::with_capacity(8);
-        let _ = decoder.decode_to_string(&bytes, &mut piece, false);
-        completion_tokens += 1;
-
-        window.push_str(&piece);
-
-        for stop in &params.stop_seqs {
-            if !stop.is_empty() && window.ends_with(stop.as_str()) {
-                let emit_len = window.len() - stop.len();
-                if emit_len > 0 {
-                    let _ = on_piece(&window[..emit_len]);
-                }
-                break 'decode;
-            }
-        }
-
-        if max_stop_len == 0 {
-            if !on_piece(&window) {
-                cancelled = true;
-                break;
-            }
-            window.clear();
-        } else {
-            let keep = window.len().min(max_stop_len);
-            let emit_len = window.len().saturating_sub(keep);
-            if emit_len > 0 {
-                if !on_piece(&window[..emit_len]) {
-                    cancelled = true;
-                    break;
-                }
-                let remaining = window[emit_len..].to_owned();
-                window = remaining;
-            }
-        }
-
-        batch.clear();
-        batch
-            .add(token, n_past, &[0], true)
-            .map_err(|e| internal_error(format!("batch add: {e}")))?;
-        n_past += 1;
-        ctx.decode(&mut batch)
-            .map_err(|e| internal_error(format!("decode: {e}")))?;
-    }
-
-    if !cancelled && !window.is_empty() {
-        let _ = on_piece(&window);
-    }
-
-    Ok((completion_tokens, finish_reason))
-}
-
-#[allow(unused)]
-/// Minimum context size needed to hold the prompt + generated tokens.
-fn n_ctx_for_params(params: &InferenceParams) -> u32 {
-    // Rough upper bound: 4 chars per token on average.
-    let prompt_est = (params.prompt.len() / 4 + 1) as u32;
-    prompt_est + params.max_tokens
-}
-
-/// Run the full inference loop, calling `on_piece` for each decoded text
-/// fragment.  `on_piece` returns `false` to stop early (e.g. cancelled
-/// stream).  Returns `(completion_token_count, finish_reason)`.
-fn run_inference<F>(
-    state: &AppState,
-    params: &InferenceParams,
-    on_piece: F,
-) -> Result<(u32, FinishReason), HttpError>
-where
-    F: FnMut(&str) -> bool,
-{
-    // ── Dispatch to multimodal path when images are present ───────────────────
-    #[cfg(feature = "mtmd")]
-    if !params.image_bytes.is_empty() {
-        return if state.mtmd_ctx.is_some() {
-            run_inference_multimodal(state, params, on_piece)
-        } else {
-            tracing::warn!(
-                "Request contains {} image(s) but the server was started without --mmproj; \
-                 images will be ignored and the prompt will be processed as text.",
-                params.image_bytes.len()
-            );
-            // fall through to the text-only path below
-            run_inference_text(state, params, on_piece)
-        };
-    }
-
-    run_inference_text(state, params, on_piece)
-}
-
-fn run_inference_text<F>(
-    state: &AppState,
-    params: &InferenceParams,
-    mut on_piece: F,
-) -> Result<(u32, FinishReason), HttpError>
-where
-    F: FnMut(&str) -> bool,
-{
-    // ── Tokenise prompt ───────────────────────────────────────────────────────
-    let tokens = state
-        .model
-        .str_to_token(&params.prompt, AddBos::Always)
-        .map_err(|e| internal_error(format!("tokenisation failed: {e}")))?;
-
-    let n_prompt = tokens.len() as u32;
-
-    // When no explicit --ctx-size is set, default to the model's training
-    // context but cap it at 4096.  n_ctx_train for modern models can be
-    // 32 K–128 K tokens; allocating a full-size KV cache + compute buffer
-    // for every request consumes tens of GB and reliably triggers OOM.
-    // Users who need a larger window can set --ctx-size explicitly.
-    const DEFAULT_MAX_CTX: u32 = 4096;
-    let n_ctx = state
-        .default_ctx_size
-        .map_or_else(
-            || state.model.n_ctx_train().min(DEFAULT_MAX_CTX),
-            NonZeroU32::get,
-        )
-        .max(n_prompt + params.max_tokens);
-
-    // n_batch controls the compute-buffer size inside llama.cpp.  Matching it
-    // to n_ctx when n_ctx is large (e.g. 32 K) allocates a huge scratch
-    // buffer even if the actual sequence is short.  Cap it independently.
-    const DEFAULT_MAX_BATCH: u32 = 2048;
-    let n_batch = n_ctx.min(DEFAULT_MAX_BATCH);
-
-    let ctx_params = LlamaContextParams::default()
-        .with_n_ctx(NonZeroU32::new(n_ctx))
-        .with_n_batch(n_batch);
-
-    let mut ctx = state
-        .model
-        .new_context(&state.backend, ctx_params)
-        .map_err(|e| internal_error(format!("context init: {e}")))?;
-
-    // ── Prefill ───────────────────────────────────────────────────────────────
-    let mut batch = LlamaBatch::new(n_ctx as usize, 1);
-    let last = tokens.len().saturating_sub(1) as i32;
-    for (i, &tok) in tokens.iter().enumerate() {
-        batch
-            .add(tok, i as i32, &[0], i as i32 == last)
-            .map_err(|e| internal_error(format!("batch add: {e}")))?;
-    }
-    ctx.decode(&mut batch)
-        .map_err(|e| internal_error(format!("prefill: {e}")))?;
-
-    // ── Sampler chain ─────────────────────────────────────────────────────────
-    let mut chain: Vec<LlamaSampler> = Vec::new();
-    if let Some(gbnf) = &params.grammar {
-        chain.push(LlamaSampler::grammar(&state.model, gbnf, "root"));
-    }
-    if params.temperature > 0.0 {
-        if params.top_k > 0 {
-            chain.push(LlamaSampler::top_k(params.top_k));
-        }
-        if params.top_p < 1.0 {
-            chain.push(LlamaSampler::top_p(params.top_p, 1));
-        }
-        chain.push(LlamaSampler::temp(params.temperature));
-        chain.push(LlamaSampler::dist(params.seed));
-    } else {
-        chain.push(LlamaSampler::greedy());
-    }
-    let sampler = LlamaSampler::chain_simple(chain);
-
-    // ── Decode loop ───────────────────────────────────────────────────────────
-    let mut n_cur = batch.n_tokens();
-    let max_pos = n_cur + params.max_tokens as i32;
-    let mut completion_tokens: u32 = 0;
-    let mut decoder = encoding_rs::UTF_8.new_decoder();
-    let mut finish_reason = FinishReason::Stop;
-
-    // For stop-sequence detection we keep a small rolling window of recently
-    // generated (but not-yet-emitted) text.  Everything before the window has
-    // already been forwarded to `on_piece`, so we never re-emit it when a stop
-    // sequence is finally matched.
-    let max_stop_len = params
-        .stop_seqs
-        .iter()
-        .map(std::string::String::len)
-        .max()
-        .unwrap_or(0);
-    let mut window = String::new();
-    let mut cancelled = false;
-
-    'decode: loop {
-        if n_cur >= max_pos {
-            finish_reason = FinishReason::Length;
-            break;
-        }
-
-        let token = sampler.sample(&ctx, batch.n_tokens() - 1);
-        if state.model.is_eog_token(token) {
-            break;
-        }
-
-        let bytes = state
-            .model
-            .token_to_bytes(token, Special::Plaintext)
-            .map_err(|e| internal_error(format!("token_to_bytes: {e}")))?;
-        let mut piece = String::with_capacity(8);
-        let _ = decoder.decode_to_string(&bytes, &mut piece, false);
-        completion_tokens += 1;
-
-        window.push_str(&piece);
-
-        // Check stop sequences against the current window.
-        for stop in &params.stop_seqs {
-            if !stop.is_empty() && window.ends_with(stop.as_str()) {
-                // Emit only the content that precedes the stop string.
-                let emit_len = window.len() - stop.len();
-                if emit_len > 0 {
-                    let _ = on_piece(&window[..emit_len]);
-                }
-                break 'decode;
-            }
-        }
-
-        // Emit the safe portion of the window – everything except the last
-        // `max_stop_len` bytes, which might be a prefix of an upcoming stop
-        // sequence and must stay buffered until we can rule that out.
-        if max_stop_len == 0 {
-            if !on_piece(&window) {
-                cancelled = true;
-                break;
-            }
-            window.clear();
-        } else {
-            let keep = window.len().min(max_stop_len);
-            let emit_len = window.len().saturating_sub(keep);
-            if emit_len > 0 {
-                if !on_piece(&window[..emit_len]) {
-                    cancelled = true;
-                    break;
-                }
-                let remaining = window[emit_len..].to_owned();
-                window = remaining;
-            }
-        }
-
-        batch.clear();
-        batch
-            .add(token, n_cur, &[0], true)
-            .map_err(|e| internal_error(format!("batch add: {e}")))?;
-        n_cur += 1;
-        ctx.decode(&mut batch)
-            .map_err(|e| internal_error(format!("decode: {e}")))?;
-    }
-
-    // Flush whatever remains in the window when the loop ended without
-    // matching a stop sequence (EOG token, max_tokens, or caller cancel).
-    if !cancelled && !window.is_empty() {
-        let _ = on_piece(&window);
-    }
-
-    Ok((completion_tokens, finish_reason))
-}
-
 // ---------------------------------------------------------------------------
 // SSE helpers
 // ---------------------------------------------------------------------------
@@ -1382,28 +537,24 @@ async fn chat_completions(
     };
 
     // ── Parse messages (with multimodal support when available) ─────────────
-    // When `mtmd` is active and the server has an mmproj model, use the
-    // multimodal normaliser: it replaces image_url / image_file parts with
-    // the mtmd media marker and returns the sources for later resolution.
-    // Otherwise fall back to the text-only normaliser (images are stripped).
-    // Always run the multimodal parser so we can count image parts,
-    // even when there is no mmproj — we use the count only for the warning.
+    // Always run the multimodal parser so we can count image parts, even when
+    // there is no projector — the count is used only for the warning.
     #[cfg(feature = "mtmd")]
     let (base_msg_pairs, image_sources) = {
-        let marker = MtmdContext::default_marker();
+        let marker = dllm_inference::mtmd_default_marker();
         tracing::debug!("mtmd media marker: {:?}", marker);
-        let (pairs, sources) = match normalise_messages_multimodal(&parsed, marker) {
+        let (pairs, sources) = match normalise_messages_multimodal(&parsed, &marker) {
             Ok(r) => r,
             Err(e) => return error_response(e),
         };
         if !sources.is_empty() {
             tracing::info!(
                 n_images = sources.len(),
-                mtmd_ctx_present = state.mtmd_ctx.is_some(),
+                mtmd_ctx_present = state.engine.has_mtmd(),
                 "Detected multimodal content in request"
             );
         }
-        if !sources.is_empty() && state.mtmd_ctx.is_none() {
+        if !sources.is_empty() && !state.engine.has_mtmd() {
             tracing::warn!(
                 n_images = sources.len(),
                 "Request contains image(s) but the server was started without --mmproj. \
@@ -1434,30 +585,24 @@ async fn chat_completions(
         // Inject tool definitions + usage instructions into the system message.
         inject_tools(&mut msg_pairs, &tool_defs, &tool_choice);
 
-        let chat_msgs = match to_chat_messages(msg_pairs) {
-            Ok(m) => m,
-            Err(e) => return error_response(e),
-        };
-
         let template_override = match parsed.get("chat_template") {
             Some(Value::String(s)) => Some(s.clone()),
             Some(Value::Null) | None => None,
             _ => return error_response(bad_request("'chat_template' must be a string")),
         };
-        let template = template_override.or_else(|| state.chat_template.clone());
         match state
-            .model
-            .apply_chat_template(template.as_deref(), &chat_msgs, true)
+            .engine
+            .render_prompt(template_override.as_deref(), &msg_pairs)
         {
             Ok(p) => p,
-            Err(e) => return error_response(internal_error(format!("chat template: {e}"))),
+            Err(e) => return error_response(http_from(e)),
         }
     };
 
     // ── Sampling params ───────────────────────────────────────────────────────
     let mut params = match InferenceParams::from_request(&parsed, prompt) {
         Ok(p) => p,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(http_from(e)),
     };
 
     // ── Resolve image sources → raw bytes (mtmd path only) ───────────────────
@@ -1477,14 +622,12 @@ async fn chat_completions(
         }
     }
 
-    // When tools are in play, give the model enough room to think and then
-    // emit a complete tool call (thinking models like Qwen3.5 need extra
-    // tokens for their <think>…</think> block before the <tool_call>).
-    // Grammar-based forcing is intentionally NOT used here: GBNF grammars
-    // conflict with models that use special tokens such as <tool_call>, and
-    // they prevent thinking models from emitting their reasoning prefix.
-    // The system-prompt injection (inject_tools) is sufficient for capable
-    // models and avoids all of those compatibility issues.
+    // When tools are in play, give the model enough room to think and then emit
+    // a complete tool call (thinking models need extra tokens for their
+    // reasoning block before the tool call). Grammar-based forcing is
+    // intentionally NOT used: GBNF grammars conflict with special tokens such
+    // as <tool_call> and prevent thinking models from emitting reasoning. The
+    // system-prompt injection is sufficient for capable models.
     if !tool_defs.is_empty() && params.max_tokens < 1024 {
         params.max_tokens = 1024;
     }
@@ -1492,7 +635,7 @@ async fn chat_completions(
     let model_name = parsed
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or(&state.model_name)
+        .unwrap_or(state.engine.model_name())
         .to_owned();
     let has_tools = !tool_defs.is_empty();
     let created = now_secs();
@@ -1518,7 +661,7 @@ async fn run_chat_blocking(
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut raw = String::new();
-        let outcome = run_inference(&state2, &params, |piece| {
+        let outcome = state2.engine.generate(&params, |piece| {
             raw.push_str(piece);
             true
         });
@@ -1571,7 +714,7 @@ async fn run_chat_blocking(
                 .to_string(),
             )
         }
-        Ok(Err(e)) => error_response(e),
+        Ok(Err(e)) => error_response(http_from(e)),
         Err(e) => error_response(internal_error(format!("inference task panicked: {e}"))),
     }
 }
@@ -1600,14 +743,14 @@ async fn run_chat_stream(
             "choices": [{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]
         })));
 
-        // Collect the whole output when tools are present so we can parse
-        // tool calls before streaming; otherwise stream token-by-token.
-        let mut finish_reason = FinishReason::Stop;
+        // Collect the whole output when tools are present so we can parse tool
+        // calls before streaming; otherwise stream token-by-token.
+        let mut finish_reason = dllm_inference::FinishReason::Stop;
 
         if has_tools {
             // Buffered mode: collect, parse, then emit.
             let mut raw = String::new();
-            if let Ok((_, fr)) = run_inference(&state2, &params, |piece| {
+            if let Ok((_, fr)) = state2.engine.generate(&params, |piece| {
                 raw.push_str(piece);
                 true
             }) {
@@ -1646,7 +789,7 @@ async fn run_chat_stream(
             }
         } else {
             // Pure streaming: emit each token piece immediately.
-            if let Ok((_, fr)) = run_inference(&state2, &params, |piece| {
+            if let Ok((_, fr)) = state2.engine.generate(&params, |piece| {
                 tx.blocking_send(sse_chunk(&json!({
                     "id": id2, "object": OBJ, "created": created, "model": model2,
                     "choices": [{"index":0,"delta":{"content":piece},"finish_reason":null}]
@@ -1716,20 +859,18 @@ async fn completions(
         .unwrap_or(false);
     let params = match InferenceParams::from_request(&parsed, prompt) {
         Ok(p) => p,
-        Err(e) => return error_response(e),
+        Err(e) => return error_response(http_from(e)),
     };
 
     let model_name = parsed
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or(&state.model_name)
+        .unwrap_or(state.engine.model_name())
         .to_owned();
     let created = now_secs();
     let id = format!("cmpl-{created}");
 
     if streaming {
-        // Reuse chat stream logic with the "text_completion" object type
-        // but emit `text` delta field instead of `content`.
         run_completion_stream(state, params, id, model_name, created).await
     } else {
         run_completion_blocking(state, params, id, model_name, created).await
@@ -1748,11 +889,13 @@ async fn run_completion_blocking(
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let mut text = String::new();
-        run_inference(&state2, &params, |piece| {
-            text.push_str(piece);
-            true
-        })
-        .map(|(tokens, reason)| (text, tokens, reason))
+        state2
+            .engine
+            .generate(&params, |piece| {
+                text.push_str(piece);
+                true
+            })
+            .map(|(tokens, reason)| (text, tokens, reason))
     })
     .await;
 
@@ -1776,7 +919,7 @@ async fn run_completion_blocking(
                 .to_string(),
             )
         }
-        Ok(Err(e)) => error_response(e),
+        Ok(Err(e)) => error_response(http_from(e)),
         Err(e) => error_response(internal_error(format!("inference task panicked: {e}"))),
     }
 }
@@ -1796,8 +939,8 @@ async fn run_completion_stream(
     let state2 = state.clone();
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let mut finish_reason = FinishReason::Stop;
-        let result = run_inference(&state2, &params, |piece| {
+        let mut finish_reason = dllm_inference::FinishReason::Stop;
+        let result = state2.engine.generate(&params, |piece| {
             let chunk = sse_chunk(&json!({
                 "id": id2,
                 "object": "text_completion",
@@ -1874,7 +1017,7 @@ async fn embeddings(
     let model_name = parsed
         .get("model")
         .and_then(Value::as_str)
-        .unwrap_or(&state.model_name)
+        .unwrap_or(state.engine.model_name())
         .to_owned();
 
     let permit = state.inference_semaphore.clone().acquire_owned().await;
@@ -1885,10 +1028,13 @@ async fn embeddings(
         // need to be borrowed after the move.
         let total_tokens: u32 = inputs
             .iter()
-            .filter_map(|s| state2.model.str_to_token(s, AddBos::Always).ok())
-            .map(|t| t.len() as u32)
+            .filter_map(|s| state2.engine.token_count(s).ok())
             .sum();
-        embed_inputs(&state2, &inputs).map(|vecs| (vecs, total_tokens))
+        state2
+            .engine
+            .embed(&inputs)
+            .map(|vecs| (vecs, total_tokens))
+            .map_err(http_from)
     })
     .await;
 
@@ -1918,54 +1064,6 @@ async fn embeddings(
         Ok(Err(e)) => error_response(e),
         Err(e) => error_response(internal_error(format!("embed task panicked: {e}"))),
     }
-}
-
-fn embed_inputs(state: &AppState, inputs: &[String]) -> Result<Vec<Vec<f32>>, HttpError> {
-    let n_embd = state.model.n_embd() as usize;
-    let mut results = Vec::with_capacity(inputs.len());
-
-    for input in inputs {
-        let tokens = state
-            .model
-            .str_to_token(input, AddBos::Always)
-            .map_err(|e| internal_error(format!("tokenise: {e}")))?;
-
-        let n_ctx = (tokens.len() as u32 + 16).max(64);
-        let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(n_ctx))
-            .with_n_batch(n_ctx)
-            .with_embeddings(true);
-
-        let mut ctx = state
-            .model
-            .new_context(&state.backend, ctx_params)
-            .map_err(|e| internal_error(format!("context init: {e}")))?;
-
-        let mut batch = LlamaBatch::new(n_ctx as usize, 1);
-        let last = tokens.len().saturating_sub(1) as i32;
-        for (i, &tok) in tokens.iter().enumerate() {
-            batch
-                .add(tok, i as i32, &[0], i as i32 == last)
-                .map_err(|e| internal_error(format!("batch add: {e}")))?;
-        }
-        ctx.decode(&mut batch)
-            .map_err(|e| internal_error(format!("decode: {e}")))?;
-
-        // Try sequence-level pooled embedding first, fall back to last-token.
-        let vec = if let Ok(emb) = ctx.embeddings_seq_ith(0) {
-            emb.to_vec()
-        } else if let Ok(emb) = ctx.embeddings_ith(last) {
-            emb.to_vec()
-        } else {
-            vec![0.0f32; n_embd]
-        };
-
-        // L2-normalise.
-        let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-12);
-        results.push(vec.into_iter().map(|x| x / norm).collect());
-    }
-
-    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -2172,19 +1270,16 @@ async fn list_models(req: HttpRequest, state: web::Data<AppState>) -> HttpRespon
     if let Some(err) = check_auth(&req, &state) {
         return error_response(err);
     }
-    let n_ctx = state
-        .default_ctx_size
-        .map_or(state.model.n_ctx_train(), NonZeroU32::get);
     HttpResponse::Ok().content_type("application/json").body(
         json!({
             "object": "list",
             "data": [{
-                "id": state.model_name,
+                "id": state.engine.model_name(),
                 "object": "model",
                 "created": now_secs(),
                 "owned_by": "llama.cpp",
-                "context_length": n_ctx,
-                "embedding_length": state.model.n_embd()
+                "context_length": state.engine.reported_ctx(),
+                "embedding_length": state.engine.n_embd()
             }]
         })
         .to_string(),
@@ -2229,37 +1324,26 @@ async fn tokenize_handler(
         .get("with_pieces")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let add_bos = if add_special {
-        AddBos::Always
-    } else {
-        AddBos::Never
-    };
 
     let permit = state.inference_semaphore.clone().acquire_owned().await;
     let state2 = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        let tokens = state2
-            .model
-            .str_to_token(&content, add_bos)
-            .map_err(|e| bad_request(format!("tokenize failed: {e}")))?;
+        let pieces = state2
+            .engine
+            .tokenize(&content, add_special, with_pieces)
+            .map_err(http_from)?;
         let tokens_json: Value = if with_pieces {
             Value::Array(
-                tokens
-                    .iter()
-                    .map(|tok| {
-                        let piece = state2
-                            .model
-                            .token_to_str(*tok, Special::Plaintext)
-                            .unwrap_or_default();
-                        json!({"id": tok.0, "piece": piece})
-                    })
+                pieces
+                    .into_iter()
+                    .map(|tp| json!({"id": tp.id, "piece": tp.piece.unwrap_or_default()}))
                     .collect(),
             )
         } else {
-            Value::Array(tokens.iter().map(|tok| json!(tok.0)).collect())
+            Value::Array(pieces.into_iter().map(|tp| json!(tp.id)).collect())
         };
-        Ok(tokens_json)
+        Ok::<Value, HttpError>(tokens_json)
     })
     .await;
 
@@ -2294,7 +1378,7 @@ async fn detokenize_handler(
         }
         _ => return error_response(bad_request("'tokens' must be an array of integers")),
     };
-    let mut token_ids = Vec::with_capacity(arr.len());
+    let mut token_ids: Vec<i32> = Vec::with_capacity(arr.len());
     for v in arr {
         let Some(raw) = v.as_u64() else {
             return error_response(bad_request("each token must be a non-negative integer"));
@@ -2302,17 +1386,14 @@ async fn detokenize_handler(
         let Ok(id) = i32::try_from(raw) else {
             return error_response(bad_request("token id does not fit in i32"));
         };
-        token_ids.push(LlamaToken(id));
+        token_ids.push(id);
     }
 
     let permit = state.inference_semaphore.clone().acquire_owned().await;
     let state2 = state.clone();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        state2
-            .model
-            .detokenize(&token_ids, false, true)
-            .map_err(|e| bad_request(format!("detokenize failed: {e}")))
+        state2.engine.detokenize(&token_ids).map_err(http_from)
     })
     .await;
 
@@ -2342,16 +1423,17 @@ async fn main() -> std::io::Result<()> {
 
     let args = Args::parse();
 
-    // Capture the HF repo ID before `args.model` is consumed by `resolve()`.
-    // Used later to auto-download the matching mmproj from the same repo.
+    // Capture the HF repo ID before `args.model` is consumed. Used later to
+    // auto-download the matching mmproj from the same repo.
     #[cfg(feature = "mtmd")]
     let hf_repo: Option<String> = match &args.model {
-        ModelSource::HuggingFace { repo, .. } => Some(repo.clone()),
-        ModelSource::Local { .. } => None,
+        ModelArg::HuggingFace { repo, .. } => Some(repo.clone()),
+        ModelArg::Local { .. } => None,
     };
 
     let model_path = args
         .model
+        .into_source()
         .resolve()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()))?;
 
@@ -2362,39 +1444,15 @@ async fn main() -> std::io::Result<()> {
     }
 
     if args.fit {
-        let backend = LlamaBackend::init().map_err(|e| std::io::Error::other(e.to_string()))?;
-        let report = run_fit(
-            &backend,
-            &model_path,
-            args.fit_n_ctx_min,
-            args.fit_margin_bytes,
-        )
+        let report = dllm_inference::fit_model(&dllm_inference::FitConfig {
+            model_path,
+            n_ctx_min: args.fit_n_ctx_min,
+            margin_bytes: args.fit_margin_bytes,
+            backend_label: active_backend().to_string(),
+        })
         .map_err(|e| std::io::Error::other(e.to_string()))?;
         println!("{}", serde_json::to_string(&report)?);
         return Ok(());
-    }
-
-    let model_name = model_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("llama.cpp")
-        .to_string();
-
-    let backend = LlamaBackend::init().map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    let mut model_params = LlamaModelParams::default();
-    if args.n_gpu_layers > 0 {
-        model_params = model_params.with_n_gpu_layers(args.n_gpu_layers);
-    }
-
-    let model = LlamaModel::load_from_file(&backend, &model_path, &model_params)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    let chat_template = model.get_chat_template(65536).ok();
-    if chat_template.is_some() {
-        tracing::info!("Loaded built-in chat template from model");
-    } else {
-        tracing::warn!("No built-in chat template — supply 'chat_template' per request");
     }
 
     let parallel = args.parallel.max(1);
@@ -2403,23 +1461,19 @@ async fn main() -> std::io::Result<()> {
     }
 
     // ── Multimodal projector (optional) ───────────────────────────────────────
+    // Resolve the mmproj path:
+    //  1. --mmproj given as an absolute/relative path → use as-is.
+    //  2. --mmproj given as a bare filename → look next to the model file.
+    //  3. --mmproj not given → scan the model's directory, then fall back to
+    //     downloading from the same Hugging Face repo.
     #[cfg(feature = "mtmd")]
-    let mtmd_ctx: Option<MtmdContext> = {
+    let mmproj: Option<dllm_inference::MmprojConfig> = {
         tracing::info!("Model resolved to: {}", model_path.display());
         let model_dir = model_path.parent().unwrap_or(std::path::Path::new("."));
-        tracing::info!("Scanning for mmproj in: {}", model_dir.display());
-
-        // Resolve the mmproj path:
-        //  1. --mmproj given as an absolute/relative path → use as-is.
-        //  2. --mmproj given as a bare filename (no directory component) →
-        //     look for it next to the model file.
-        //  3. --mmproj not given → scan the model's directory for any
-        //     `mmproj-*.gguf` and pick the best one automatically.
         let mmproj_path: Option<PathBuf> = match &args.mmproj {
             Some(p)
                 if p.components().count() == 1 && p.parent() == Some(std::path::Path::new("")) =>
             {
-                // bare filename — resolve relative to model directory
                 let candidate = model_path
                     .parent()
                     .map(|d| d.join(p))
@@ -2434,38 +1488,17 @@ async fn main() -> std::io::Result<()> {
                 candidate
             }
             Some(p) => Some(p.clone()),
-            None => {
-                // 1. Scan the local cache directory (fast, no network).
-                find_mmproj_in_dir(model_dir)
-                    // 2. Fall back: download from the same HuggingFace repo.
-                    .or_else(|| hf_repo.as_deref().and_then(download_mmproj_from_hf))
-            }
+            None => dllm_inference::find_mmproj_in_dir(model_dir).or_else(|| {
+                hf_repo
+                    .as_deref()
+                    .and_then(dllm_inference::download_mmproj_from_hf)
+            }),
         };
-
-        if let Some(ref p) = mmproj_path {
-            tracing::info!("Loading mmproj: {}", p.display());
-            let ctx_params = MtmdContextParams::default()
-                .use_gpu(!args.no_mmproj_gpu)
-                .n_threads(args.mmproj_n_threads);
-            match MtmdContext::init_from_file(p, &model, ctx_params) {
-                Ok(ctx) => {
-                    tracing::info!(
-                        "  vision={} audio={}",
-                        ctx.supports_vision(),
-                        ctx.supports_audio()
-                    );
-                    Some(ctx)
-                }
-                Err(e) => {
-                    return Err(std::io::Error::other(format!(
-                        "failed to load mmproj '{}': {e}",
-                        p.display()
-                    )))
-                }
-            }
-        } else {
-            None
-        }
+        mmproj_path.map(|path| dllm_inference::MmprojConfig {
+            path,
+            use_gpu: !args.no_mmproj_gpu,
+            n_threads: args.mmproj_n_threads,
+        })
     };
 
     #[cfg(not(feature = "mtmd"))]
@@ -2476,17 +1509,20 @@ async fn main() -> std::io::Result<()> {
         );
     }
 
+    let config = ModelConfig {
+        model_path,
+        n_gpu_layers: args.n_gpu_layers,
+        ctx_size: args.ctx_size,
+        #[cfg(feature = "mtmd")]
+        mmproj,
+    };
+    let engine = InferenceModel::load(config).map_err(|e| std::io::Error::other(e.to_string()))?;
+
     let state = web::Data::new(AppState {
-        backend,
-        model,
-        chat_template,
-        model_name,
-        default_ctx_size: args.ctx_size,
+        engine,
         inference_semaphore: Arc::new(Semaphore::new(parallel)),
         api_key: args.api_key,
         file_store: Arc::new(RwLock::new(HashMap::new())),
-        #[cfg(feature = "mtmd")]
-        mtmd_ctx,
     });
 
     let addr = format!("{}:{}", args.host, args.port);
@@ -2539,95 +1575,4 @@ async fn main() -> std::io::Result<()> {
     .bind(&addr)?
     .run()
     .await
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── collect_groups ───────────────────────────────────────────────────────
-
-    #[test]
-    fn single_plain_gguf() {
-        let files = vec!["model.Q4_K_M.gguf".to_string()];
-        let groups = collect_groups(files);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].files.len(), 1);
-    }
-
-    #[test]
-    fn sharded_flat_files_grouped() {
-        let files = vec![
-            "model-Q4_K_M-00001-of-00003.gguf".to_string(),
-            "model-Q4_K_M-00002-of-00003.gguf".to_string(),
-            "model-Q4_K_M-00003-of-00003.gguf".to_string(),
-        ];
-        let groups = collect_groups(files);
-        assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].files.len(), 3);
-        assert_eq!(groups[0].files[0], "model-Q4_K_M-00001-of-00003.gguf");
-    }
-
-    #[test]
-    fn subdirectory_files_grouped_by_dir() {
-        let files = vec![
-            "Q4_K_M/model-00001-of-00006.gguf".to_string(),
-            "Q4_K_M/model-00002-of-00006.gguf".to_string(),
-            "Q3_K_M/model-00001-of-00005.gguf".to_string(),
-            "Q3_K_M/model-00002-of-00005.gguf".to_string(),
-        ];
-        let groups = collect_groups(files);
-        assert_eq!(groups.len(), 2);
-        // BTreeMap orders alphabetically: Q3 before Q4
-        assert_eq!(groups[0].label, "Q3_K_M  [2 shards]");
-        assert_eq!(groups[1].label, "Q4_K_M  [2 shards]");
-    }
-
-    #[test]
-    fn mixed_quants_each_get_own_group() {
-        let files = vec![
-            "llama-Q4_K_M.gguf".to_string(),
-            "llama-Q8_0.gguf".to_string(),
-        ];
-        let groups = collect_groups(files);
-        assert_eq!(groups.len(), 2);
-    }
-
-    #[test]
-    fn preference_score_orders_correctly() {
-        let files = vec![
-            "Q8_0/model.gguf".to_string(),
-            "Q4_K_M/model.gguf".to_string(),
-            "Q3_K_S/model.gguf".to_string(),
-        ];
-        let groups = collect_groups(files);
-        let mut scores: Vec<_> = groups
-            .iter()
-            .map(|g| (g.preference_score(), &g.label))
-            .collect();
-        scores.sort();
-        // Q4_K_M should have the lowest (best) score
-        assert!(scores[0].1.contains("Q4_K_M"), "got {scores:?}");
-    }
-
-    // ── fit report ──────────────────────────────────────────────────────────
-
-    #[test]
-    fn fit_report_serializes_expected_shape() {
-        let report = FitReport {
-            n_gpu_layers: 32,
-            n_ctx: 4096,
-            peak_memory_bytes: 4_200_000_000,
-            backend: active_backend(),
-        };
-        let json: serde_json::Value = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["n_gpu_layers"], 32);
-        assert_eq!(json["n_ctx"], 4096);
-        assert_eq!(json["peak_memory_bytes"], 4_200_000_000u64);
-        assert_eq!(json["backend"], "cpu");
-    }
 }

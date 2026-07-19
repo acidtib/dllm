@@ -6,20 +6,17 @@ license.workspace = true
 build = "build.rs"
 
 [dependencies]
-llama-cpp-4 = { workspace = true, features = ["mtmd", "openmp"] }
+dllm-inference = { workspace = true, default-features = false }
 actix-web = "4"
 actix-multipart = "0.8"
 serde.workspace = true
 serde_json.workspace = true
-encoding_rs = "0.8"
-hf-hub = "0.5"
 clap.workspace = true
-anyhow = "1"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio.workspace = true
 futures-util.workspace = true
-# Optional dependencies pulled in by the `mtmd` feature.
+# Optional dependencies pulled in by the `mtmd` feature (image URL fetch/decode).
 base64 = { version = "0.22", optional = true }
 reqwest = { version = "0.13", features = ["json"], optional = true }
 
@@ -28,10 +25,10 @@ reqwest = { version = "0.13", features = ["blocking", "json"] }
 
 [features]
 default = ["mtmd"]
-cuda = ["llama-cpp-4/cuda"]
-metal = ["llama-cpp-4/metal"]
-vulkan = ["llama-cpp-4/vulkan"]
-mtmd = ["llama-cpp-4/mtmd", "dep:base64", "dep:reqwest"]
+cuda = ["dllm-inference/cuda"]
+metal = ["dllm-inference/metal"]
+vulkan = ["dllm-inference/vulkan"]
+mtmd = ["dllm-inference/mtmd", "dep:base64", "dep:reqwest"]
 
 [[bin]]
 name = "dllm-llama-server"

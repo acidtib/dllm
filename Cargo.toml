@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/dllm-protocol", "crates/dllm-daemon", "crates/dllm-cli", "crates/dllm-runtime", "crates/dllm-transport", "crates/dllm-probe", "crates/dllm-llama-server"]
+members = ["crates/dllm-protocol", "crates/dllm-daemon", "crates/dllm-cli", "crates/dllm-runtime", "crates/dllm-inference", "crates/dllm-transport", "crates/dllm-probe", "crates/dllm-llama-server"]
 
 [workspace.package]
 edition = "2021"
@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["serde", "v4"] }
 # Internal crates
 dllm-protocol = { path = "crates/dllm-protocol" }
 dllm-runtime = { path = "crates/dllm-runtime" }
+dllm-inference = { path = "crates/dllm-inference", default-features = false }
 dllm-transport = { path = "crates/dllm-transport" }
 dllm-daemon = { path = "crates/dllm-daemon" }
 

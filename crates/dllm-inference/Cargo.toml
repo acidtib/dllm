@@ -1,0 +1,22 @@
+[package]
+name = "dllm-inference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+llama-cpp-4 = { workspace = true, features = ["openmp"] }
+serde.workspace = true
+serde_json.workspace = true
+encoding_rs = "0.8"
+hf-hub = "0.5"
+anyhow = "1"
+thiserror.workspace = true
+tracing.workspace = true
+
+[features]
+default = ["mtmd"]
+cuda = ["llama-cpp-4/cuda"]
+metal = ["llama-cpp-4/metal"]
+vulkan = ["llama-cpp-4/vulkan"]
+mtmd = ["llama-cpp-4/mtmd"]
