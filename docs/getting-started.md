@@ -34,10 +34,11 @@ those when a deployment must remain pinned to one source revision.
 
 Available CUDA tags are `cuda-sm61`, `cuda-sm70`, `cuda-sm75`, `cuda-sm80`,
 `cuda-sm86`, `cuda-sm89`, `cuda-sm90`, `cuda-sm100`, and `cuda-sm120`. Select
-the tag matching the GPU's compute capability. Increment the workflow's
-runtime version input when llama.cpp, its Rust wrapper, CUDA, NCCL, or the
-runtime build configuration changes. Routine DLLM source changes do not need
-a new CUDA runtime version.
+the tag matching the GPU's compute capability. The unqualified `cuda` tag
+tracks the highest supported architecture, currently `cuda-sm120`, and may
+not run on older GPUs. Increment the workflow's runtime version input when
+llama.cpp, its Rust wrapper, CUDA, NCCL, or the runtime build configuration
+changes. Routine DLLM source changes do not need a new CUDA runtime version.
 
 To build locally instead, run from the repository root.
 `docker/Dockerfile.dllmd` has

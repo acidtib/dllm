@@ -22,7 +22,7 @@ jobs:
           - variant: cpu
             target: runtime-cpu
             cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
-          - variant: cuda
+          - variant: cuda-sm61
             target: runtime-cuda
             cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
           - variant: vulkan
@@ -52,8 +52,6 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}-${{ github.sha }}
-            ${{ matrix.variant == 'cuda' && format('{0}/{1}:cuda-sm61', env.REGISTRY, env.IMAGE_NAME) || '' }}
-            ${{ matrix.variant == 'cuda' && format('{0}/{1}:cuda-sm61-{2}', env.REGISTRY, env.IMAGE_NAME, github.sha) || '' }}
           cache-from: type=gha,scope=dllm-${{ matrix.variant }}
           cache-to: type=gha,mode=max,scope=dllm-${{ matrix.variant }}
           provenance: mode=max

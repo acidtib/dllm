@@ -103,6 +103,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ matrix.name }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cuda-${{ matrix.name }}-${{ github.sha }}
+            ${{ matrix.name == 'sm120' && format('{0}/{1}:cuda', env.REGISTRY, env.IMAGE_NAME) || '' }}
+            ${{ matrix.name == 'sm120' && format('{0}/{1}:cuda-{2}', env.REGISTRY, env.IMAGE_NAME, github.sha) || '' }}
           cache-from: type=gha,scope=dllm-cuda-${{ matrix.name }}
           cache-to: type=gha,mode=max,scope=dllm-cuda-${{ matrix.name }}
           provenance: mode=max
