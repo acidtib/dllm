@@ -43,6 +43,9 @@ pub struct ApiState {
     pub store: Arc<Mutex<NetworkStore>>,
     pub state_path: PathBuf,
     pub runtime_url: Arc<RwLock<Option<String>>>,
+    /// In-process inference runtime for local (owner) chat. When set, local
+    /// inference is served by direct call instead of proxying to `runtime_url`.
+    pub embedded: Arc<RwLock<Option<Arc<crate::embedded_runtime::EmbeddedRuntime>>>>,
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
     pub management_credentials: Arc<RwLock<CredentialRegistry>>,
@@ -672,6 +675,9 @@ async fn peer_network_status(
 }
 
 async fn runtime_is_ready(state: &ApiState) -> bool {
+    if state.embedded.read().await.is_some() {
+        return true;
+    }
     match state.runtime_url.read().await.clone() {
         Some(url) => state
             .client
@@ -1659,6 +1665,13 @@ async fn proxy(
         ApiError::Saturated
     })?;
 
+    // Local owner served by the in-process embedded runtime: dispatch by direct
+    // call instead of an HTTP hop. Only chat completions are routed here.
+    if let Some(engine) = replica.embedded.clone() {
+        return embedded_dispatch(state, engine, body, permit, quota_permit, replica.in_flight)
+            .await;
+    }
+
     // Use libp2p transport when a peer transport binding is available.
     let peer_available = state.peer.read().await.is_some();
     if let (Some(peer_id), true) = (replica.peer_id, peer_available) {
@@ -1736,6 +1749,72 @@ async fn proxy(
     response
         .body(Body::from_stream(stream))
         .map_err(|_| ApiError::BadRequest("invalid upstream response"))
+}
+
+/// Serve a chat completion from the in-process embedded runtime, producing the
+/// same JSON / SSE response the HTTP proxy would. Holds the admission and quota
+/// permits and the replica lease for the lifetime of the response.
+async fn embedded_dispatch(
+    state: ApiState,
+    engine: Arc<crate::embedded_runtime::EmbeddedRuntime>,
+    body: Bytes,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    quota_permit: tokio::sync::OwnedSemaphorePermit,
+    in_flight: Arc<AtomicU64>,
+) -> Result<Response, ApiError> {
+    let request: serde_json::Value =
+        serde_json::from_slice(&body).map_err(|_| ApiError::BadRequest("invalid JSON request"))?;
+    let streaming = request
+        .get("stream")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let lease = ReplicaLease::new(in_flight);
+    let metrics = state.metrics.clone();
+
+    if streaming {
+        let rx = engine
+            .chat_stream(request)
+            .await
+            .map_err(ApiError::Inference)?;
+        let stream = futures_util::stream::unfold(
+            (rx, metrics, permit, quota_permit, lease),
+            |(mut rx, m, permit, quota_permit, lease)| async move {
+                match rx.recv().await {
+                    Some(chunk) => {
+                        m.response_bytes
+                            .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                        Some((
+                            Ok::<_, std::io::Error>(Bytes::from(chunk)),
+                            (rx, m, permit, quota_permit, lease),
+                        ))
+                    }
+                    None => None,
+                }
+            },
+        );
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .header("X-Accel-Buffering", "no")
+            .body(Body::from_stream(stream))
+            .map_err(|_| ApiError::BadRequest("invalid embedded response"))
+    } else {
+        let value = engine
+            .chat_blocking(request)
+            .await
+            .map_err(ApiError::Inference)?;
+        let rendered = value.to_string();
+        metrics
+            .response_bytes
+            .fetch_add(rendered.len() as u64, Ordering::Relaxed);
+        drop((permit, quota_permit, lease));
+        Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(rendered))
+            .map_err(|_| ApiError::BadRequest("invalid embedded response"))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1837,6 +1916,9 @@ struct ResolvedReplica {
     peer: bool,
     in_flight: Arc<AtomicU64>,
     peer_id: Option<dllm_transport::peer::PeerId>,
+    /// Set when this replica is the local owner served by the in-process
+    /// embedded runtime; `proxy` then dispatches by direct call.
+    embedded: Option<Arc<crate::embedded_runtime::EmbeddedRuntime>>,
 }
 
 struct ReplicaLease(Arc<AtomicU64>);
@@ -1883,10 +1965,13 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
     }
     let mut candidates = Vec::new();
     for placement in placements {
-        let (runtime_url, peer, ready) = if placement.node_pubkey == owner {
-            let local_runtime = state.runtime_url.read().await.clone();
-            if let Some(runtime_url) = local_runtime {
-                (runtime_url, false, runtime_is_ready(state).await)
+        let (runtime_url, peer, ready, embedded) = if placement.node_pubkey == owner {
+            // Prefer the in-process embedded runtime; fall back to an external
+            // runtime_url (DLLMD_RUNTIME_URL / DLLMD_RUNTIME_BIN) when present.
+            if let Some(engine) = state.embedded.read().await.clone() {
+                (String::new(), false, true, Some(engine))
+            } else if let Some(runtime_url) = state.runtime_url.read().await.clone() {
+                (runtime_url, false, runtime_is_ready(state).await, None)
             } else {
                 // We are a replica without a local runtime. Route to the owner via libp2p.
                 let peer_id = state
@@ -1900,6 +1985,7 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                     transport.as_ref().map_or_else(String::new, |c| c.0.clone()),
                     true,
                     transport.is_some(),
+                    None,
                 )
             }
         } else if let Some(member) = members
@@ -1913,6 +1999,7 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                     .map_or_else(String::new, |candidate| candidate.0.clone()),
                 true,
                 transport.is_some(),
+                None,
             )
         } else {
             continue;
@@ -1942,6 +2029,7 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
                 peer,
                 load,
                 peer_id,
+                embedded,
             ));
         }
     }
@@ -1950,11 +2038,12 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
         .into_iter()
         .next()
         .map(
-            |(_, _, runtime_url, peer, in_flight, peer_id)| ResolvedReplica {
+            |(_, _, runtime_url, peer, in_flight, peer_id, embedded)| ResolvedReplica {
                 runtime_url,
                 peer,
                 in_flight,
                 peer_id,
+                embedded,
             },
         )
         .ok_or(ApiError::RuntimeUnavailable)
@@ -2121,6 +2210,8 @@ enum ApiError {
     RuntimeUnavailable,
     Saturated,
     Runtime(reqwest::Error),
+    /// Failure from the in-process embedded runtime.
+    Inference(dllm_inference::InferenceError),
     ModelUnavailable,
     QuotaExceeded(String),
     Credential(CredentialError),
@@ -2142,6 +2233,14 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            Self::Inference(error) => {
+                let status = if error.is_invalid() {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                (status, error.to_string()).into_response()
+            }
             Self::Store(
                 StoreError::WrongNetwork | StoreError::TokenUsed | StoreError::Token(_),
             ) => (StatusCode::CONFLICT, "join token rejected").into_response(),
@@ -2246,6 +2345,7 @@ mod tests {
             store: Arc::new(Mutex::new(NetworkStore::create("test"))),
             state_path: std::env::temp_dir().join("dllmd-api-test-state.json"),
             runtime_url: Arc::new(RwLock::new(runtime_url)),
+            embedded: Arc::new(RwLock::new(None)),
             admission: Arc::new(Semaphore::new(1)),
             client: reqwest::Client::new(),
             management_credentials: Arc::new(RwLock::new(

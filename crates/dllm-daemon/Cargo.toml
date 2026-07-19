@@ -10,6 +10,7 @@ axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 chacha20poly1305 = "0.10"
 dirs = "6.0.0"
+dllm-inference.workspace = true
 dllm-protocol.workspace = true
 dllm-runtime.workspace = true
 dllm-transport.workspace = true
@@ -30,6 +31,13 @@ thiserror.workspace = true
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 uuid.workspace = true
+
+[features]
+default = ["mtmd"]
+cuda = ["dllm-inference/cuda"]
+vulkan = ["dllm-inference/vulkan"]
+metal = ["dllm-inference/metal"]
+mtmd = ["dllm-inference/mtmd"]
 
 [[bin]]
 name = "dllmd"

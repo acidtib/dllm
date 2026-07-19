@@ -13,10 +13,13 @@ hf-hub = "0.5"
 anyhow = "1"
 thiserror.workspace = true
 tracing.workspace = true
+# Optional, pulled in by `mtmd` for multimodal image URL/data-URI fetching.
+base64 = { version = "0.22", optional = true }
+reqwest = { workspace = true, features = ["rustls-tls"], optional = true }
 
 [features]
 default = ["mtmd"]
 cuda = ["llama-cpp-4/cuda"]
 metal = ["llama-cpp-4/metal"]
 vulkan = ["llama-cpp-4/vulkan"]
-mtmd = ["llama-cpp-4/mtmd"]
+mtmd = ["llama-cpp-4/mtmd", "dep:base64", "dep:reqwest"]

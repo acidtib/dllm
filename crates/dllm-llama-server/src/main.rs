@@ -304,104 +304,9 @@ fn check_auth(req: &HttpRequest, state: &AppState) -> Option<HttpError> {
 // Multimodal helpers (compiled only when the `mtmd` feature is active)
 // ---------------------------------------------------------------------------
 
-/// Decode a `data:` URI or fetch an `http(s)://` URL, returning raw bytes.
-#[cfg(feature = "mtmd")]
-async fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, HttpError> {
-    tracing::info!("Fetching image: {}…", &url[..url.len().min(120)]);
-    if let Some(rest) = url.strip_prefix("data:") {
-        // data:[<mediatype>][;base64],<data>
-        let comma = rest
-            .find(',')
-            .ok_or_else(|| bad_request("invalid data URI: missing ','"))?;
-        let meta = &rest[..comma];
-        let data = &rest[comma + 1..];
-        if meta.ends_with(";base64") {
-            use base64::Engine as _;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(data)
-                .map_err(|e| bad_request(format!("base64 decode error: {e}")))?;
-            tracing::info!("Decoded {} bytes from data URI", bytes.len());
-            Ok(bytes)
-        } else {
-            // Plain text / URL-encoded — treat the raw bytes as the payload.
-            Ok(data.as_bytes().to_vec())
-        }
-    } else if url.starts_with("http://") || url.starts_with("https://") {
-        // Many CDNs (including Wikimedia) block requests that lack a
-        // browser-like User-Agent and return an HTML error page instead of the
-        // image.  stb_image then fails because it receives HTML, not JPEG/PNG.
-        let client = reqwest::Client::builder()
-            .user_agent(
-                "Mozilla/5.0 (compatible; llama-cpp-rs; \
-                 +https://github.com/utilityai/llama-cpp-rs)",
-            )
-            .build()
-            .map_err(|e| internal_error(format!("reqwest client: {e}")))?;
-
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| bad_request(format!("failed to fetch image URL: {e}")))?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(bad_request(format!(
-                "image URL returned HTTP {status}: {url}"
-            )));
-        }
-
-        let content_type = resp
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown")
-            .to_owned();
-
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| bad_request(format!("failed to read image response: {e}")))?;
-
-        tracing::info!(
-            "Downloaded {} bytes (content-type: {content_type}) from URL",
-            bytes.len()
-        );
-
-        // Anything under 1 KB cannot be a real image — print the body so the
-        // user can see what the server actually returned (redirect HTML, JSON
-        // error, Cloudflare challenge, etc.).
-        if bytes.len() < 1024 {
-            let preview = std::str::from_utf8(&bytes).unwrap_or("(binary)");
-            return Err(bad_request(format!(
-                "image URL returned only {} bytes — not a valid image file. \
-                 Response body: {preview:?}",
-                bytes.len()
-            )));
-        }
-
-        // Warn if the response looks like HTML rather than binary image data.
-        // JPEG magic = 0xFF 0xD8; PNG = 0x89 0x50 0x4E; GIF = 0x47 0x49 0x46.
-        if bytes.starts_with(b"<!") || bytes.starts_with(b"<h") || bytes.starts_with(b"<H") {
-            return Err(bad_request(format!(
-                "image URL returned HTML instead of an image. \
-                 The server likely rejected the request (check the URL and any auth). \
-                 First 200 bytes: {:?}",
-                std::str::from_utf8(&bytes[..bytes.len().min(200)]).unwrap_or("(invalid utf-8)")
-            )));
-        }
-
-        Ok(bytes.to_vec())
-    } else {
-        Err(bad_request(
-            "unsupported image source: must start with 'data:', 'http://', or 'https://'",
-        ))
-    }
-}
-
 /// Resolve a list of [`ImageSource`] items to raw byte vectors.
-/// `FileId` sources are looked up in the shared file store;
-/// `Url` sources are decoded / fetched from the network.
+/// `FileId` sources are looked up in this server's file store; `Url` sources are
+/// decoded / fetched via the shared library helper.
 #[cfg(feature = "mtmd")]
 async fn resolve_image_sources(
     sources: Vec<ImageSource>,
@@ -410,7 +315,7 @@ async fn resolve_image_sources(
     let mut out = Vec::with_capacity(sources.len());
     for src in sources {
         let bytes = match src {
-            ImageSource::Url(url) => fetch_url_bytes(&url).await?,
+            ImageSource::Url(url) => openai::fetch_image_url(&url).await.map_err(http_from)?,
             ImageSource::FileId(id) => {
                 let store = file_store.read().await;
                 store.get(&id).map(|e| e.bytes.clone()).ok_or_else(|| {

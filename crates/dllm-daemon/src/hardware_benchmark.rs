@@ -1,5 +1,7 @@
+use dllm_daemon::embedded_runtime::EmbeddedRuntime;
 use dllm_daemon::{api, StoreError};
 use dllm_protocol::{now_unix, CpuCapability, HardwareBenchmark, HardwareProfile};
+use std::sync::Arc;
 
 fn merge_benchmark_into_profile(
     existing: Option<HardwareProfile>,
@@ -29,75 +31,10 @@ fn merge_benchmark_into_profile(
     profile
 }
 
-struct MeasuredThroughput {
-    prompt_tokens_per_second_milli: u64,
-    decode_tokens_per_second_milli: u64,
-}
-
-const BENCHMARK_PROMPT: &str = "The quick brown fox jumps over the lazy dog. Describe what \
-    happens next in exactly one sentence, staying factual and concise.";
-
-async fn measure_benchmark(
-    client: &reqwest::Client,
-    runtime_url: &str,
-) -> Result<MeasuredThroughput, Box<dyn std::error::Error>> {
-    let tokenize: serde_json::Value = client
-        .post(format!("{runtime_url}/tokenize"))
-        .json(&serde_json::json!({ "content": BENCHMARK_PROMPT }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let prompt_tokens = tokenize["tokens"].as_array().map_or(0, Vec::len) as u64;
-
-    let prefill_start = std::time::Instant::now();
-    client
-        .post(format!("{runtime_url}/v1/chat/completions"))
-        .json(&serde_json::json!({
-            "messages": [{"role": "user", "content": BENCHMARK_PROMPT}],
-            "max_tokens": 1,
-            "stream": false,
-        }))
-        .send()
-        .await?
-        .error_for_status()?;
-    let prefill_elapsed = prefill_start.elapsed().as_secs_f64();
-
-    let decode_start = std::time::Instant::now();
-    let decode_response: serde_json::Value = client
-        .post(format!("{runtime_url}/v1/chat/completions"))
-        .json(&serde_json::json!({
-            "messages": [{"role": "user", "content": "Count from one to twenty."}],
-            "max_tokens": 64,
-            "stream": false,
-        }))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let decode_elapsed = decode_start.elapsed().as_secs_f64();
-    let completion_tokens = decode_response["usage"]["completion_tokens"]
-        .as_u64()
-        .unwrap_or(0);
-
-    Ok(MeasuredThroughput {
-        prompt_tokens_per_second_milli: if prefill_elapsed > 0.0 {
-            (prompt_tokens as f64 / prefill_elapsed * 1000.0) as u64
-        } else {
-            0
-        },
-        decode_tokens_per_second_milli: if decode_elapsed > 0.0 {
-            (completion_tokens as f64 / decode_elapsed * 1000.0) as u64
-        } else {
-            0
-        },
-    })
-}
-
 pub(crate) async fn benchmark_and_publish(
     state: api::ApiState,
     node_pubkey: [u8; 32],
-    runtime_url: String,
+    engine: Arc<EmbeddedRuntime>,
     model_label: String,
     fit: dllm_runtime::FitReport,
     gpu_layers: u32,
@@ -121,7 +58,7 @@ pub(crate) async fn benchmark_and_publish(
     if already_benchmarked {
         return;
     }
-    let measured = match measure_benchmark(&state.client, &runtime_url).await {
+    let measured = match engine.measure_throughput().await {
         Ok(measured) => measured,
         Err(error) => {
             eprintln!("hardware benchmark failed: {error}");
@@ -250,36 +187,5 @@ mod tests {
         assert_eq!(profile.cpu.model, "");
         assert_eq!(profile.system_memory_bytes, 0);
         assert!(profile.observed_at_unix > 0);
-    }
-
-    #[tokio::test]
-    async fn measure_benchmark_computes_positive_throughput_from_a_stub_server() {
-        let app = axum::Router::new()
-            .route(
-                "/tokenize",
-                axum::routing::post(|| async {
-                    axum::Json(serde_json::json!({ "tokens": [1, 2, 3, 4, 5] }))
-                }),
-            )
-            .route(
-                "/v1/chat/completions",
-                axum::routing::post(|| async {
-                    axum::Json(serde_json::json!({
-                        "choices": [{"message": {"content": "ok"}}],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 8, "total_tokens": 8}
-                    }))
-                }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
-        });
-        let client = reqwest::Client::new();
-        let result = measure_benchmark(&client, &format!("http://{addr}"))
-            .await
-            .unwrap();
-        assert!(result.prompt_tokens_per_second_milli > 0);
-        assert!(result.decode_tokens_per_second_milli > 0);
     }
 }

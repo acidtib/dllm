@@ -290,3 +290,101 @@ pub fn chat_stream(
         }));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Multimodal image fetching (mtmd only)
+// ---------------------------------------------------------------------------
+
+/// Fetch the raw bytes for a multimodal image source: decode a `data:` URI or
+/// download an `http(s)://` URL. Shared by every consumer that resolves
+/// [`ImageSource::Url`] so the fetch behavior stays identical.
+#[cfg(feature = "mtmd")]
+pub async fn fetch_image_url(url: &str) -> Result<Vec<u8>, InferenceError> {
+    tracing::info!("Fetching image: {}…", &url[..url.len().min(120)]);
+    if let Some(rest) = url.strip_prefix("data:") {
+        // data:[<mediatype>][;base64],<data>
+        let comma = rest
+            .find(',')
+            .ok_or_else(|| InferenceError::invalid("invalid data URI: missing ','"))?;
+        let meta = &rest[..comma];
+        let data = &rest[comma + 1..];
+        if meta.ends_with(";base64") {
+            use base64::Engine as _;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|e| InferenceError::invalid(format!("base64 decode error: {e}")))?;
+            tracing::info!("Decoded {} bytes from data URI", bytes.len());
+            Ok(bytes)
+        } else {
+            // Plain text / URL-encoded — treat the raw bytes as the payload.
+            Ok(data.as_bytes().to_vec())
+        }
+    } else if url.starts_with("http://") || url.starts_with("https://") {
+        // Many CDNs block requests that lack a browser-like User-Agent and
+        // return an HTML error page instead of the image; stb_image then fails.
+        let client = reqwest::Client::builder()
+            .user_agent(
+                "Mozilla/5.0 (compatible; llama-cpp-rs; \
+                 +https://github.com/utilityai/llama-cpp-rs)",
+            )
+            .build()
+            .map_err(|e| InferenceError::internal(format!("reqwest client: {e}")))?;
+
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| InferenceError::invalid(format!("failed to fetch image URL: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(InferenceError::invalid(format!(
+                "image URL returned HTTP {status}: {url}"
+            )));
+        }
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_owned();
+
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| InferenceError::invalid(format!("failed to read image response: {e}")))?;
+
+        tracing::info!(
+            "Downloaded {} bytes (content-type: {content_type}) from URL",
+            bytes.len()
+        );
+
+        // Anything under 1 KB cannot be a real image — surface the body so the
+        // caller can see what the server actually returned.
+        if bytes.len() < 1024 {
+            let preview = std::str::from_utf8(&bytes).unwrap_or("(binary)");
+            return Err(InferenceError::invalid(format!(
+                "image URL returned only {} bytes — not a valid image file. \
+                 Response body: {preview:?}",
+                bytes.len()
+            )));
+        }
+
+        // Warn if the response looks like HTML rather than binary image data.
+        if bytes.starts_with(b"<!") || bytes.starts_with(b"<h") || bytes.starts_with(b"<H") {
+            return Err(InferenceError::invalid(format!(
+                "image URL returned HTML instead of an image. \
+                 The server likely rejected the request (check the URL and any auth). \
+                 First 200 bytes: {:?}",
+                std::str::from_utf8(&bytes[..bytes.len().min(200)]).unwrap_or("(invalid utf-8)")
+            )));
+        }
+
+        Ok(bytes.to_vec())
+    } else {
+        Err(InferenceError::invalid(
+            "unsupported image source: must start with 'data:', 'http://', or 'https://'",
+        ))
+    }
+}

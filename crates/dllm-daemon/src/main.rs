@@ -1,4 +1,5 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
+use dllm_daemon::embedded_runtime::{self, EmbeddedRuntime};
 use dllm_daemon::{
     api,
     audit::AuditLog,
@@ -9,12 +10,13 @@ use dllm_daemon::{
     NetworkStore, StoreError,
 };
 use dllm_protocol::{now_unix, HardwareBenchmark};
-use dllm_runtime::{BundledModelSource, BundledRuntimeConfig, LlamaCppConfig, RuntimeWorker};
+use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
     PeerNodeHandle,
 };
 use serde::Deserialize;
+use std::num::NonZeroU32;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -171,6 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut runtime_worker = None;
     let mut pending_benchmark = None;
+    let mut embedded_runtime = None;
     if !joining_at_start {
         let node_pubkey = node_key.verifying_key().to_bytes();
         let existing_benchmarks: Vec<HardwareBenchmark> = store
@@ -184,14 +187,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let activation = start_configured_runtime(&existing_benchmarks).await?;
         runtime_url = activation.runtime_url;
         runtime_worker = activation.runtime_worker;
+        embedded_runtime = activation.embedded;
         pending_benchmark = activation.benchmark_context;
     }
     let runtime_url = Arc::new(tokio::sync::RwLock::new(runtime_url));
     let runtime_worker = Arc::new(Mutex::new(runtime_worker));
+    let embedded = Arc::new(tokio::sync::RwLock::new(embedded_runtime));
     let primary_state = api::ApiState {
         store: Arc::new(Mutex::new(store)),
         state_path: state_path.clone(),
         runtime_url: runtime_url.clone(),
+        embedded: embedded.clone(),
         admission: Arc::new(Semaphore::new(admission_limit)),
         client: reqwest::Client::new(),
         management_credentials: Arc::new(tokio::sync::RwLock::new(CredentialRegistry::load(
@@ -234,13 +240,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         ))),
     };
     if let Some((fit, model_label, gpu_layers, context_size)) = pending_benchmark {
-        if let Some(runtime_url) = primary_state.runtime_url.read().await.clone() {
+        if let Some(engine) = embedded.read().await.clone() {
             let node_pubkey = node_key.verifying_key().to_bytes();
             let benchmark_state = primary_state.clone();
             tokio::spawn(hardware_benchmark::benchmark_and_publish(
                 benchmark_state,
                 node_pubkey,
-                runtime_url,
+                engine,
                 model_label,
                 fit,
                 gpu_layers,
@@ -256,6 +262,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             primary_state.onboarding.clone(),
             runtime_url.clone(),
             runtime_worker.clone(),
+            embedded.clone(),
         );
     }
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
@@ -296,6 +303,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 store: Arc::new(Mutex::new(store)),
                 state_path: config.state_path,
                 runtime_url: runtime_url.clone(),
+                embedded: embedded.clone(),
                 admission: Arc::new(Semaphore::new(admission_limit)),
                 client: reqwest::Client::new(),
                 management_credentials: Arc::new(tokio::sync::RwLock::new(
@@ -387,22 +395,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn bundled_runtime_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let current_exe = std::env::current_exe()?;
-    let dir = current_exe
-        .parent()
-        .ok_or("could not determine directory of current executable")?;
-    let candidate = dir.join("dllm-llama-server");
-    if !candidate.exists() {
-        return Err(format!(
-            "bundled runtime binary not found at {}; build it with `cargo build --release -p dllm-llama-server`, or set DLLMD_RUNTIME_BIN to use an external runtime instead",
-            candidate.display()
-        )
-        .into());
-    }
-    Ok(candidate)
-}
-
 fn resolve_gpu_config(
     explicit_gpu_layers: Option<u32>,
     explicit_context_size: Option<u32>,
@@ -423,26 +415,35 @@ fn resolve_gpu_config(
 struct RuntimeActivation {
     runtime_url: Option<String>,
     runtime_worker: Option<RuntimeWorker>,
+    embedded: Option<Arc<EmbeddedRuntime>>,
     benchmark_context: Option<(dllm_runtime::FitReport, String, u32, u32)>,
+}
+
+impl RuntimeActivation {
+    fn none() -> Self {
+        Self {
+            runtime_url: None,
+            runtime_worker: None,
+            embedded: None,
+            benchmark_context: None,
+        }
+    }
 }
 
 async fn start_configured_runtime(
     existing_benchmarks: &[HardwareBenchmark],
 ) -> Result<RuntimeActivation, Box<dyn std::error::Error>> {
+    // External OpenAI-compatible runtime over HTTP.
     if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
         return Ok(RuntimeActivation {
             runtime_url: Some(runtime_url),
-            runtime_worker: None,
-            benchmark_context: None,
+            ..RuntimeActivation::none()
         });
     }
+    // External llama-server-compatible child binary over HTTP.
     if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
         let Ok(model) = std::env::var("DLLMD_MODEL_PATH") else {
-            return Ok(RuntimeActivation {
-                runtime_url: None,
-                runtime_worker: None,
-                benchmark_context: None,
-            });
+            return Ok(RuntimeActivation::none());
         };
         let config = LlamaCppConfig {
             binary: binary.into(),
@@ -457,38 +458,34 @@ async fn start_configured_runtime(
         return Ok(RuntimeActivation {
             runtime_url: Some(worker.endpoint().to_owned()),
             runtime_worker: Some(worker),
-            benchmark_context: None,
+            ..RuntimeActivation::none()
         });
     }
 
+    // Embedded in-process runtime (the default).
     let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
     let hf_model = std::env::var("DLLMD_HF_MODEL").ok();
     let model = match (model_path, hf_model) {
         (Some(_), Some(_)) => {
             return Err("DLLMD_MODEL_PATH and DLLMD_HF_MODEL are mutually exclusive".into());
         }
-        (Some(path), None) => Some(BundledModelSource::Local(path.into())),
-        (None, Some(repo)) => Some(BundledModelSource::HuggingFace(repo)),
+        (Some(path), None) => Some(dllm_inference::ModelSource::Local(path.into())),
+        (None, Some(repo)) => Some(dllm_inference::ModelSource::HuggingFace { repo, model: None }),
         (None, None) => None,
     };
     let Some(model) = model else {
-        return Ok(RuntimeActivation {
-            runtime_url: None,
-            runtime_worker: None,
-            benchmark_context: None,
-        });
+        return Ok(RuntimeActivation::none());
     };
     let model_label = match &model {
-        BundledModelSource::Local(path) => path.display().to_string(),
-        BundledModelSource::HuggingFace(repo) => repo.clone(),
+        dllm_inference::ModelSource::Local(path) => path.display().to_string(),
+        dllm_inference::ModelSource::HuggingFace { repo, .. } => repo.clone(),
     };
-    let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
+    // hf-hub honors HF_HOME; point it at the daemon's model cache for HF models.
+    if matches!(model, dllm_inference::ModelSource::HuggingFace { .. })
         && std::env::var("HF_HOME").is_err()
     {
-        Some(dllm_daemon::default_dir()?.join("models"))
-    } else {
-        None
-    };
+        std::env::set_var("HF_HOME", dllm_daemon::default_dir()?.join("models"));
+    }
     let explicit_gpu_layers: Option<u32> = std::env::var("DLLMD_GPU_LAYERS")
         .ok()
         .and_then(|value| value.parse().ok());
@@ -499,20 +496,31 @@ async fn start_configured_runtime(
         .iter()
         .find(|benchmark| benchmark.model == model_label)
         .cloned();
+    let backend_label = embedded_runtime::active_backend();
+
+    // Resolve (download) the model on a blocking thread.
+    let resolved_path = tokio::task::spawn_blocking(move || model.resolve())
+        .await?
+        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+
     // A cached benchmark already answers gpu_layers/context_size and was already
-    // published, so skip both the fit subprocess and re-benchmarking. Otherwise
-    // always fit (even when both env vars are explicit) so a fresh benchmark still
-    // runs after startup: throughput measurement needs fit's `backend` label, which
-    // dllmd has no other way to learn (see crates/dllm-runtime's FitReport).
-    let fit_report = if cached_benchmark.is_none() {
-        let request = dllm_runtime::FitRequest {
-            binary: bundled_runtime_binary()?,
-            model: model.clone(),
+    // published, so skip both the fit pass and re-benchmarking. Otherwise fit so
+    // a fresh benchmark can run: throughput measurement records fit's backend
+    // label.
+    let fit_report: Option<dllm_runtime::FitReport> = if cached_benchmark.is_none() {
+        let config = dllm_inference::FitConfig {
+            model_path: resolved_path.clone(),
             n_ctx_min: parse_env("DLLMD_FIT_N_CTX_MIN", 4096),
             margin_bytes: parse_env("DLLMD_FIT_MARGIN_BYTES", 1_073_741_824),
+            backend_label: backend_label.to_string(),
         };
-        match dllm_runtime::run_fit(&request).await {
-            Ok(report) => Some(report),
+        match tokio::task::spawn_blocking(move || dllm_inference::fit_model(&config)).await? {
+            Ok(report) => Some(dllm_runtime::FitReport {
+                n_gpu_layers: report.n_gpu_layers,
+                n_ctx: report.n_ctx,
+                peak_memory_bytes: report.peak_memory_bytes,
+                backend: report.backend,
+            }),
             Err(error) => {
                 eprintln!("hardware auto-fit failed, falling back to defaults: {error}");
                 None
@@ -527,25 +535,36 @@ async fn start_configured_runtime(
         cached_benchmark.as_ref(),
         fit_report.as_ref(),
     );
-    let config = BundledRuntimeConfig {
-        binary: bundled_runtime_binary()?,
-        model,
-        host: "127.0.0.1".into(),
-        port: parse_env("DLLMD_RUNTIME_PORT", 8081),
-        gpu_layers,
-        context_size: Some(context_size),
-        api_key: None,
-        parallel: 1,
-        mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
-        hf_home,
+
+    let load_config = dllm_inference::ModelConfig {
+        model_path: resolved_path,
+        n_gpu_layers: gpu_layers,
+        ctx_size: NonZeroU32::new(context_size),
+        #[cfg(feature = "mtmd")]
+        mmproj: std::env::var("DLLMD_MMPROJ_PATH")
+            .ok()
+            .map(|path| dllm_inference::MmprojConfig {
+                path: PathBuf::from(path),
+                use_gpu: true,
+                n_threads: 4,
+            }),
     };
+    let engine =
+        tokio::task::spawn_blocking(move || dllm_inference::InferenceModel::load(load_config))
+            .await?
+            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
+    let embedded = Arc::new(EmbeddedRuntime::new(
+        engine,
+        1,
+        backend_label,
+        model_label.clone(),
+    ));
     let benchmark_context =
         fit_report.map(|report| (report, model_label, gpu_layers, context_size));
-    let worker = RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
     Ok(RuntimeActivation {
-        runtime_url: Some(worker.endpoint().to_owned()),
-        runtime_worker: Some(worker),
+        embedded: Some(embedded),
         benchmark_context,
+        ..RuntimeActivation::none()
     })
 }
 
@@ -553,6 +572,7 @@ fn spawn_runtime_activation(
     onboarding: Arc<tokio::sync::RwLock<api::OnboardingStatus>>,
     runtime_url: Arc<tokio::sync::RwLock<Option<String>>>,
     runtime_worker: Arc<Mutex<Option<RuntimeWorker>>>,
+    embedded: Arc<tokio::sync::RwLock<Option<Arc<EmbeddedRuntime>>>>,
 ) {
     tokio::spawn(async move {
         loop {
@@ -573,6 +593,7 @@ fn spawn_runtime_activation(
             Ok(activation) => {
                 *runtime_url.write().await = activation.runtime_url;
                 *runtime_worker.lock().await = activation.runtime_worker;
+                *embedded.write().await = activation.embedded;
                 println!("onboarding activation completed");
             }
             Err(error) => {
@@ -954,7 +975,13 @@ mod tests {
         }));
         let runtime_url = Arc::new(tokio::sync::RwLock::new(Some("not-started".into())));
         let runtime_worker = Arc::new(Mutex::new(None));
-        spawn_runtime_activation(onboarding.clone(), runtime_url.clone(), runtime_worker);
+        let embedded = Arc::new(tokio::sync::RwLock::new(None));
+        spawn_runtime_activation(
+            onboarding.clone(),
+            runtime_url.clone(),
+            runtime_worker,
+            embedded,
+        );
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(runtime_url.read().await.as_deref(), Some("not-started"));

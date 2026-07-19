@@ -16,9 +16,6 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio.workspace = true
 futures-util.workspace = true
-# Optional dependencies pulled in by the `mtmd` feature (image URL fetch/decode).
-base64 = { version = "0.22", optional = true }
-reqwest = { version = "0.13", features = ["json"], optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.13", features = ["blocking", "json"] }
@@ -28,7 +25,7 @@ default = ["mtmd"]
 cuda = ["dllm-inference/cuda"]
 metal = ["dllm-inference/metal"]
 vulkan = ["dllm-inference/vulkan"]
-mtmd = ["dllm-inference/mtmd", "dep:base64", "dep:reqwest"]
+mtmd = ["dllm-inference/mtmd"]
 
 [[bin]]
 name = "dllm-llama-server"

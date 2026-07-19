@@ -20,6 +20,7 @@ pub mod audit;
 pub mod backup;
 pub mod budget;
 pub mod credentials;
+pub mod embedded_runtime;
 pub mod inference;
 pub mod local_config;
 pub mod peer_service;
