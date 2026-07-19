@@ -1211,6 +1211,29 @@ mod tests {
             .any(|b| b.backend == "vulkan" && b.decode_tokens_per_second_milli == 500));
     }
 
+    #[test]
+    fn merge_benchmark_into_profile_creates_fresh_profile_when_none_exists() {
+        let node_pubkey = [9u8; 32];
+        let benchmark = dllm_protocol::HardwareBenchmark {
+            model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
+            backend: "cuda".into(),
+            gpu_layers: 32,
+            context_size: 8192,
+            concurrency: 1,
+            prompt_tokens_per_second_milli: 9_000,
+            decode_tokens_per_second_milli: 4_000,
+            peak_memory_bytes: 4_200_000_000,
+        };
+
+        let profile = merge_benchmark_into_profile(None, node_pubkey, benchmark.clone());
+
+        assert_eq!(profile.node_pubkey, node_pubkey);
+        assert_eq!(profile.benchmarks, vec![benchmark]);
+        assert_eq!(profile.cpu.model, "");
+        assert_eq!(profile.system_memory_bytes, 0);
+        assert!(profile.observed_at_unix > 0);
+    }
+
     #[tokio::test]
     async fn measure_benchmark_computes_positive_throughput_from_a_stub_server() {
         let app = axum::Router::new()
