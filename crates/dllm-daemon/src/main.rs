@@ -173,7 +173,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut runtime_worker = None;
     let mut pending_benchmark = None;
     if !joining_at_start {
-        let activation = start_configured_runtime().await?;
+        let node_pubkey = node_key.verifying_key().to_bytes();
+        let existing_benchmarks: Vec<HardwareBenchmark> = store
+            .state
+            .state
+            .hardware_profiles
+            .iter()
+            .find(|profile| profile.node_pubkey == node_pubkey)
+            .map(|profile| profile.benchmarks.clone())
+            .unwrap_or_default();
+        let activation = start_configured_runtime(&existing_benchmarks).await?;
         runtime_url = activation.runtime_url;
         runtime_worker = activation.runtime_worker;
         pending_benchmark = activation.benchmark_context;
@@ -403,12 +412,15 @@ fn bundled_runtime_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
 fn resolve_gpu_config(
     explicit_gpu_layers: Option<u32>,
     explicit_context_size: Option<u32>,
+    cached: Option<&HardwareBenchmark>,
     fit: Option<&dllm_runtime::FitReport>,
 ) -> (u32, u32) {
     let gpu_layers = explicit_gpu_layers
+        .or_else(|| cached.map(|benchmark| benchmark.gpu_layers))
         .or_else(|| fit.map(|report| report.n_gpu_layers))
         .unwrap_or(38);
     let context_size = explicit_context_size
+        .or_else(|| cached.map(|benchmark| benchmark.context_size))
         .or_else(|| fit.map(|report| report.n_ctx))
         .unwrap_or(2048);
     (gpu_layers, context_size)
@@ -585,7 +597,9 @@ struct RuntimeActivation {
     benchmark_context: Option<(dllm_runtime::FitReport, String, u32)>,
 }
 
-async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::error::Error>> {
+async fn start_configured_runtime(
+    existing_benchmarks: &[HardwareBenchmark],
+) -> Result<RuntimeActivation, Box<dyn std::error::Error>> {
     if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
         return Ok(RuntimeActivation {
             runtime_url: Some(runtime_url),
@@ -641,6 +655,10 @@ async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::er
             benchmark_context: None,
         });
     };
+    let model_label = match &model {
+        BundledModelSource::Local(path) => path.display().to_string(),
+        BundledModelSource::HuggingFace(repo) => repo.clone(),
+    };
     let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
         && std::env::var("HF_HOME").is_err()
     {
@@ -654,7 +672,16 @@ async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::er
     let explicit_context_size: Option<u32> = std::env::var("DLLMD_CONTEXT_SIZE")
         .ok()
         .and_then(|value| value.parse().ok());
-    let fit_report = if explicit_gpu_layers.is_none() || explicit_context_size.is_none() {
+    let cached_benchmark = existing_benchmarks
+        .iter()
+        .find(|benchmark| benchmark.model == model_label)
+        .cloned();
+    // A cached benchmark already answers gpu_layers/context_size and was already
+    // published, so skip both the fit subprocess and re-benchmarking. Otherwise
+    // always fit (even when both env vars are explicit) so a fresh benchmark still
+    // runs after startup: throughput measurement needs fit's `backend` label, which
+    // dllmd has no other way to learn (see crates/dllm-runtime's FitReport).
+    let fit_report = if cached_benchmark.is_none() {
         let request = dllm_runtime::FitRequest {
             binary: bundled_runtime_binary()?,
             model: model.clone(),
@@ -680,6 +707,7 @@ async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::er
     let (gpu_layers, context_size) = resolve_gpu_config(
         explicit_gpu_layers,
         explicit_context_size,
+        cached_benchmark.as_ref(),
         fit_report.as_ref(),
     );
     let config = BundledRuntimeConfig {
@@ -696,10 +724,6 @@ async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::er
         parallel: 1,
         mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
         hf_home,
-    };
-    let model_label = match &config.model {
-        BundledModelSource::Local(path) => path.display().to_string(),
-        BundledModelSource::HuggingFace(repo) => repo.clone(),
     };
     let benchmark_context = fit_report.map(|report| (report, model_label, context_size));
     let worker = RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
@@ -727,7 +751,7 @@ fn spawn_runtime_activation(
                 _ => tokio::time::sleep(Duration::from_millis(250)).await,
             }
         }
-        let activation = start_configured_runtime()
+        let activation = start_configured_runtime(&[])
             .await
             .map_err(|error| error.to_string());
         match activation {
@@ -1219,16 +1243,46 @@ mod tests {
     }
 
     #[test]
-    fn resolve_gpu_config_prefers_explicit_values_over_fit() {
+    fn resolve_gpu_config_prefers_explicit_over_cached_over_fit_over_fallback() {
         let fit = dllm_runtime::FitReport {
             n_gpu_layers: 20,
             n_ctx: 8192,
             peak_memory_bytes: 1,
             backend: "cuda".into(),
         };
-        assert_eq!(resolve_gpu_config(Some(99), None, Some(&fit)), (99, 8192));
-        assert_eq!(resolve_gpu_config(None, Some(1024), Some(&fit)), (20, 1024));
-        assert_eq!(resolve_gpu_config(None, None, Some(&fit)), (20, 8192));
-        assert_eq!(resolve_gpu_config(None, None, None), (38, 2048));
+        let cached = dllm_protocol::HardwareBenchmark {
+            model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
+            backend: "cuda".into(),
+            gpu_layers: 30,
+            context_size: 4096,
+            concurrency: 1,
+            prompt_tokens_per_second_milli: 1,
+            decode_tokens_per_second_milli: 1,
+            peak_memory_bytes: 1,
+        };
+
+        // both explicit: ignores cached and fit entirely
+        assert_eq!(
+            resolve_gpu_config(Some(99), Some(1234), Some(&cached), Some(&fit)),
+            (99, 1234)
+        );
+        // one explicit, one from cache
+        assert_eq!(
+            resolve_gpu_config(Some(99), None, Some(&cached), Some(&fit)),
+            (99, 4096)
+        );
+        assert_eq!(
+            resolve_gpu_config(None, Some(1024), Some(&cached), Some(&fit)),
+            (30, 1024)
+        );
+        // neither explicit, cached wins over fit
+        assert_eq!(
+            resolve_gpu_config(None, None, Some(&cached), Some(&fit)),
+            (30, 4096)
+        );
+        // no cache, falls through to fit
+        assert_eq!(resolve_gpu_config(None, None, None, Some(&fit)), (20, 8192));
+        // nothing available, hardcoded fallback
+        assert_eq!(resolve_gpu_config(None, None, None, None), (38, 2048));
     }
 }
