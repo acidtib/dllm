@@ -8,7 +8,7 @@ use dllm_daemon::{
     rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore, StoreError,
 };
-use dllm_protocol::now_unix;
+use dllm_protocol::{now_unix, CpuCapability, HardwareBenchmark, HardwareProfile};
 use dllm_runtime::{BundledModelSource, BundledRuntimeConfig, LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_key_path = std::env::var("DLLMD_NODE_KEY")
         .map(PathBuf::from)
         .unwrap_or(dllm_daemon::default_node_key_path()?);
-    dllm_daemon::load_or_create_node_key(&node_key_path)?;
+    let node_key = dllm_daemon::load_or_create_node_key(&node_key_path)?;
     let transport_key_path = resolve_transport_key_path()?;
     load_or_create_identity(&transport_key_path)?;
     let config_path = dllm_daemon::default_config_path()?;
@@ -171,8 +171,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut runtime_worker = None;
+    let mut pending_benchmark = None;
     if !joining_at_start {
-        (runtime_url, runtime_worker) = start_configured_runtime().await?;
+        let activation = start_configured_runtime().await?;
+        runtime_url = activation.runtime_url;
+        runtime_worker = activation.runtime_worker;
+        pending_benchmark = activation.benchmark_context;
     }
     let runtime_url = Arc::new(tokio::sync::RwLock::new(runtime_url));
     let runtime_worker = Arc::new(Mutex::new(runtime_worker));
@@ -227,6 +231,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             10 * 1024 * 1024, // 10 MB rotation threshold
         ))),
     };
+    if let Some((fit, model_label, context_size)) = pending_benchmark {
+        if let Some(runtime_url) = primary_state.runtime_url.read().await.clone() {
+            let node_pubkey = node_key.verifying_key().to_bytes();
+            let benchmark_state = primary_state.clone();
+            tokio::spawn(benchmark_and_publish(
+                benchmark_state,
+                node_pubkey,
+                runtime_url,
+                model_label,
+                fit,
+                context_size,
+            ));
+        }
+    }
     if let Ok(authority_url) = std::env::var("DLLMD_JOIN_URL") {
         let _ = api::start_onboarding_workflow(primary_state.clone(), authority_url)
             .await
@@ -396,14 +414,188 @@ fn resolve_gpu_config(
     (gpu_layers, context_size)
 }
 
-async fn start_configured_runtime(
-) -> Result<(Option<String>, Option<RuntimeWorker>), Box<dyn std::error::Error>> {
+fn merge_benchmark_into_profile(
+    existing: Option<HardwareProfile>,
+    node_pubkey: [u8; 32],
+    benchmark: HardwareBenchmark,
+) -> HardwareProfile {
+    let mut profile = existing.unwrap_or_else(|| HardwareProfile {
+        node_pubkey,
+        observed_at_unix: 0,
+        cpu: CpuCapability {
+            model: String::new(),
+            physical_cores: 0,
+            logical_cores: 0,
+            features: vec![],
+        },
+        system_memory_bytes: 0,
+        available_memory_bytes: 0,
+        accelerators: vec![],
+        runtimes: vec![],
+        benchmarks: vec![],
+    });
+    profile.observed_at_unix = now_unix();
+    profile.benchmarks.retain(|candidate| {
+        !(candidate.model == benchmark.model && candidate.backend == benchmark.backend)
+    });
+    profile.benchmarks.push(benchmark);
+    profile
+}
+
+struct MeasuredThroughput {
+    prompt_tokens_per_second_milli: u64,
+    decode_tokens_per_second_milli: u64,
+}
+
+const BENCHMARK_PROMPT: &str = "The quick brown fox jumps over the lazy dog. Describe what \
+    happens next in exactly one sentence, staying factual and concise.";
+
+async fn measure_benchmark(
+    client: &reqwest::Client,
+    runtime_url: &str,
+) -> Result<MeasuredThroughput, Box<dyn std::error::Error>> {
+    let tokenize: serde_json::Value = client
+        .post(format!("{runtime_url}/tokenize"))
+        .json(&serde_json::json!({ "content": BENCHMARK_PROMPT }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let prompt_tokens = tokenize["tokens"].as_array().map_or(0, Vec::len) as u64;
+
+    let prefill_start = std::time::Instant::now();
+    client
+        .post(format!("{runtime_url}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "messages": [{"role": "user", "content": BENCHMARK_PROMPT}],
+            "max_tokens": 1,
+            "stream": false,
+        }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let prefill_elapsed = prefill_start.elapsed().as_secs_f64();
+
+    let decode_start = std::time::Instant::now();
+    let decode_response: serde_json::Value = client
+        .post(format!("{runtime_url}/v1/chat/completions"))
+        .json(&serde_json::json!({
+            "messages": [{"role": "user", "content": "Count from one to twenty."}],
+            "max_tokens": 64,
+            "stream": false,
+        }))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let decode_elapsed = decode_start.elapsed().as_secs_f64();
+    let completion_tokens = decode_response["usage"]["completion_tokens"]
+        .as_u64()
+        .unwrap_or(0);
+
+    Ok(MeasuredThroughput {
+        prompt_tokens_per_second_milli: if prefill_elapsed > 0.0 {
+            (prompt_tokens as f64 / prefill_elapsed * 1000.0) as u64
+        } else {
+            0
+        },
+        decode_tokens_per_second_milli: if decode_elapsed > 0.0 {
+            (completion_tokens as f64 / decode_elapsed * 1000.0) as u64
+        } else {
+            0
+        },
+    })
+}
+
+async fn benchmark_and_publish(
+    state: api::ApiState,
+    node_pubkey: [u8; 32],
+    runtime_url: String,
+    model_label: String,
+    fit: dllm_runtime::FitReport,
+    context_size: u32,
+) {
+    let already_benchmarked = state
+        .store
+        .lock()
+        .await
+        .state
+        .state
+        .hardware_profiles
+        .iter()
+        .find(|profile| profile.node_pubkey == node_pubkey)
+        .is_some_and(|profile| {
+            profile
+                .benchmarks
+                .iter()
+                .any(|benchmark| benchmark.model == model_label && benchmark.backend == fit.backend)
+        });
+    if already_benchmarked {
+        return;
+    }
+    let measured = match measure_benchmark(&state.client, &runtime_url).await {
+        Ok(measured) => measured,
+        Err(error) => {
+            eprintln!("hardware benchmark failed: {error}");
+            return;
+        }
+    };
+    let benchmark = HardwareBenchmark {
+        model: model_label,
+        backend: fit.backend,
+        context_size,
+        concurrency: 1,
+        prompt_tokens_per_second_milli: measured.prompt_tokens_per_second_milli,
+        decode_tokens_per_second_milli: measured.decode_tokens_per_second_milli,
+        peak_memory_bytes: fit.peak_memory_bytes,
+    };
+    let mut store = state.store.lock().await;
+    let existing = store
+        .state
+        .state
+        .hardware_profiles
+        .iter()
+        .find(|profile| profile.node_pubkey == node_pubkey)
+        .cloned();
+    let profile = merge_benchmark_into_profile(existing, node_pubkey, benchmark);
+    match store.publish_hardware_profile(profile) {
+        Ok(true) => {
+            if let Err(error) = store.save(&state.state_path) {
+                eprintln!("failed to save hardware profile: {error}");
+            }
+        }
+        Ok(false) => {}
+        Err(StoreError::OwnerAuthorityUnavailable) => {
+            println!(
+                "hardware benchmark complete; publishing to network state requires the \
+                 network owner, skipped on this member node"
+            );
+        }
+        Err(error) => eprintln!("failed to publish hardware profile: {error}"),
+    }
+}
+
+struct RuntimeActivation {
+    runtime_url: Option<String>,
+    runtime_worker: Option<RuntimeWorker>,
+    benchmark_context: Option<(dllm_runtime::FitReport, String, u32)>,
+}
+
+async fn start_configured_runtime() -> Result<RuntimeActivation, Box<dyn std::error::Error>> {
     if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
-        return Ok((Some(runtime_url), None));
+        return Ok(RuntimeActivation {
+            runtime_url: Some(runtime_url),
+            runtime_worker: None,
+            benchmark_context: None,
+        });
     }
     if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
         let Ok(model) = std::env::var("DLLMD_MODEL_PATH") else {
-            return Ok((None, None));
+            return Ok(RuntimeActivation {
+                runtime_url: None,
+                runtime_worker: None,
+                benchmark_context: None,
+            });
         };
         let config = LlamaCppConfig {
             binary: binary.into(),
@@ -421,7 +613,11 @@ async fn start_configured_runtime(
             extra_args: vec![],
         };
         let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
-        return Ok((Some(worker.endpoint().to_owned()), Some(worker)));
+        return Ok(RuntimeActivation {
+            runtime_url: Some(worker.endpoint().to_owned()),
+            runtime_worker: Some(worker),
+            benchmark_context: None,
+        });
     }
 
     let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
@@ -435,7 +631,11 @@ async fn start_configured_runtime(
         (None, None) => None,
     };
     let Some(model) = model else {
-        return Ok((None, None));
+        return Ok(RuntimeActivation {
+            runtime_url: None,
+            runtime_worker: None,
+            benchmark_context: None,
+        });
     };
     let hf_home = if matches!(model, BundledModelSource::HuggingFace(_))
         && std::env::var("HF_HOME").is_err()
@@ -493,8 +693,17 @@ async fn start_configured_runtime(
         mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
         hf_home,
     };
+    let model_label = match &config.model {
+        BundledModelSource::Local(path) => path.display().to_string(),
+        BundledModelSource::HuggingFace(repo) => repo.clone(),
+    };
+    let benchmark_context = fit_report.map(|report| (report, model_label, context_size));
     let worker = RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
-    Ok((Some(worker.endpoint().to_owned()), Some(worker)))
+    Ok(RuntimeActivation {
+        runtime_url: Some(worker.endpoint().to_owned()),
+        runtime_worker: Some(worker),
+        benchmark_context,
+    })
 }
 
 fn spawn_runtime_activation(
@@ -518,9 +727,9 @@ fn spawn_runtime_activation(
             .await
             .map_err(|error| error.to_string());
         match activation {
-            Ok((url, worker)) => {
-                *runtime_url.write().await = url;
-                *runtime_worker.lock().await = worker;
+            Ok(activation) => {
+                *runtime_url.write().await = activation.runtime_url;
+                *runtime_worker.lock().await = activation.runtime_worker;
                 println!("onboarding activation completed");
             }
             Err(error) => {
@@ -914,6 +1123,93 @@ mod tests {
         .await
         .unwrap();
         assert!(runtime_url.read().await.is_none());
+    }
+
+    #[test]
+    fn merge_benchmark_into_profile_replaces_matching_entry_and_keeps_others() {
+        let node_pubkey = [7u8; 32];
+        let existing = dllm_protocol::HardwareProfile {
+            node_pubkey,
+            observed_at_unix: 1,
+            cpu: dllm_protocol::CpuCapability {
+                model: "operator-reported cpu".into(),
+                physical_cores: 8,
+                logical_cores: 16,
+                features: vec![],
+            },
+            system_memory_bytes: 32_000_000_000,
+            available_memory_bytes: 20_000_000_000,
+            accelerators: vec![],
+            runtimes: vec![],
+            benchmarks: vec![dllm_protocol::HardwareBenchmark {
+                model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
+                backend: "vulkan".into(),
+                context_size: 2048,
+                concurrency: 1,
+                prompt_tokens_per_second_milli: 1_000,
+                decode_tokens_per_second_milli: 500,
+                peak_memory_bytes: 1,
+            }],
+        };
+        let new_benchmark = dllm_protocol::HardwareBenchmark {
+            model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
+            backend: "cuda".into(),
+            context_size: 8192,
+            concurrency: 1,
+            prompt_tokens_per_second_milli: 9_000,
+            decode_tokens_per_second_milli: 4_000,
+            peak_memory_bytes: 4_200_000_000,
+        };
+        let merged =
+            merge_benchmark_into_profile(Some(existing), node_pubkey, new_benchmark.clone());
+        assert_eq!(merged.cpu.model, "operator-reported cpu");
+        assert_eq!(merged.benchmarks.len(), 2);
+        assert!(merged.benchmarks.contains(&new_benchmark));
+
+        let replacement = dllm_protocol::HardwareBenchmark {
+            backend: "vulkan".into(),
+            decode_tokens_per_second_milli: 600,
+            ..new_benchmark.clone()
+        };
+        let merged_again =
+            merge_benchmark_into_profile(Some(merged), node_pubkey, replacement.clone());
+        assert_eq!(merged_again.benchmarks.len(), 2);
+        assert!(merged_again.benchmarks.contains(&replacement));
+        assert!(!merged_again
+            .benchmarks
+            .iter()
+            .any(|b| b.backend == "vulkan" && b.decode_tokens_per_second_milli == 500));
+    }
+
+    #[tokio::test]
+    async fn measure_benchmark_computes_positive_throughput_from_a_stub_server() {
+        let app = axum::Router::new()
+            .route(
+                "/tokenize",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({ "tokens": [1, 2, 3, 4, 5] }))
+                }),
+            )
+            .route(
+                "/v1/chat/completions",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 0, "completion_tokens": 8, "total_tokens": 8}
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let result = measure_benchmark(&client, &format!("http://{addr}"))
+            .await
+            .unwrap();
+        assert!(result.prompt_tokens_per_second_milli > 0);
+        assert!(result.decode_tokens_per_second_milli > 0);
     }
 
     #[test]
