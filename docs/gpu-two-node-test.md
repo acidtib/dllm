@@ -52,6 +52,15 @@ curl -s http://127.0.0.1:7337/v1/chat/completions \
   -d '{"model":"my-model","messages":[{"role":"user","content":"Say hi in 5 words."}],"stream":false}' | jq .
 ```
 
+Since this test omits `DLLMD_GPU_LAYERS`/`DLLMD_CONTEXT_SIZE`, node-a auto-fits
+both against its GPU's free memory on first load, then runs a short real
+prompt/decode pass and publishes the measured throughput as a
+`HardwareBenchmark` entry (owner nodes can self-publish; member nodes like
+node-b log and skip publishing since only the owner holds the signing key).
+Check `dllm --daemon http://127.0.0.1:7337 --management-token node-a-token status`
+after the model finishes loading; `network.hardware_profiles` should contain
+one entry with a non-zero `decode_tokens_per_second_milli`.
+
 ## 2. Prepare node-b's identity
 
 Node-b must not start before it has approved network state. Otherwise, it

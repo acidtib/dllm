@@ -31,6 +31,11 @@ DLLMD_P2P_ENABLED=true \
 ./target/release/dllmd
 ```
 
+`DLLMD_GPU_LAYERS=0` here is an explicit override for this CPU-only test.
+Omitting `DLLMD_GPU_LAYERS`/`DLLMD_CONTEXT_SIZE` lets `dllmd` auto-fit both
+values against detected device memory instead of using the hardcoded
+`38`/`2048` defaults; see `docs/dllm-gpu-autoconfig-proposal.md`.
+
 This downloads the model, creates `~/.dllm/{state.json,owner.key,transport.key}`,
 self-binds the owner's own transport identity as part of that same
 bootstrap, and starts listening on `0.0.0.0:7444` for P2P -- one boot, no
