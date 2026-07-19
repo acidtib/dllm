@@ -55,8 +55,10 @@ curl -s http://127.0.0.1:7337/v1/chat/completions \
 Since this test omits `DLLMD_GPU_LAYERS`/`DLLMD_CONTEXT_SIZE`, node-a auto-fits
 both against its GPU's free memory on first load, then runs a short real
 prompt/decode pass and publishes the measured throughput as a
-`HardwareBenchmark` entry (owner nodes can self-publish; member nodes like
-node-b log and skip publishing since only the owner holds the signing key).
+`HardwareBenchmark` entry (owner nodes can self-publish; member nodes hosting
+a model would instead log and skip publishing, since only the owner holds the
+signing key -- node-b in this test never hosts a model, so it does not
+exercise that path).
 Check `dllm --daemon http://127.0.0.1:7337 --management-token node-a-token status`
 after the model finishes loading; `network.hardware_profiles` should contain
 one entry with a non-zero `decode_tokens_per_second_milli`.

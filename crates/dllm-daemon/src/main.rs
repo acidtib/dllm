@@ -547,6 +547,9 @@ async fn benchmark_and_publish(
         concurrency: 1,
         prompt_tokens_per_second_milli: measured.prompt_tokens_per_second_milli,
         decode_tokens_per_second_milli: measured.decode_tokens_per_second_milli,
+        // Pre-flight projection from fit_params/get_device_memory_data, not a
+        // measurement of the running worker: measure_benchmark only measures
+        // throughput, and the worker exposes no live memory query.
         peak_memory_bytes: fit.peak_memory_bytes,
     };
     let mut store = state.store.lock().await;
