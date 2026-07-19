@@ -382,6 +382,20 @@ fn bundled_runtime_binary() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(candidate)
 }
 
+fn resolve_gpu_config(
+    explicit_gpu_layers: Option<u32>,
+    explicit_context_size: Option<u32>,
+    fit: Option<&dllm_runtime::FitReport>,
+) -> (u32, u32) {
+    let gpu_layers = explicit_gpu_layers
+        .or_else(|| fit.map(|report| report.n_gpu_layers))
+        .unwrap_or(38);
+    let context_size = explicit_context_size
+        .or_else(|| fit.map(|report| report.n_ctx))
+        .unwrap_or(2048);
+    (gpu_layers, context_size)
+}
+
 async fn start_configured_runtime(
 ) -> Result<(Option<String>, Option<RuntimeWorker>), Box<dyn std::error::Error>> {
     if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
@@ -430,6 +444,40 @@ async fn start_configured_runtime(
     } else {
         None
     };
+    let explicit_gpu_layers: Option<u32> = std::env::var("DLLMD_GPU_LAYERS")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    let explicit_context_size: Option<u32> = std::env::var("DLLMD_CONTEXT_SIZE")
+        .ok()
+        .and_then(|value| value.parse().ok());
+    let fit_report = if explicit_gpu_layers.is_none() || explicit_context_size.is_none() {
+        let request = dllm_runtime::FitRequest {
+            binary: bundled_runtime_binary()?,
+            model: model.clone(),
+            n_ctx_min: std::env::var("DLLMD_FIT_N_CTX_MIN")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(4096),
+            margin_bytes: std::env::var("DLLMD_FIT_MARGIN_BYTES")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(1_073_741_824),
+        };
+        match dllm_runtime::run_fit(&request).await {
+            Ok(report) => Some(report),
+            Err(error) => {
+                eprintln!("hardware auto-fit failed, falling back to defaults: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let (gpu_layers, context_size) = resolve_gpu_config(
+        explicit_gpu_layers,
+        explicit_context_size,
+        fit_report.as_ref(),
+    );
     let config = BundledRuntimeConfig {
         binary: bundled_runtime_binary()?,
         model,
@@ -438,15 +486,8 @@ async fn start_configured_runtime(
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(8081),
-        gpu_layers: std::env::var("DLLMD_GPU_LAYERS")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(38),
-        context_size: std::env::var("DLLMD_CONTEXT_SIZE")
-            .ok()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(2048)
-            .into(),
+        gpu_layers,
+        context_size: Some(context_size),
         api_key: None,
         parallel: 1,
         mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
@@ -873,5 +914,19 @@ mod tests {
         .await
         .unwrap();
         assert!(runtime_url.read().await.is_none());
+    }
+
+    #[test]
+    fn resolve_gpu_config_prefers_explicit_values_over_fit() {
+        let fit = dllm_runtime::FitReport {
+            n_gpu_layers: 20,
+            n_ctx: 8192,
+            peak_memory_bytes: 1,
+            backend: "cuda".into(),
+        };
+        assert_eq!(resolve_gpu_config(Some(99), None, Some(&fit)), (99, 8192));
+        assert_eq!(resolve_gpu_config(None, Some(1024), Some(&fit)), (20, 1024));
+        assert_eq!(resolve_gpu_config(None, None, Some(&fit)), (20, 8192));
+        assert_eq!(resolve_gpu_config(None, None, None), (38, 2048));
     }
 }
