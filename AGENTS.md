@@ -26,7 +26,7 @@
   service as a requirement.
 - Ordinary participating `dllmd` nodes provide discovery, NAT traversal, and
   encrypted forwarding roles when eligible.
-- Use rust-libp2p 0.56 for the Phase 4 embedded peer network unless a documented
+- Use rust-libp2p 0.56 for the embedded peer network unless a documented
   milestone explicitly changes that decision.
 - SSH may administer test machines, but DLLM peer traffic must not use SSH or
   require SSH configuration.
@@ -41,6 +41,10 @@
 - While `OnboardingStatus` is `Joining`, `require_active_mode` middleware blocks
   nearly all API routes except `/health`, `/v1/onboarding/status`, and
   `/v1/onboarding/start`.
+- `dllmd` runs a hardware auto-benchmark at startup
+  (`crates/dllm-daemon/src/hardware_benchmark.rs`) to determine achievable
+  `gpu_layers`, then merges the result into the node's hardware profile.
+  `DLLMD_GPU_LAYERS` overrides it explicitly.
 
 ## Workspace crates
 
@@ -66,9 +70,8 @@ crates/dllm-llama-server — Bundled OpenAI-compatible llama.cpp server,
 ```
 .github/     — CI workflows
 docs/        — Phase plans and milestone evidence
-docker/      — Dockerfile for dllmd container builds
+docker/      — Dockerfiles for dllmd and CUDA runtime container builds
 manifests/   — Model manifest files (GGUF quantization specs)
-scripts/     — Container and helper scripts
 apps/web/    — Web UI
 ```
 
@@ -95,6 +98,10 @@ mise run build       # Build Rust release binaries and the web app
 mise run dev:web     # Start the web app development server
 mise run dev:daemon  # Run the dllmd daemon
 mise run dev:cli     # Run the dllm CLI
+mise run dev:gpu-nodes         # Start the owner GPU dev node (docker compose, GPU 0)
+mise run dev:gpu-image:build   # Build the CUDA dev image locally
+mise run dev:gpu-nodes:local   # Start the GPU dev node from the local CUDA image
+mise run dev:gpu-nodes:down    # Stop the GPU dev nodes
 mise run ci          # Run fmt, lint, test, and build
 ```
 

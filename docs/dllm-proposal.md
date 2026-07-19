@@ -218,6 +218,20 @@ It chooses the simplest placement satisfying the workload. Whole-model placement
 
 Placement changes are versioned. Existing requests remain attached to their placement generation; new requests use the new generation after all required workers report ready.
 
+### 9.3 Hardware auto-detection and GPU/context auto-tuning
+
+A node loading a model for the first time on a given backend requires no operator-supplied `gpu_layers` or `context_size`:
+
+1. `dllm-llama-server` exposes a `--fit` mode that reuses `llama-cpp-4`'s own device-memory query and layer-fitting logic (the same logic used to load the model) to produce an instant `gpu_layers`/`context_size` estimate: maximize layers offloaded to GPU first, then fit the largest context in whatever memory remains.
+2. `dllmd` shells out to that mode before starting a worker, then starts the worker on the instant estimate. No detection path is duplicated and no GGUF parsing is hand-rolled.
+3. Once the worker is serving, `dllmd` runs a short real prompt-and-decode pass to measure actual peak memory and decode throughput, and records the result as a `HardwareBenchmark` (model, backend, `gpu_layers`, context size, concurrency, throughput, peak memory) — the same protocol type placement scoring already reads (section 9.1).
+4. The benchmark is cached per model and backend on that node. A later load of the same pair reuses the cached result immediately rather than re-fitting or re-benchmarking.
+5. Resolution order: an explicit `DLLMD_GPU_LAYERS`/`DLLMD_CONTEXT_SIZE` or `PublishProfile`-supplied value wins if set (each independently); otherwise a cached benchmark for this model and backend; otherwise the instant fit estimate; otherwise a fixed fallback if detection itself fails.
+
+Benchmark publishing signs and applies automatically on the owner node, which holds the signing key, and degrades gracefully (log-and-skip) on member nodes, which don't. This closes the gap Phase 2 originally left in "hardware benchmark profiles and automatic placement recommendations": the protocol types and placement-scoring consumer existed before automatic population of the data they consume did.
+
+Known limitations: a node's free VRAM can drift between a cached benchmark and a later load (another process claims memory) without invalidating the cache, and the background benchmark competes with real inference traffic if requests arrive before it finishes.
+
 ---
 
 ## 10. Model runtime feasibility
