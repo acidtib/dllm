@@ -125,3 +125,9 @@ cargo build --release
 cargo run --release --bin dllmd -- --help
 cargo run --release --bin dllm -- --help
 ```
+
+## License
+
+- The project is licensed under Apache-2.0.
+- All new code must be Apache-2.0.
+- Vendored third-party code retains its original license and is noted in its crate.
