@@ -100,6 +100,7 @@ pub(crate) async fn benchmark_and_publish(
     runtime_url: String,
     model_label: String,
     fit: dllm_runtime::FitReport,
+    gpu_layers: u32,
     context_size: u32,
 ) {
     let already_benchmarked = state
@@ -130,7 +131,7 @@ pub(crate) async fn benchmark_and_publish(
     let benchmark = HardwareBenchmark {
         model: model_label,
         backend: fit.backend,
-        gpu_layers: fit.n_gpu_layers,
+        gpu_layers,
         context_size,
         concurrency: 1,
         prompt_tokens_per_second_milli: measured.prompt_tokens_per_second_milli,

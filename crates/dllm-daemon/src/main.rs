@@ -222,14 +222,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         budget_enforcer: Arc::new(BudgetEnforcer::new()),
         rate_limiter: Arc::new(RateLimiter::new()),
         access_request_rate_config: RateLimitConfig {
-            max_requests: std::env::var("DLLMD_ACCESS_REQUEST_RATE_LIMIT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10),
-            window_seconds: std::env::var("DLLMD_ACCESS_REQUEST_RATE_WINDOW")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
+            max_requests: parse_env("DLLMD_ACCESS_REQUEST_RATE_LIMIT", 10),
+            window_seconds: parse_env("DLLMD_ACCESS_REQUEST_RATE_WINDOW", 60),
         },
         audit_log: Some(Arc::new(AuditLog::new(
             state_path
@@ -239,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             10 * 1024 * 1024, // 10 MB rotation threshold
         ))),
     };
-    if let Some((fit, model_label, context_size)) = pending_benchmark {
+    if let Some((fit, model_label, gpu_layers, context_size)) = pending_benchmark {
         if let Some(runtime_url) = primary_state.runtime_url.read().await.clone() {
             let node_pubkey = node_key.verifying_key().to_bytes();
             let benchmark_state = primary_state.clone();
@@ -249,6 +243,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 runtime_url,
                 model_label,
                 fit,
+                gpu_layers,
                 context_size,
             ));
         }
@@ -428,7 +423,7 @@ fn resolve_gpu_config(
 struct RuntimeActivation {
     runtime_url: Option<String>,
     runtime_worker: Option<RuntimeWorker>,
-    benchmark_context: Option<(dllm_runtime::FitReport, String, u32)>,
+    benchmark_context: Option<(dllm_runtime::FitReport, String, u32, u32)>,
 }
 
 async fn start_configured_runtime(
@@ -544,7 +539,8 @@ async fn start_configured_runtime(
         mmproj: std::env::var("DLLMD_MMPROJ_PATH").ok().map(PathBuf::from),
         hf_home,
     };
-    let benchmark_context = fit_report.map(|report| (report, model_label, context_size));
+    let benchmark_context =
+        fit_report.map(|report| (report, model_label, gpu_layers, context_size));
     let worker = RuntimeWorker::start_bundled(&config, Duration::from_secs(300)).await?;
     Ok(RuntimeActivation {
         runtime_url: Some(worker.endpoint().to_owned()),
