@@ -26,3 +26,8 @@ dllm-protocol = { path = "crates/dllm-protocol" }
 dllm-runtime = { path = "crates/dllm-runtime" }
 dllm-transport = { path = "crates/dllm-transport" }
 dllm-daemon = { path = "crates/dllm-daemon" }
+
+# Pinned fork adding the backend-dl feature (GGML_BACKEND_DL dynamic backends).
+[patch.crates-io]
+llama-cpp-4 = { git = "https://github.com/acidtib/llama-cpp-rs", rev = "dd6c209c96d1f0f6e01eea3706ef0321daa6a9ef" }
+llama-cpp-sys-4 = { git = "https://github.com/acidtib/llama-cpp-rs", rev = "dd6c209c96d1f0f6e01eea3706ef0321daa6a9ef" }
