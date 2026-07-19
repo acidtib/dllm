@@ -149,6 +149,8 @@ pub struct RuntimeCapability {
 pub struct HardwareBenchmark {
     pub model: String,
     pub backend: String,
+    #[serde(default)]
+    pub gpu_layers: u32,
     pub context_size: u32,
     pub concurrency: u32,
     pub prompt_tokens_per_second_milli: u64,
@@ -912,5 +914,38 @@ mod tests {
         assert_eq!(parsed.reporter_pubkey, report.reporter_pubkey);
         assert_eq!(parsed.subject_pubkey, report.subject_pubkey);
         assert_eq!(parsed.category, report.category);
+    }
+
+    #[test]
+    fn hardware_benchmark_gpu_layers_defaults_to_zero_when_absent_from_json() {
+        let json = r#"{
+            "model": "gemma",
+            "backend": "vulkan",
+            "context_size": 2048,
+            "concurrency": 1,
+            "prompt_tokens_per_second_milli": 10000,
+            "decode_tokens_per_second_milli": 5000,
+            "peak_memory_bytes": 4200000000
+        }"#;
+        let benchmark: HardwareBenchmark = serde_json::from_str(json).unwrap();
+        assert_eq!(benchmark.gpu_layers, 0);
+    }
+
+    #[test]
+    fn hardware_benchmark_gpu_layers_round_trips() {
+        let benchmark = HardwareBenchmark {
+            model: "gemma".into(),
+            backend: "vulkan".into(),
+            gpu_layers: 32,
+            context_size: 2048,
+            concurrency: 1,
+            prompt_tokens_per_second_milli: 10_000,
+            decode_tokens_per_second_milli: 5_000,
+            peak_memory_bytes: 4_200_000_000,
+        };
+        let json = serde_json::to_value(&benchmark).unwrap();
+        assert_eq!(json["gpu_layers"], 32);
+        let round_tripped: HardwareBenchmark = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, benchmark);
     }
 }

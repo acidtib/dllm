@@ -2303,6 +2303,7 @@ mod tests {
             benchmarks: vec![HardwareBenchmark {
                 model: "gemma".into(),
                 backend: "vulkan".into(),
+                gpu_layers: 18,
                 context_size: 2048,
                 concurrency: 1,
                 prompt_tokens_per_second_milli: 10_000,

@@ -543,6 +543,7 @@ async fn benchmark_and_publish(
     let benchmark = HardwareBenchmark {
         model: model_label,
         backend: fit.backend,
+        gpu_layers: fit.n_gpu_layers,
         context_size,
         concurrency: 1,
         prompt_tokens_per_second_milli: measured.prompt_tokens_per_second_milli,
@@ -1147,6 +1148,7 @@ mod tests {
             benchmarks: vec![dllm_protocol::HardwareBenchmark {
                 model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
                 backend: "vulkan".into(),
+                gpu_layers: 18,
                 context_size: 2048,
                 concurrency: 1,
                 prompt_tokens_per_second_milli: 1_000,
@@ -1157,6 +1159,7 @@ mod tests {
         let new_benchmark = dllm_protocol::HardwareBenchmark {
             model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
             backend: "cuda".into(),
+            gpu_layers: 32,
             context_size: 8192,
             concurrency: 1,
             prompt_tokens_per_second_milli: 9_000,
