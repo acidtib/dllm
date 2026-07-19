@@ -3,6 +3,8 @@ use std::{path::PathBuf, process::Stdio, time::Duration};
 use thiserror::Error;
 use tokio::{process::Child, time::Instant};
 
+pub mod backend;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelManifest {
     pub schema_version: u32,
