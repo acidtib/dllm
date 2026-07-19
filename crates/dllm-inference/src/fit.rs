@@ -26,11 +26,11 @@ pub struct FitConfig {
     pub backend_label: String,
 }
 
-/// Initializes a backend and computes a [`FitReport`] for the model.
+/// Computes a [`FitReport`] for the model using the shared process backend.
 pub fn fit_model(config: &FitConfig) -> anyhow::Result<FitReport> {
-    let backend = LlamaBackend::init()?;
+    let backend = crate::shared_backend()?;
     run_fit(
-        &backend,
+        backend,
         &config.model_path,
         config.n_ctx_min,
         config.margin_bytes,

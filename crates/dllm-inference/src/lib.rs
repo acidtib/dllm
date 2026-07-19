@@ -32,10 +32,33 @@ mod resolve;
 mod tokenize;
 
 use llama_cpp_4::prelude::*;
+use std::sync::{Mutex, OnceLock};
 use std::{num::NonZeroU32, path::PathBuf};
 // The llama.cpp prelude re-exports its own `Result<T>` alias; keep the std one
 // so our `Result<_, InferenceError>` signatures resolve correctly.
 use std::result::Result;
+
+/// The llama.cpp backend is a process-global singleton: `LlamaBackend::init`
+/// may be called only once per process and errors afterward. Both model loading
+/// and fitting run inside the daemon process, so they must share one backend
+/// rather than each initializing their own. Returns a `'static` reference to the
+/// single backend, initializing it on first use.
+pub(crate) fn shared_backend() -> anyhow::Result<&'static LlamaBackend> {
+    static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+    static INIT_LOCK: Mutex<()> = Mutex::new(());
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+    // Serialize the fallible init so `LlamaBackend::init` runs exactly once even
+    // under concurrent first callers (OnceLock has no stable fallible init).
+    let _guard = INIT_LOCK.lock().unwrap();
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+    let backend = LlamaBackend::init()?;
+    let _ = BACKEND.set(backend);
+    Ok(BACKEND.get().expect("backend was just set"))
+}
 
 pub use fit::{fit_model, FitConfig, FitReport};
 pub use generate::{FinishReason, InferenceParams};
@@ -97,7 +120,7 @@ pub struct ModelConfig {
 /// thread-safe, so callers serialize generation themselves (the server uses a
 /// semaphore); a fresh context is created per request.
 pub struct InferenceModel {
-    pub(crate) backend: LlamaBackend,
+    pub(crate) backend: &'static LlamaBackend,
     pub(crate) model: LlamaModel,
     pub(crate) chat_template: Option<String>,
     pub(crate) model_name: String,
@@ -117,14 +140,14 @@ impl InferenceModel {
             .unwrap_or("llama.cpp")
             .to_string();
 
-        let backend = LlamaBackend::init()?;
+        let backend = shared_backend()?;
 
         let mut model_params = LlamaModelParams::default();
         if config.n_gpu_layers > 0 {
             model_params = model_params.with_n_gpu_layers(config.n_gpu_layers);
         }
 
-        let model = LlamaModel::load_from_file(&backend, &config.model_path, &model_params)?;
+        let model = LlamaModel::load_from_file(backend, &config.model_path, &model_params)?;
 
         let chat_template = model.get_chat_template(65536).ok();
         if chat_template.is_some() {

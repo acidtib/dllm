@@ -38,9 +38,13 @@ DLLM_TEST_MODEL=/path/to/model.gguf \
   cargo test -p dllm-daemon --features vulkan --test embedded_runtime_tests -- --nocapture
 ```
 
-The suite loads with `n_gpu_layers = 0`. To offload to the GPU for accelerator
-runs, set `DLLMD_GPU_LAYERS` in the manual daemon run below rather than the unit
-suite, or run the daemon end to end.
+The suite loads on CPU by default. To offload to the accelerator, set
+`DLLM_TEST_GPU_LAYERS` (e.g. `99`) so the same suite runs on the GPU:
+
+```sh
+DLLM_TEST_MODEL=/path/to/model.gguf DLLM_TEST_GPU_LAYERS=99 \
+  cargo test -p dllm-daemon --features vulkan --test embedded_runtime_tests
+```
 
 ## Hardware matrix
 
@@ -51,8 +55,8 @@ enumerates devices and then aborts on first compute).
 
 | Backend          | Host / GPU                    | Suite | Inference | Multi-GPU enumerated | NCCL | Notes |
 |------------------|-------------------------------|-------|-----------|----------------------|------|-------|
-| CPU              | (fill in)                     |       |           | n/a                  | n/a  |       |
-| Vulkan           | (fill in)                     |       |           |                      | n/a  |       |
+| CPU              | x86-64 (CachyOS)              | pass  | pass      | n/a                  | n/a  | Qwen2.5-0.5B-Instruct Q4_K_M, 12/12 tests in ~9s |
+| Vulkan           | 2x GTX 1080                   |       |           |                      | n/a  | DLLM_TEST_GPU_LAYERS=99 |
 | CUDA single-GPU  | (fill in)                     |       |           | n/a                  |      |       |
 | CUDA multi-GPU   | (fill in)                     |       |           |                      |      |       |
 

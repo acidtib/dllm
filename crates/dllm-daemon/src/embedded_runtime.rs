@@ -69,6 +69,11 @@ impl EmbeddedRuntime {
         &self.model_label
     }
 
+    /// The loaded model, for direct tokenize/embed/generate use (tests, tools).
+    pub fn engine(&self) -> &InferenceModel {
+        &self.engine
+    }
+
     /// Prepare a chat request (validation, prompt render) and resolve any image
     /// sources to bytes. Runs off the generation semaphore since it does no
     /// llama.cpp compute beyond prompt rendering.

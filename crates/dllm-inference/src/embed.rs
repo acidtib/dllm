@@ -36,7 +36,7 @@ impl InferenceModel {
 
             let mut ctx = self
                 .model
-                .new_context(&self.backend, ctx_params)
+                .new_context(self.backend, ctx_params)
                 .map_err(|e| InferenceError::internal(format!("context init: {e}")))?;
 
             let mut batch = LlamaBatch::new(n_ctx as usize, 1);

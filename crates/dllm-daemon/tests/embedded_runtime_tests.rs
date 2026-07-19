@@ -19,6 +19,7 @@ use dllm_daemon::embedded_runtime::{active_backend, EmbeddedRuntime};
 use dllm_inference::{FitConfig, InferenceModel, InferenceParams, ModelConfig, ModelSource};
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 /// Path to a GGUF model, or `None` to skip the model-backed tests.
@@ -26,33 +27,43 @@ fn test_model() -> Option<PathBuf> {
     std::env::var("DLLM_TEST_MODEL").ok().map(PathBuf::from)
 }
 
-/// Load the model on this thread. CPU only (n_gpu_layers = 0) so the suite runs
-/// anywhere; accelerator coverage is recorded in docs/gpu-native-test.md.
-fn load_model(path: PathBuf) -> InferenceModel {
-    let config = ModelConfig {
-        model_path: path,
-        n_gpu_layers: 0,
-        ctx_size: None,
-        #[cfg(feature = "mtmd")]
-        mmproj: None,
-    };
-    InferenceModel::load(config).expect("model load")
+/// A single model shared across all tests. The llama.cpp backend is a
+/// process-global singleton, so the model is loaded exactly once (CPU only, so
+/// the suite runs anywhere; accelerator coverage is in docs/gpu-native-test.md).
+fn shared_runtime() -> Option<&'static EmbeddedRuntime> {
+    static RUNTIME: OnceLock<Option<EmbeddedRuntime>> = OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let path = test_model()?;
+            // Offload to the accelerator when DLLM_TEST_GPU_LAYERS is set, so the
+            // same suite qualifies CUDA/Vulkan builds; defaults to CPU.
+            let n_gpu_layers = std::env::var("DLLM_TEST_GPU_LAYERS")
+                .ok()
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(0);
+            let config = ModelConfig {
+                model_path: path,
+                n_gpu_layers,
+                ctx_size: None,
+                #[cfg(feature = "mtmd")]
+                mmproj: None,
+            };
+            let model = InferenceModel::load(config).expect("model load");
+            Some(EmbeddedRuntime::new(
+                model,
+                1,
+                active_backend(),
+                "test-model".to_string(),
+            ))
+        })
+        .as_ref()
 }
 
-fn load_runtime(path: PathBuf) -> EmbeddedRuntime {
-    EmbeddedRuntime::new(
-        load_model(path),
-        1,
-        active_backend(),
-        "test-model".to_string(),
-    )
-}
-
-/// Returns the model path or prints a skip notice and returns `None`.
-macro_rules! model_or_skip {
+/// Returns the shared runtime or prints a skip notice and returns from the test.
+macro_rules! runtime_or_skip {
     () => {
-        match test_model() {
-            Some(path) => path,
+        match shared_runtime() {
+            Some(runtime) => runtime,
             None => {
                 eprintln!("skipping: set DLLM_TEST_MODEL to a GGUF path to run this test");
                 return;
@@ -93,7 +104,7 @@ fn inference_params_reject_out_of_range_values() {
 
 #[tokio::test]
 async fn chat_blocking_returns_wellformed_completion() {
-    let runtime = load_runtime(model_or_skip!());
+    let runtime = runtime_or_skip!();
     let response = runtime
         .chat_blocking(json!({
             "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
@@ -114,7 +125,7 @@ async fn chat_blocking_returns_wellformed_completion() {
 
 #[tokio::test]
 async fn chat_stream_emits_role_content_finish_and_done() {
-    let runtime = load_runtime(model_or_skip!());
+    let runtime = runtime_or_skip!();
     let mut rx = runtime
         .chat_stream(json!({
             "messages": [{"role": "user", "content": "Count to three."}],
@@ -143,7 +154,7 @@ async fn chat_stream_emits_role_content_finish_and_done() {
 
 #[tokio::test]
 async fn chat_rejects_invalid_parameters() {
-    let runtime = load_runtime(model_or_skip!());
+    let runtime = runtime_or_skip!();
     let err = runtime
         .chat_blocking(json!({
             "messages": [{"role": "user", "content": "hi"}],
@@ -156,7 +167,7 @@ async fn chat_rejects_invalid_parameters() {
 
 #[test]
 fn completions_generate_produces_text() {
-    let model = load_model(model_or_skip!());
+    let model = runtime_or_skip!().engine();
     let params = InferenceParams::from_request(
         &json!({ "max_tokens": 16, "temperature": 0.0 }),
         "The capital of France is".to_string(),
@@ -175,7 +186,7 @@ fn completions_generate_produces_text() {
 
 #[test]
 fn embeddings_are_unit_normalized() {
-    let model = load_model(model_or_skip!());
+    let model = runtime_or_skip!().engine();
     let vectors = model.embed(&["hello world".to_string()]).expect("embed");
     assert_eq!(vectors.len(), 1);
     assert_eq!(vectors[0].len(), model.n_embd() as usize);
@@ -188,7 +199,7 @@ fn embeddings_are_unit_normalized() {
 
 #[test]
 fn tokenize_detokenize_round_trips() {
-    let model = load_model(model_or_skip!());
+    let model = runtime_or_skip!().engine();
     let pieces = model
         .tokenize("Hello, world!", false, false)
         .expect("tokenize");
@@ -200,7 +211,13 @@ fn tokenize_detokenize_round_trips() {
 
 #[test]
 fn fit_reports_cpu_backend_and_context() {
-    let path = model_or_skip!();
+    let path = match test_model() {
+        Some(path) => path,
+        None => {
+            eprintln!("skipping: set DLLM_TEST_MODEL to a GGUF path to run this test");
+            return;
+        }
+    };
     let report = dllm_inference::fit_model(&FitConfig {
         model_path: path,
         n_ctx_min: 512,
@@ -214,7 +231,7 @@ fn fit_reports_cpu_backend_and_context() {
 
 #[tokio::test]
 async fn cancelled_stream_stops_without_panicking() {
-    let runtime = load_runtime(model_or_skip!());
+    let runtime = runtime_or_skip!();
     let mut rx = runtime
         .chat_stream(json!({
             "messages": [{"role": "user", "content": "Write a very long story."}],
@@ -236,15 +253,17 @@ async fn cancelled_stream_stops_without_panicking() {
 
 #[tokio::test]
 async fn async_caller_can_bound_wait_with_timeout() {
-    let runtime = load_runtime(model_or_skip!());
+    let runtime = runtime_or_skip!();
     // A long generation under a short timeout: the async wait returns Elapsed.
     // The underlying blocking thread keeps running to completion (llama.cpp is
     // not cancellable mid-token), which is the documented limitation.
+    // Keep max_tokens modest: the blocking generation runs to completion even
+    // after the async wait is abandoned, and the test runtime joins it on drop.
     let result = tokio::time::timeout(
         Duration::from_millis(50),
         runtime.chat_blocking(json!({
             "messages": [{"role": "user", "content": "Write a very long story."}],
-            "max_tokens": 4096,
+            "max_tokens": 96,
             "temperature": 0.0,
         })),
     )
