@@ -60,4 +60,4 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y cmake build-essential libclang-dev
       - run: cargo build --release --locked
       - run: cargo run --release --bin dllmd -- --help
-      - run: cargo run --release --bin dllm-llama-server -- --help
+      - run: cargo run --release --bin dllm -- --help

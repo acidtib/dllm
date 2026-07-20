@@ -1,9 +1,8 @@
 //! In-process inference runtime for `dllmd`.
 //!
-//! Replaces the bundled `dllm-llama-server` child process: the daemon loads a
-//! model with `dllm-inference` and serves local chat completions by direct
-//! function call. Peer forwarding and the external `DLLMD_RUNTIME_URL` adapter
-//! still use HTTP.
+//! The daemon loads a model with `dllm-inference` and serves local chat
+//! completions by direct function call, in-process. Peer forwarding and the
+//! external `DLLMD_RUNTIME_URL` adapter still use HTTP.
 //!
 //! llama.cpp contexts are not thread-safe, so generation is serialized through
 //! a semaphore and always runs on a blocking thread. A native crash inside

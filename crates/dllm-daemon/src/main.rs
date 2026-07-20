@@ -10,7 +10,6 @@ use dllm_daemon::{
     NetworkStore, StoreError,
 };
 use dllm_protocol::{now_unix, HardwareBenchmark};
-use dllm_runtime::{LlamaCppConfig, RuntimeWorker};
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
     PeerNodeHandle,
@@ -171,7 +170,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut runtime_worker = None;
     let mut pending_benchmark = None;
     let mut embedded_runtime = None;
     if !joining_at_start {
@@ -186,12 +184,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or_default();
         let activation = start_configured_runtime(&existing_benchmarks).await?;
         runtime_url = activation.runtime_url;
-        runtime_worker = activation.runtime_worker;
         embedded_runtime = activation.embedded;
         pending_benchmark = activation.benchmark_context;
     }
     let runtime_url = Arc::new(tokio::sync::RwLock::new(runtime_url));
-    let runtime_worker = Arc::new(Mutex::new(runtime_worker));
     let embedded = Arc::new(tokio::sync::RwLock::new(embedded_runtime));
     let primary_state = api::ApiState {
         store: Arc::new(Mutex::new(store)),
@@ -261,7 +257,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_runtime_activation(
             primary_state.onboarding.clone(),
             runtime_url.clone(),
-            runtime_worker.clone(),
             embedded.clone(),
         );
     }
@@ -386,9 +381,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown())
         .await?;
     }
-    if let Some(worker) = runtime_worker.lock().await.take() {
-        worker.shutdown().await?;
-    }
     if let Some(peer) = peer_handle.lock().await.take() {
         peer.abort();
     }
@@ -414,7 +406,6 @@ fn resolve_gpu_config(
 
 struct RuntimeActivation {
     runtime_url: Option<String>,
-    runtime_worker: Option<RuntimeWorker>,
     embedded: Option<Arc<EmbeddedRuntime>>,
     benchmark_context: Option<(dllm_runtime::FitReport, String, u32, u32)>,
 }
@@ -423,7 +414,6 @@ impl RuntimeActivation {
     fn none() -> Self {
         Self {
             runtime_url: None,
-            runtime_worker: None,
             embedded: None,
             benchmark_context: None,
         }
@@ -437,27 +427,6 @@ async fn start_configured_runtime(
     if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
         return Ok(RuntimeActivation {
             runtime_url: Some(runtime_url),
-            ..RuntimeActivation::none()
-        });
-    }
-    // External llama-server-compatible child binary over HTTP.
-    if let Ok(binary) = std::env::var("DLLMD_RUNTIME_BIN") {
-        let Ok(model) = std::env::var("DLLMD_MODEL_PATH") else {
-            return Ok(RuntimeActivation::none());
-        };
-        let config = LlamaCppConfig {
-            binary: binary.into(),
-            model: model.into(),
-            host: "127.0.0.1".into(),
-            port: parse_env("DLLMD_RUNTIME_PORT", 8081),
-            gpu_layers: std::env::var("DLLMD_GPU_LAYERS").unwrap_or_else(|_| "38".into()),
-            context_size: parse_env("DLLMD_CONTEXT_SIZE", 2048),
-            extra_args: vec![],
-        };
-        let worker = RuntimeWorker::start(&config, Duration::from_secs(300)).await?;
-        return Ok(RuntimeActivation {
-            runtime_url: Some(worker.endpoint().to_owned()),
-            runtime_worker: Some(worker),
             ..RuntimeActivation::none()
         });
     }
@@ -571,7 +540,6 @@ async fn start_configured_runtime(
 fn spawn_runtime_activation(
     onboarding: Arc<tokio::sync::RwLock<api::OnboardingStatus>>,
     runtime_url: Arc<tokio::sync::RwLock<Option<String>>>,
-    runtime_worker: Arc<Mutex<Option<RuntimeWorker>>>,
     embedded: Arc<tokio::sync::RwLock<Option<Arc<EmbeddedRuntime>>>>,
 ) {
     tokio::spawn(async move {
@@ -592,7 +560,6 @@ fn spawn_runtime_activation(
         match activation {
             Ok(activation) => {
                 *runtime_url.write().await = activation.runtime_url;
-                *runtime_worker.lock().await = activation.runtime_worker;
                 *embedded.write().await = activation.embedded;
                 println!("onboarding activation completed");
             }
@@ -974,14 +941,8 @@ mod tests {
             detail: "waiting".into(),
         }));
         let runtime_url = Arc::new(tokio::sync::RwLock::new(Some("not-started".into())));
-        let runtime_worker = Arc::new(Mutex::new(None));
         let embedded = Arc::new(tokio::sync::RwLock::new(None));
-        spawn_runtime_activation(
-            onboarding.clone(),
-            runtime_url.clone(),
-            runtime_worker,
-            embedded,
-        );
+        spawn_runtime_activation(onboarding.clone(), runtime_url.clone(), embedded);
 
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(runtime_url.read().await.as_deref(), Some("not-started"));

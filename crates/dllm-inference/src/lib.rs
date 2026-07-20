@@ -2,8 +2,8 @@
 //!
 //! This crate owns every llama.cpp call: model resolution and loading, memory
 //! fitting, prompt rendering, text and multimodal generation, embeddings, and
-//! tokenization. It is transport-agnostic. The `dllm-llama-server` binary is a
-//! thin HTTP adapter over this library, and `dllmd` embeds it directly.
+//! tokenization. It is transport-agnostic. `dllmd` embeds it directly and
+//! serves inference in-process.
 //!
 //! Errors are reported through [`InferenceError`], which distinguishes a caller
 //! mistake ([`InferenceError::InvalidRequest`]) from an internal failure

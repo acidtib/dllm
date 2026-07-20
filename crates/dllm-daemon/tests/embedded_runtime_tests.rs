@@ -1,10 +1,9 @@
 //! Conformance suite for the embedded inference runtime.
 //!
-//! The embedded runtime and the standalone `dllm-llama-server` share the same
-//! `dllm-inference` core (the `openai` chat layer, generation, embeddings,
-//! tokenization, and fit), so parity between the two adapters is guaranteed by
-//! construction. This suite exercises that shared core against a real model to
-//! confirm the observable behavior.
+//! The embedded runtime serves inference through the `dllm-inference` core (the
+//! `openai` chat layer, generation, embeddings, tokenization, and fit). This
+//! suite exercises that core against a real model to confirm the observable
+//! behavior.
 //!
 //! The model-backed tests are gated on the `DLLM_TEST_MODEL` environment
 //! variable pointing at a local GGUF file. Without it they print a skip notice

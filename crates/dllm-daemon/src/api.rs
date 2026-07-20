@@ -1967,7 +1967,7 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
     for placement in placements {
         let (runtime_url, peer, ready, embedded) = if placement.node_pubkey == owner {
             // Prefer the in-process embedded runtime; fall back to an external
-            // runtime_url (DLLMD_RUNTIME_URL / DLLMD_RUNTIME_BIN) when present.
+            // runtime_url (DLLMD_RUNTIME_URL) when present.
             if let Some(engine) = state.embedded.read().await.clone() {
                 (String::new(), false, true, Some(engine))
             } else if let Some(runtime_url) = state.runtime_url.read().await.clone() {

@@ -1,10 +1,9 @@
 //! Framework-agnostic OpenAI chat-completions orchestration.
 //!
-//! This is the shared chat protocol layer used by both the standalone
-//! `dllm-llama-server` HTTP binary and the embedded runtime in `dllmd`, so both
-//! produce byte-identical responses. It has no web-framework or transport
-//! dependency: the caller reads the request body, resolves any image sources,
-//! runs generation (blocking), and frames the emitted chunks (SSE) itself.
+//! This is the shared chat protocol layer used by the embedded runtime in
+//! `dllmd`. It has no web-framework or transport dependency: the caller reads
+//! the request body, resolves any image sources, runs generation (blocking),
+//! and frames the emitted chunks (SSE) itself.
 //!
 //! Flow:
 //! 1. [`prepare_chat`] validates parameters (before the expensive prompt
