@@ -20,8 +20,8 @@
 
 - `dllmd` (daemon) and `dllm` (CLI) are the only binaries users must install
   and operate. `dllm-dev-probe` is a diagnostic tool, not for production use.
-- `dllm-llama-server` is the bundled inference runtime `dllmd` spawns
-  automatically; it is not a binary users install or invoke directly.
+- `dllmd` runs inference in-process via the `dllm-inference` crate (embedded
+  llama.cpp). There is no separate runtime binary to install or spawn.
 - Do not introduce a dedicated relay, discovery, bootstrap, or coordination
   service as a requirement.
 - Ordinary participating `dllmd` nodes provide discovery, NAT traversal, and
@@ -54,15 +54,14 @@ crates/dllm-protocol     — Shared types: network state, membership, identity,
 crates/dllm-daemon       — Node daemon: API server, credentials, inference
                             registry, network store (binary name: dllmd)
 crates/dllm-cli          — CLI client (binary name: dllm)
-crates/dllm-runtime      — Inference runtime: manages llama.cpp child processes
-                            (bundled dllm-llama-server, or an external
-                            llama-server-compatible binary)
+crates/dllm-runtime      — Model manifest and memory-fit types (ModelManifest,
+                            FitReport) and backend selection
+crates/dllm-inference    — In-process inference core: all llama.cpp calls
+                            (loading, fit, generation, embeddings, tokenization,
+                            and the OpenAI chat layer). dllmd embeds it directly
 crates/dllm-transport    — libp2p peer transport layer
 crates/dllm-probe        — Standalone libp2p diagnostic tool (binary name:
                             dllm-dev-probe)
-crates/dllm-llama-server — Bundled OpenAI-compatible llama.cpp server,
-                            vendored from llama-cpp-rs (binary name:
-                            dllm-llama-server)
 ```
 
 ## Key directories
@@ -70,7 +69,8 @@ crates/dllm-llama-server — Bundled OpenAI-compatible llama.cpp server,
 ```
 .github/     — CI workflows
 docs/        — Phase plans and milestone evidence
-docker/      — Dockerfiles for dllmd and CUDA runtime container builds
+docker/      — Dockerfile.dllmd, one multi-stage build for the cpu, vulkan,
+               and cuda images
 manifests/   — Model manifest files (GGUF quantization specs)
 apps/web/    — Web UI
 ```
@@ -78,7 +78,7 @@ apps/web/    — Web UI
 ## Task runner
 
 Building requires CMake, a C++ compiler, and `libclang` (for bindgen), since
-`dllm-llama-server` compiles llama.cpp from source. On Debian/Ubuntu:
+`dllm-inference` compiles llama.cpp from source. On Debian/Ubuntu:
 `sudo apt-get install -y cmake build-essential libclang-dev`. `mise install`
 does not provision these.
 
@@ -125,9 +125,3 @@ cargo build --release
 cargo run --release --bin dllmd -- --help
 cargo run --release --bin dllm -- --help
 ```
-
-## License
-
-- The project is licensed under Apache-2.0.
-- All new code must be Apache-2.0.
-- Vendored third-party code retains its original license and is noted in its crate.
