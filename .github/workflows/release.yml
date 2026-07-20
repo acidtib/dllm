@@ -22,11 +22,17 @@ env:
 jobs:
   build:
     name: Build ${{ matrix.variant }} (Linux x86_64)
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        variant: [cpu, vulkan, cuda]
+        include:
+          - variant: cpu
+            os: ubuntu-22.04
+          - variant: vulkan
+            os: ubuntu-24.04
+          - variant: cuda
+            os: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
 
