@@ -7,7 +7,6 @@ services:
       DLLMD_NETWORK: dev-gpu-mesh
       DLLMD_MANAGEMENT_TOKEN: node-a-token
       DLLMD_API_KEY: node-a-key
-      DLLMD_HF_MODEL: ${DLLM_DEV_MODEL:-Qwen/Qwen2.5-7B-Instruct-GGUF}
       DLLMD_GPU_LAYERS: "38"
       DLLMD_BIND: 127.0.0.1:7337
       DLLMD_RUNTIME_PORT: "8081"

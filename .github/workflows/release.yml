@@ -105,7 +105,8 @@ jobs:
           package=dllm-${version}-x86_64-linux-${{ matrix.variant }}
           install -Dm755 target/release/dllm dist/${package}/dllm
           install -Dm755 target/release/dllmd dist/${package}/dllmd
-          install -Dm644 README.md dist/${package}/README.md
+          install -Dm644 RELEASE_README.md dist/${package}/README.md
+          install -Dm644 LICENSE dist/${package}/LICENSE
           install -Dm644 LICENSE.llama-cpp-rs dist/${package}/LICENSE.llama-cpp-rs
           tar -C dist -czf dist/${package}.tar.gz ${package}
           cd dist
@@ -138,6 +139,7 @@ jobs:
           # if needed, creates the tag at the checked-out commit.
           tag_name: ${{ env.RELEASE_TAG }}
           name: ${{ env.RELEASE_TAG }}
+          draft: true
           generate_release_notes: true
           files: |
             dist/*.tar.gz

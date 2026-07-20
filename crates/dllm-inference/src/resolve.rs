@@ -5,6 +5,18 @@ use anyhow::Context as _;
 use hf_hub::api::sync::{Api, ApiBuilder};
 use std::path::PathBuf;
 
+/// Hugging Face client pointed at `~/.dllm/models`, so downloaded GGUFs land
+/// alongside the rest of DLLM's per-user files rather than the default HF
+/// cache. Falls back to the hf-hub default cache when the home directory
+/// can't be resolved.
+fn hf_api_builder() -> ApiBuilder {
+    let builder = ApiBuilder::new().with_progress(true);
+    match dirs::home_dir() {
+        Some(home) => builder.with_cache_dir(home.join(".dllm").join("models")),
+        None => builder,
+    }
+}
+
 /// Where a model comes from. The CLI maps its `local` / `hf-model` subcommands
 /// onto this; the daemon constructs it directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +42,7 @@ impl ModelSource {
         match self {
             ModelSource::Local(path) => Ok(path),
             ModelSource::HuggingFace { repo, model } => {
-                let api = ApiBuilder::new()
-                    .with_progress(true)
+                let api = hf_api_builder()
                     .build()
                     .context("failed to build HF API client")?;
                 resolve_hf(&api, &repo, model, allow_prompt)
@@ -234,7 +245,7 @@ const MMPROJ_PREFER: &[&str] = &[
 /// (or retrieves from local cache) and returns its path.
 #[cfg(feature = "mtmd")]
 pub fn download_mmproj_from_hf(repo: &str) -> Option<PathBuf> {
-    let api = match ApiBuilder::new().with_progress(true).build() {
+    let api = match hf_api_builder().build() {
         Ok(a) => a,
         Err(e) => {
             tracing::warn!("Could not build HF API client for mmproj lookup: {e}");

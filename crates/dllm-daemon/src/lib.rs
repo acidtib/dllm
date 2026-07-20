@@ -45,6 +45,15 @@ fn default_dir_in(home: Option<PathBuf>) -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// Subdirectory holding the node's persisted key material (authority, node,
+/// transport keys), kept separate from state/config files. Created eagerly
+/// like [`default_dir`].
+fn default_keys_dir() -> std::io::Result<PathBuf> {
+    let dir = default_dir()?.join("keys");
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
 pub fn default_state_path() -> std::io::Result<PathBuf> {
     Ok(default_dir()?.join("state.json"))
 }
@@ -54,7 +63,7 @@ pub fn default_owner_key_path() -> std::io::Result<PathBuf> {
 }
 
 pub fn default_authority_key_path() -> std::io::Result<PathBuf> {
-    Ok(default_dir()?.join("authority.key"))
+    Ok(default_keys_dir()?.join("authority.key"))
 }
 
 pub fn migrate_legacy_authority_key(
@@ -92,11 +101,11 @@ pub fn load_or_create_node_key(path: &Path) -> Result<SigningKey, StoreError> {
 }
 
 pub fn default_node_key_path() -> std::io::Result<PathBuf> {
-    Ok(default_dir()?.join("node.key"))
+    Ok(default_keys_dir()?.join("node.key"))
 }
 
 pub fn default_transport_key_path() -> std::io::Result<PathBuf> {
-    Ok(default_dir()?.join("transport.key"))
+    Ok(default_keys_dir()?.join("transport.key"))
 }
 
 pub fn default_config_path() -> std::io::Result<PathBuf> {
