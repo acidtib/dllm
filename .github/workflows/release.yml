@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.variant }} (Linux x86_64)
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, vulkan, cuda]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches package version
+        shell: bash
+        run: |
+          package_version=$(sed -n '/^\[workspace.package\]/,/^$/s/^version = "\([^"]*\)"/\1/p' Cargo.toml)
+          test "${GITHUB_REF_NAME}" = "v${package_version}"
+
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.96"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.variant }}
+
+      - name: Install base build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake build-essential libclang-dev
+
+      - name: Install Vulkan build dependencies
+        if: matrix.variant == 'vulkan'
+        run: sudo apt-get install -y libvulkan-dev glslc spirv-headers spirv-tools
+
+      - name: Install CUDA toolkit
+        if: matrix.variant == 'cuda'
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get install -y cuda-toolkit-12-6 libnccl-dev
+          echo "CUDA_PATH=/usr/local/cuda" >> "$GITHUB_ENV"
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+          # SM 6.1 (Pascal), matching the container CUDA image.
+          echo "CMAKE_CUDA_ARCHITECTURES=61" >> "$GITHUB_ENV"
+
+      - name: Build web assets
+        run: |
+          bun install --frozen-lockfile
+          bun run --cwd apps/web build
+
+      - name: Select build features
+        id: features
+        shell: bash
+        run: |
+          case "${{ matrix.variant }}" in
+            cpu) echo "flags=" >> "$GITHUB_OUTPUT" ;;
+            vulkan) echo "flags=--features dllm-daemon/vulkan" >> "$GITHUB_OUTPUT" ;;
+            cuda) echo "flags=--features dllm-daemon/cuda" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Build release binaries
+        run: cargo build --release --locked --bin dllm --bin dllmd ${{ steps.features.outputs.flags }}
+
+      - name: Strip binaries
+        run: strip target/release/dllm target/release/dllmd
+
+      # A CPU build has no accelerator libraries, so it must start on the runner
+      # (no GPU). GPU builds link a driver that is absent here, so skip them.
+      - name: Smoke test CPU binary
+        if: matrix.variant == 'cpu'
+        run: ./target/release/dllmd --help
+
+      - name: Package archive
+        shell: bash
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          package=dllm-${version}-x86_64-linux-${{ matrix.variant }}
+          install -Dm755 target/release/dllm dist/${package}/dllm
+          install -Dm755 target/release/dllmd dist/${package}/dllmd
+          install -Dm644 README.md dist/${package}/README.md
+          install -Dm644 LICENSE.llama-cpp-rs dist/${package}/LICENSE.llama-cpp-rs
+          tar -C dist -czf dist/${package}.tar.gz ${package}
+          cd dist
+          sha256sum ${package}.tar.gz > ${package}.tar.gz.sha256
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dllm-${{ matrix.variant }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+          fail_on_unmatched_files: true
