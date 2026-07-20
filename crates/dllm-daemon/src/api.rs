@@ -379,16 +379,12 @@ pub async fn start_onboarding_workflow(
     let authority_url = authority_url.trim_end_matches('/').to_owned();
     let parsed_url = reqwest::Url::parse(&authority_url)
         .map_err(|_| (StatusCode::BAD_REQUEST, "invalid authority URL".into()))?;
-    let is_loopback_host = matches!(
-        parsed_url.host_str(),
-        Some("127.0.0.1") | Some("localhost") | Some("::1")
-    );
-    let allowed =
-        parsed_url.scheme() == "https" || (parsed_url.scheme() == "http" && is_loopback_host);
+    let allowed = parsed_url.scheme() == "https"
+        || (parsed_url.scheme() == "http" && is_local_network_host(&parsed_url));
     if !allowed {
         return Err((
             StatusCode::BAD_REQUEST,
-            "remote onboarding requires HTTPS".into(),
+            "public-network onboarding requires HTTPS".into(),
         ));
     }
     {
@@ -475,6 +471,30 @@ pub async fn start_onboarding_workflow(
         }
     });
     Ok((StatusCode::ACCEPTED, Json(joining)))
+}
+
+fn is_local_network_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return true;
+    }
+    let Ok(address) = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<std::net::IpAddr>()
+    else {
+        return false;
+    };
+    match address {
+        std::net::IpAddr::V4(address) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        std::net::IpAddr::V6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    }
 }
 
 async fn run_onboarding(state: ApiState, authority_url: String) -> Result<(), String> {
@@ -2761,6 +2781,34 @@ mod tests {
                 decode_tokens_per_second_milli: 5_000,
                 peak_memory_bytes: 2_000_000_000,
             }],
+        }
+    }
+
+    #[test]
+    fn onboarding_http_is_limited_to_local_network_addresses() {
+        for url in [
+            "http://127.0.0.1:7337",
+            "http://localhost:7337",
+            "http://192.168.1.73:7337",
+            "http://10.1.2.3:7337",
+            "http://172.16.4.5:7337",
+            "http://[fd00::73]:7337",
+            "http://169.254.1.2:7337",
+        ] {
+            assert!(
+                is_local_network_host(&reqwest::Url::parse(url).unwrap()),
+                "{url}"
+            );
+        }
+        for url in [
+            "http://8.8.8.8:7337",
+            "http://example.com:7337",
+            "http://192.0.2.1:7337",
+        ] {
+            assert!(
+                !is_local_network_host(&reqwest::Url::parse(url).unwrap()),
+                "{url}"
+            );
         }
     }
 
