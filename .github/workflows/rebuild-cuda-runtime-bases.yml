@@ -20,9 +20,9 @@ on:
           - sm100
           - sm120
       runtime_version:
-        description: Runtime version tag, increment when CUDA runtime sources change
+        description: Runtime version tag, increment when app or llama.cpp sources change
         required: true
-        default: v1
+        default: v2
         type: string
 
 permissions:

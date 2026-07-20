@@ -3,6 +3,14 @@ ARG CUDA_VERSION=12.9.1
 ARG CUDA_ARCHITECTURES=61
 ARG UBUNTU_VERSION=24.04
 
+FROM oven/bun:1 AS web-builder
+WORKDIR /src
+COPY package.json bun.lock ./
+COPY apps/web/package.json apps/web/package.json
+RUN bun install --frozen-lockfile
+COPY apps/web apps/web
+RUN bun run --cwd apps/web build
+
 FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS builder
 ARG RUST_VERSION
 ARG CUDA_ARCHITECTURES
@@ -16,12 +24,23 @@ ENV PATH=/root/.cargo/bin:${PATH}
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
 ENV CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
 COPY . .
-RUN cargo build --release --locked --bin dllm-llama-server \
-    --features dllm-llama-server/cuda \
-    && strip target/release/dllm-llama-server
+COPY --from=web-builder /src/apps/web/dist apps/web/dist
+RUN cargo build --release --locked --bin dllmd --bin dllm \
+    --features dllm-daemon/cuda \
+    && strip target/release/dllmd target/release/dllm
 
 FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
+COPY --from=builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=builder /src/target/release/dllm /usr/local/bin/dllm
+ENV DLLMD_STATE=/var/lib/dllm/state.json
+ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
+ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
+ENV DLLMD_P2P_KEY=/var/lib/dllm/transport.key
+ENV DLLMD_BIND=127.0.0.1:7337
+RUN mkdir -p /var/lib/dllm
+VOLUME /var/lib/dllm
+EXPOSE 7337 7444
+ENTRYPOINT ["dllmd"]

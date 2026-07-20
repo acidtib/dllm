@@ -21,13 +21,13 @@ jobs:
         include:
           - variant: cpu
             target: runtime-cpu
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
+            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
           - variant: cuda-sm61
             target: runtime-cuda
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
+            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
           - variant: vulkan
             target: runtime-vulkan
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
+            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
     steps:
       - uses: actions/checkout@v7
 

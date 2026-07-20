@@ -1,6 +1,6 @@
 ARG RUST_VERSION=1.96
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_RUNTIME_IMAGE=ghcr.io/acidtib/dllm:cuda-runtime-sm61-v1
+ARG CUDA_RUNTIME_IMAGE=ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
 
 FROM oven/bun:1 AS web-builder
 WORKDIR /src
@@ -22,18 +22,7 @@ COPY --from=web-builder /src/apps/web/dist apps/web/dist
 RUN cargo build --release --locked --bin dllmd --bin dllm \
     && strip target/release/dllmd target/release/dllm
 
-FROM rust:${RUST_VERSION}-bookworm AS llama-cpu-builder
-ARG RUST_VERSION
-ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
-WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake build-essential libclang-dev \
-    && rm -rf /var/lib/apt/lists/*
-COPY . .
-RUN cargo build --release --locked --bin dllm-llama-server \
-    && strip target/release/dllm-llama-server
-
-FROM ubuntu:${UBUNTU_VERSION} AS llama-vulkan-builder
+FROM ubuntu:${UBUNTU_VERSION} AS app-vulkan-builder
 ARG RUST_VERSION
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -45,9 +34,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 ENV PATH=/root/.cargo/bin:${PATH}
 ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
 COPY . .
-RUN cargo build --release --locked --bin dllm-llama-server \
-    --features dllm-llama-server/vulkan \
-    && strip target/release/dllm-llama-server
+COPY --from=web-builder /src/apps/web/dist apps/web/dist
+RUN cargo build --release --locked --bin dllmd --bin dllm \
+    --features dllm-daemon/vulkan \
+    && strip target/release/dllmd target/release/dllm
 
 FROM debian:bookworm-slim AS runtime-cpu
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -55,7 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
 COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
-COPY --from=llama-cpu-builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
@@ -68,8 +57,6 @@ EXPOSE 7337 7444
 ENTRYPOINT ["dllmd"]
 
 FROM ${CUDA_RUNTIME_IMAGE} AS runtime-cuda
-COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
-COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
@@ -85,9 +72,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
     libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
-COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
-COPY --from=llama-vulkan-builder /src/target/release/dllm-llama-server /usr/local/bin/dllm-llama-server
+COPY --from=app-vulkan-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=app-vulkan-builder /src/target/release/dllm /usr/local/bin/dllm
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key

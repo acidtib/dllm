@@ -311,6 +311,12 @@ impl InferenceModel {
             let _ = on_piece(&window);
         }
 
+        // A cancelled or length-truncated exit can leave pipelined multi-GPU
+        // work (e.g. a cross-device copy for a step whose logits were never
+        // consumed) still in flight. Dropping `ctx` right after would free its
+        // CUDA buffers while that work is still writing to them.
+        ctx.synchronize();
+
         Ok((completion_tokens, finish_reason))
     }
 
@@ -481,6 +487,10 @@ impl InferenceModel {
         if !cancelled && !window.is_empty() {
             let _ = on_piece(&window);
         }
+
+        // See the matching comment in `generate_text`: cancellation must not
+        // drop `ctx` while pipelined multi-GPU work is still in flight.
+        ctx.synchronize();
 
         Ok((completion_tokens, finish_reason))
     }

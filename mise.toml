@@ -48,7 +48,7 @@ run = "mkdir -p .dev-gpu/node-a .dev-gpu/node-b && docker compose -f docker-comp
 
 [tasks."dev:gpu-image:build"]
 description = "Build the CUDA dev image locally"
-run = "docker build -f docker/Dockerfile.cuda-runtime --build-arg CUDA_ARCHITECTURES=61 -t dllm:cuda-runtime-sm61-v1 . && docker build -f docker/Dockerfile.dllmd --target runtime-cuda --build-arg CUDA_RUNTIME_IMAGE=dllm:cuda-runtime-sm61-v1 -t dllm:cuda-sm61 ."
+run = "docker build -f docker/Dockerfile.cuda-runtime --build-arg CUDA_ARCHITECTURES=61 -t dllm:cuda-runtime-sm61-v2 . && docker build -f docker/Dockerfile.dllmd --target runtime-cuda --build-arg CUDA_RUNTIME_IMAGE=dllm:cuda-runtime-sm61-v2 -t dllm:cuda-sm61 ."
 
 [tasks."dev:gpu-nodes:local"]
 description = "Start the owner GPU dev node from the local CUDA image"
