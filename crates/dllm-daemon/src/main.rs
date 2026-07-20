@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // when unset), so the two credential conditions below are effectively always
     // satisfied and this guard now only enforces the TLS cert/key presence for
     // non-loopback binds.
-    if !bind_address.ip().is_loopback()
+    if !is_local_bind_address(bind_address.ip())
         && (!has_management_access(&management_token, &management_credentials)
             || (api_key.is_none() && inference_credentials.is_empty())
             || tls_cert.is_none()
@@ -388,6 +388,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer.abort();
     }
     Ok(())
+}
+
+fn is_local_bind_address(address: std::net::IpAddr) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        std::net::IpAddr::V6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    }
 }
 
 fn advertised_p2p_addresses() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -753,6 +764,25 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_bind_addresses_allow_local_http() {
+        for address in [
+            "127.0.0.1",
+            "192.168.1.73",
+            "10.1.2.3",
+            "172.16.4.5",
+            "fd00::73",
+        ] {
+            assert!(is_local_bind_address(address.parse().unwrap()), "{address}");
+        }
+        for address in ["0.0.0.0", "8.8.8.8", "::"] {
+            assert!(
+                !is_local_bind_address(address.parse().unwrap()),
+                "{address}"
+            );
+        }
+    }
 
     #[test]
     fn parse_env_falls_back_to_default_on_missing_or_invalid_value() {

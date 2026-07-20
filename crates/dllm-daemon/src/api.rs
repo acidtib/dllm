@@ -534,16 +534,27 @@ async fn run_onboarding(state: ApiState, authority_url: String) -> Result<(), St
             {
                 break;
             }
-            Ok(response) if response.status() == StatusCode::FORBIDDEN => {
-                return Err(format!(
-                    "access request rejected with {}",
-                    response.status()
-                ));
+            Ok(response) if response.status().is_client_error() => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(format!("access request rejected with {status}: {body}"));
             }
-            _ => {
+            Ok(response) => {
+                let detail = format!(
+                    "authority returned {}; retrying access request",
+                    response.status()
+                );
                 *state.onboarding.write().await = OnboardingStatus::Joining {
                     authority_url: authority_url.clone(),
-                    detail: "retrying access request".into(),
+                    detail,
+                };
+                tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
+                retry_seconds = (retry_seconds * 2).min(30);
+            }
+            Err(error) => {
+                *state.onboarding.write().await = OnboardingStatus::Joining {
+                    authority_url: authority_url.clone(),
+                    detail: format!("access request failed: {error}; retrying"),
                 };
                 tokio::time::sleep(Duration::from_secs(retry_seconds)).await;
                 retry_seconds = (retry_seconds * 2).min(30);

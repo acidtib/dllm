@@ -621,15 +621,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout,
         } => {
             let timeout = timeout.unwrap_or(300);
-            request_json(auth(
+            let initial = request_json(auth(
                 client
                     .post(format!("{}/v1/onboarding/start", cli.daemon))
                     .json(&json!({ "authority_url": authority_url })),
                 &management_token,
             ))?;
-            println!("access request submitted, waiting for authority approval");
+            println!(
+                "onboarding started: {}",
+                initial["detail"].as_str().unwrap_or("contacting authority")
+            );
             let start = std::time::Instant::now();
             let deadline = std::time::Duration::from_secs(timeout);
+            let mut last_detail = initial["detail"].as_str().map(str::to_owned);
             loop {
                 if start.elapsed() > deadline {
                     return Err("timed out waiting for approval".into());
@@ -652,6 +656,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 .as_str()
                                 .unwrap_or("onboarding failed")
                                 .into());
+                        }
+                        Some("joining") => {
+                            let detail = status["detail"].as_str().map(str::to_owned);
+                            if detail != last_detail {
+                                if let Some(detail) = &detail {
+                                    println!("onboarding: {detail}");
+                                }
+                                last_detail = detail;
+                            }
                         }
                         _ => {}
                     }
