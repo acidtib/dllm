@@ -1,5 +1,5 @@
-use dllm_daemon::embedded_runtime::EmbeddedRuntime;
-use dllm_daemon::{api, StoreError};
+use crate::embedded_runtime::EmbeddedRuntime;
+use crate::{api, StoreError};
 use dllm_protocol::{now_unix, CpuCapability, HardwareBenchmark, HardwareProfile};
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ fn merge_benchmark_into_profile(
     profile
 }
 
-pub(crate) async fn benchmark_and_publish(
+pub async fn benchmark_and_publish(
     state: api::ApiState,
     node_pubkey: [u8; 32],
     engine: Arc<EmbeddedRuntime>,

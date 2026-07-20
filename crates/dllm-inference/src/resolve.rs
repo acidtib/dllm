@@ -17,6 +17,16 @@ impl ModelSource {
     /// Resolves to an absolute local GGUF path, downloading from Hugging Face
     /// when needed.
     pub fn resolve(self) -> anyhow::Result<PathBuf> {
+        self.resolve_with_prompt(true)
+    }
+
+    /// Resolves without reading stdin, selecting the preferred available GGUF
+    /// group when no exact model was requested.
+    pub fn resolve_noninteractive(self) -> anyhow::Result<PathBuf> {
+        self.resolve_with_prompt(false)
+    }
+
+    fn resolve_with_prompt(self, allow_prompt: bool) -> anyhow::Result<PathBuf> {
         match self {
             ModelSource::Local(path) => Ok(path),
             ModelSource::HuggingFace { repo, model } => {
@@ -24,7 +34,7 @@ impl ModelSource {
                     .with_progress(true)
                     .build()
                     .context("failed to build HF API client")?;
-                resolve_hf(&api, &repo, model)
+                resolve_hf(&api, &repo, model, allow_prompt)
             }
         }
     }
@@ -119,7 +129,12 @@ fn prompt_user(groups: &[ModelGroup]) -> anyhow::Result<usize> {
     }
 }
 
-fn resolve_hf(api: &Api, repo: &str, model: Option<String>) -> anyhow::Result<PathBuf> {
+fn resolve_hf(
+    api: &Api,
+    repo: &str,
+    model: Option<String>,
+    allow_prompt: bool,
+) -> anyhow::Result<PathBuf> {
     let api_repo = api.model(repo.to_string());
     // Exact .gguf filename → download directly.
     if let Some(ref filename) = model {
@@ -170,8 +185,16 @@ fn resolve_hf(api: &Api, repo: &str, model: Option<String>) -> anyhow::Result<Pa
     } else if groups.len() == 1 {
         eprintln!("Auto-selected: {}", groups[0].label);
         0
-    } else {
+    } else if allow_prompt {
         prompt_user(&groups)?
+    } else {
+        let best = groups
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, group)| group.preference_score())
+            .map_or(0, |(index, _)| index);
+        eprintln!("Auto-selected: {}", groups[best].label);
+        best
     };
     let group = &groups[chosen_idx];
     eprintln!("\nDownloading: {}", group.label);

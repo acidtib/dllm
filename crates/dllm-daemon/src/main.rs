@@ -1,21 +1,20 @@
 use axum_server::{tls_rustls::RustlsConfig, Handle};
-use dllm_daemon::embedded_runtime::{self, EmbeddedRuntime};
 use dllm_daemon::{
     api,
     audit::AuditLog,
     budget::BudgetEnforcer,
     credentials::{CredentialRegistry, ManagementCredential},
     inference::{InferenceCredential, InferenceRegistry},
+    model_library::ModelLibrary,
     rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore, StoreError,
 };
-use dllm_protocol::{now_unix, HardwareBenchmark};
+use dllm_protocol::now_unix;
 use dllm_transport::peer::{
     load_or_create_identity, start_peer_node, DiscoveryMode, Multiaddr, PeerId, PeerNodeConfig,
     PeerNodeHandle,
 };
 use serde::Deserialize;
-use std::num::NonZeroU32;
 use std::time::Duration;
 use std::{
     collections::{HashMap, HashSet},
@@ -27,8 +26,6 @@ use tokio::{
     net::TcpListener,
     sync::{Mutex, Semaphore},
 };
-
-mod hardware_benchmark;
 
 #[derive(Deserialize)]
 struct AdditionalNetworkConfig {
@@ -57,6 +54,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(value) => PathBuf::from(value),
         Err(_) => dllm_daemon::default_state_path()?,
     };
+    if std::env::var("HF_HOME").is_err() {
+        std::env::set_var(
+            "HF_HOME",
+            state_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("models"),
+        );
+    }
     let owner_key_path = if let Ok(value) = std::env::var("DLLMD_AUTHORITY_KEY") {
         PathBuf::from(value)
     } else if let Ok(value) = std::env::var("DLLMD_OWNER_KEY") {
@@ -76,11 +82,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let node_key_path = std::env::var("DLLMD_NODE_KEY")
         .map(PathBuf::from)
         .unwrap_or(dllm_daemon::default_node_key_path()?);
-    let node_key = dllm_daemon::load_or_create_node_key(&node_key_path)?;
+    dllm_daemon::load_or_create_node_key(&node_key_path)?;
     let transport_key_path = resolve_transport_key_path()?;
     load_or_create_identity(&transport_key_path)?;
     let config_path = dllm_daemon::default_config_path()?;
-    let mut runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
+    let runtime_url = std::env::var("DLLMD_RUNTIME_URL").ok();
     let admission_limit = parse_env("DLLMD_ADMISSION_LIMIT", 1);
     let (management_token, management_token_generated) =
         dllm_daemon::local_config::resolve_management_token()?;
@@ -160,11 +166,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // state-fetch peer auth, and transfer_owner all treat owner_pubkey as
     // this node's identity. node_key only identifies this daemon once it is
     // a joined member of someone else's network (a loaded replica).
-    let hardware_node_pubkey = if store.owner_key.is_some() {
-        store.state.state.owner_pubkey
-    } else {
-        node_key.verifying_key().to_bytes()
-    };
     let provisional_marker_path = state_path.with_extension("provisional.json");
     if !state_preexisted {
         write_provisional_marker(&provisional_marker_path, &store)?;
@@ -180,29 +181,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let mut pending_benchmark = None;
-    let mut embedded_runtime = None;
-    if !joining_at_start {
-        let existing_benchmarks: Vec<HardwareBenchmark> = store
-            .state
-            .state
-            .hardware_profiles
-            .iter()
-            .find(|profile| profile.node_pubkey == hardware_node_pubkey)
-            .map(|profile| profile.benchmarks.clone())
-            .unwrap_or_default();
-        let activation = start_configured_runtime(&existing_benchmarks).await?;
-        runtime_url = activation.runtime_url;
-        embedded_runtime = activation.embedded;
-        pending_benchmark = activation.benchmark_context;
-    }
     let runtime_url = Arc::new(tokio::sync::RwLock::new(runtime_url));
-    let embedded = Arc::new(tokio::sync::RwLock::new(embedded_runtime));
+    let mut embedded_runtimes = HashMap::new();
+    let model_library_path = state_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("models/library.json");
+    let mut local_library = ModelLibrary::load(model_library_path)?;
+    for mut record in local_library.list() {
+        if record.status != dllm_daemon::model_library::ModelStatus::Ready
+            || embedded_runtimes.contains_key(&record.id)
+        {
+            continue;
+        }
+        match dllm_daemon::model_library::load_model(record.source.clone(), record.id.clone()).await
+        {
+            Ok((runtime, artifact_path, _, _, _)) => {
+                record.artifact_path = Some(artifact_path);
+                embedded_runtimes.insert(record.id.clone(), runtime);
+                local_library.put(record)?;
+            }
+            Err(error) => {
+                record.status = dllm_daemon::model_library::ModelStatus::Failed;
+                record.last_error = Some(format!("failed to restore model: {error}"));
+                local_library.put(record)?;
+            }
+        }
+    }
+    let embedded = Arc::new(tokio::sync::RwLock::new(embedded_runtimes));
+    let model_library = Arc::new(Mutex::new(local_library));
     let primary_state = api::ApiState {
         store: Arc::new(Mutex::new(store)),
         state_path: state_path.clone(),
         runtime_url: runtime_url.clone(),
         embedded: embedded.clone(),
+        model_library: model_library.clone(),
         admission: Arc::new(Semaphore::new(admission_limit)),
         client: reqwest::Client::new(),
         management_credentials: Arc::new(tokio::sync::RwLock::new(CredentialRegistry::load(
@@ -244,29 +257,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             10 * 1024 * 1024, // 10 MB rotation threshold
         ))),
     };
-    if let Some((fit, model_label, gpu_layers, context_size)) = pending_benchmark {
-        if let Some(engine) = embedded.read().await.clone() {
-            let benchmark_state = primary_state.clone();
-            tokio::spawn(hardware_benchmark::benchmark_and_publish(
-                benchmark_state,
-                hardware_node_pubkey,
-                engine,
-                model_label,
-                fit,
-                gpu_layers,
-                context_size,
-            ));
-        }
-    }
     if let Ok(authority_url) = std::env::var("DLLMD_JOIN_URL") {
         let _ = api::start_onboarding_workflow(primary_state.clone(), authority_url)
             .await
             .map_err(|(_, message)| message)?;
-        spawn_runtime_activation(
-            primary_state.onboarding.clone(),
-            runtime_url.clone(),
-            embedded.clone(),
-        );
     }
     let additional_configs = std::env::var("DLLMD_ADDITIONAL_NETWORKS")
         .ok()
@@ -307,6 +301,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state_path: config.state_path,
                 runtime_url: runtime_url.clone(),
                 embedded: embedded.clone(),
+                model_library: model_library.clone(),
                 admission: Arc::new(Semaphore::new(admission_limit)),
                 client: reqwest::Client::new(),
                 management_credentials: Arc::new(tokio::sync::RwLock::new(
@@ -393,189 +388,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         peer.abort();
     }
     Ok(())
-}
-
-fn resolve_gpu_config(
-    explicit_gpu_layers: Option<u32>,
-    explicit_context_size: Option<u32>,
-    cached: Option<&HardwareBenchmark>,
-    fit: Option<&dllm_runtime::FitReport>,
-) -> (u32, u32) {
-    let gpu_layers = explicit_gpu_layers
-        .or_else(|| cached.map(|benchmark| benchmark.gpu_layers))
-        .or_else(|| fit.map(|report| report.n_gpu_layers))
-        .unwrap_or(38);
-    let context_size = explicit_context_size
-        .or_else(|| cached.map(|benchmark| benchmark.context_size))
-        .or_else(|| fit.map(|report| report.n_ctx))
-        .unwrap_or(2048);
-    (gpu_layers, context_size)
-}
-
-struct RuntimeActivation {
-    runtime_url: Option<String>,
-    embedded: Option<Arc<EmbeddedRuntime>>,
-    benchmark_context: Option<(dllm_runtime::FitReport, String, u32, u32)>,
-}
-
-impl RuntimeActivation {
-    fn none() -> Self {
-        Self {
-            runtime_url: None,
-            embedded: None,
-            benchmark_context: None,
-        }
-    }
-}
-
-async fn start_configured_runtime(
-    existing_benchmarks: &[HardwareBenchmark],
-) -> Result<RuntimeActivation, Box<dyn std::error::Error>> {
-    // External OpenAI-compatible runtime over HTTP.
-    if let Ok(runtime_url) = std::env::var("DLLMD_RUNTIME_URL") {
-        return Ok(RuntimeActivation {
-            runtime_url: Some(runtime_url),
-            ..RuntimeActivation::none()
-        });
-    }
-
-    // Embedded in-process runtime (the default).
-    let model_path = std::env::var("DLLMD_MODEL_PATH").ok();
-    let hf_model = std::env::var("DLLMD_HF_MODEL").ok();
-    let model = match (model_path, hf_model) {
-        (Some(_), Some(_)) => {
-            return Err("DLLMD_MODEL_PATH and DLLMD_HF_MODEL are mutually exclusive".into());
-        }
-        (Some(path), None) => Some(dllm_inference::ModelSource::Local(path.into())),
-        (None, Some(repo)) => Some(dllm_inference::ModelSource::HuggingFace { repo, model: None }),
-        (None, None) => None,
-    };
-    let Some(model) = model else {
-        return Ok(RuntimeActivation::none());
-    };
-    let model_label = match &model {
-        dllm_inference::ModelSource::Local(path) => path.display().to_string(),
-        dllm_inference::ModelSource::HuggingFace { repo, .. } => repo.clone(),
-    };
-    // hf-hub honors HF_HOME; point it at the daemon's model cache for HF models.
-    if matches!(model, dllm_inference::ModelSource::HuggingFace { .. })
-        && std::env::var("HF_HOME").is_err()
-    {
-        std::env::set_var("HF_HOME", dllm_daemon::default_dir()?.join("models"));
-    }
-    let explicit_gpu_layers: Option<u32> = std::env::var("DLLMD_GPU_LAYERS")
-        .ok()
-        .and_then(|value| value.parse().ok());
-    let explicit_context_size: Option<u32> = std::env::var("DLLMD_CONTEXT_SIZE")
-        .ok()
-        .and_then(|value| value.parse().ok());
-    let cached_benchmark = existing_benchmarks
-        .iter()
-        .find(|benchmark| benchmark.model == model_label)
-        .cloned();
-    let backend_label = embedded_runtime::active_backend();
-
-    // Resolve (download) the model on a blocking thread.
-    let resolved_path = tokio::task::spawn_blocking(move || model.resolve())
-        .await?
-        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
-
-    // A cached benchmark already answers gpu_layers/context_size and was already
-    // published, so skip both the fit pass and re-benchmarking. Otherwise fit so
-    // a fresh benchmark can run: throughput measurement records fit's backend
-    // label.
-    let fit_report: Option<dllm_runtime::FitReport> = if cached_benchmark.is_none() {
-        let config = dllm_inference::FitConfig {
-            model_path: resolved_path.clone(),
-            n_ctx_min: parse_env("DLLMD_FIT_N_CTX_MIN", 4096),
-            margin_bytes: parse_env("DLLMD_FIT_MARGIN_BYTES", 1_073_741_824),
-            backend_label: backend_label.to_string(),
-        };
-        match tokio::task::spawn_blocking(move || dllm_inference::fit_model(&config)).await? {
-            Ok(report) => Some(dllm_runtime::FitReport {
-                n_gpu_layers: report.n_gpu_layers,
-                n_ctx: report.n_ctx,
-                peak_memory_bytes: report.peak_memory_bytes,
-                backend: report.backend,
-            }),
-            Err(error) => {
-                eprintln!("hardware auto-fit failed, falling back to defaults: {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let (gpu_layers, context_size) = resolve_gpu_config(
-        explicit_gpu_layers,
-        explicit_context_size,
-        cached_benchmark.as_ref(),
-        fit_report.as_ref(),
-    );
-
-    let load_config = dllm_inference::ModelConfig {
-        model_path: resolved_path,
-        n_gpu_layers: gpu_layers,
-        ctx_size: NonZeroU32::new(context_size),
-        #[cfg(feature = "mtmd")]
-        mmproj: std::env::var("DLLMD_MMPROJ_PATH")
-            .ok()
-            .map(|path| dllm_inference::MmprojConfig {
-                path: PathBuf::from(path),
-                use_gpu: true,
-                n_threads: 4,
-            }),
-    };
-    let engine =
-        tokio::task::spawn_blocking(move || dllm_inference::InferenceModel::load(load_config))
-            .await?
-            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()))?;
-    let embedded = Arc::new(EmbeddedRuntime::new(
-        engine,
-        1,
-        backend_label,
-        model_label.clone(),
-    ));
-    let benchmark_context =
-        fit_report.map(|report| (report, model_label, gpu_layers, context_size));
-    Ok(RuntimeActivation {
-        embedded: Some(embedded),
-        benchmark_context,
-        ..RuntimeActivation::none()
-    })
-}
-
-fn spawn_runtime_activation(
-    onboarding: Arc<tokio::sync::RwLock<api::OnboardingStatus>>,
-    runtime_url: Arc<tokio::sync::RwLock<Option<String>>>,
-    embedded: Arc<tokio::sync::RwLock<Option<Arc<EmbeddedRuntime>>>>,
-) {
-    tokio::spawn(async move {
-        loop {
-            let status = onboarding.read().await.clone();
-            match status {
-                api::OnboardingStatus::Active { .. } => break,
-                api::OnboardingStatus::Failed { detail, .. } => {
-                    eprintln!("runtime activation skipped: onboarding failed: {detail}");
-                    return;
-                }
-                _ => tokio::time::sleep(Duration::from_millis(250)).await,
-            }
-        }
-        let activation = start_configured_runtime(&[])
-            .await
-            .map_err(|error| error.to_string());
-        match activation {
-            Ok(activation) => {
-                *runtime_url.write().await = activation.runtime_url;
-                *embedded.write().await = activation.embedded;
-                println!("onboarding activation completed");
-            }
-            Err(error) => {
-                eprintln!("runtime activation failed: {error}");
-            }
-        }
-    });
 }
 
 fn advertised_p2p_addresses() -> Result<Vec<String>, Box<dyn std::error::Error>> {
@@ -941,79 +753,6 @@ async fn shutdown() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn runtime_activation_waits_until_onboarding_is_active() {
-        let onboarding = Arc::new(tokio::sync::RwLock::new(api::OnboardingStatus::Joining {
-            authority_url: "https://authority.example".into(),
-            detail: "waiting".into(),
-        }));
-        let runtime_url = Arc::new(tokio::sync::RwLock::new(Some("not-started".into())));
-        let embedded = Arc::new(tokio::sync::RwLock::new(None));
-        spawn_runtime_activation(onboarding.clone(), runtime_url.clone(), embedded);
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        assert_eq!(runtime_url.read().await.as_deref(), Some("not-started"));
-
-        *onboarding.write().await = api::OnboardingStatus::Active {
-            authority_url: "https://authority.example".into(),
-        };
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if runtime_url.read().await.as_deref() != Some("not-started") {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert!(runtime_url.read().await.is_none());
-    }
-
-    #[test]
-    fn resolve_gpu_config_prefers_explicit_over_cached_over_fit_over_fallback() {
-        let fit = dllm_runtime::FitReport {
-            n_gpu_layers: 20,
-            n_ctx: 8192,
-            peak_memory_bytes: 1,
-            backend: "cuda".into(),
-        };
-        let cached = dllm_protocol::HardwareBenchmark {
-            model: "unsloth/Qwen3.5-397B-A17B-GGUF".into(),
-            backend: "cuda".into(),
-            gpu_layers: 30,
-            context_size: 4096,
-            concurrency: 1,
-            prompt_tokens_per_second_milli: 1,
-            decode_tokens_per_second_milli: 1,
-            peak_memory_bytes: 1,
-        };
-
-        // both explicit: ignores cached and fit entirely
-        assert_eq!(
-            resolve_gpu_config(Some(99), Some(1234), Some(&cached), Some(&fit)),
-            (99, 1234)
-        );
-        // one explicit, one from cache
-        assert_eq!(
-            resolve_gpu_config(Some(99), None, Some(&cached), Some(&fit)),
-            (99, 4096)
-        );
-        assert_eq!(
-            resolve_gpu_config(None, Some(1024), Some(&cached), Some(&fit)),
-            (30, 1024)
-        );
-        // neither explicit, cached wins over fit
-        assert_eq!(
-            resolve_gpu_config(None, None, Some(&cached), Some(&fit)),
-            (30, 4096)
-        );
-        // no cache, falls through to fit
-        assert_eq!(resolve_gpu_config(None, None, None, Some(&fit)), (20, 8192));
-        // nothing available, hardcoded fallback
-        assert_eq!(resolve_gpu_config(None, None, None, None), (38, 2048));
-    }
 
     #[test]
     fn parse_env_falls_back_to_default_on_missing_or_invalid_value() {

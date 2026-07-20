@@ -5,6 +5,7 @@ use crate::{
         CreatedCredential, CredentialError, CredentialRegistry, CredentialSummary, ManagementRole,
     },
     inference::{InferenceIdentity, InferencePolicy, InferenceRegistry},
+    model_library::{self, ModelLibrary, ModelRecord, ModelSource, ModelStatus},
     peer_service::PeerBundle,
     rate_limit::{RateLimitConfig, RateLimiter},
     NetworkStore, StoreError,
@@ -45,7 +46,8 @@ pub struct ApiState {
     pub runtime_url: Arc<RwLock<Option<String>>>,
     /// In-process inference runtime for local (owner) chat. When set, local
     /// inference is served by direct call instead of proxying to `runtime_url`.
-    pub embedded: Arc<RwLock<Option<Arc<crate::embedded_runtime::EmbeddedRuntime>>>>,
+    pub embedded: Arc<RwLock<HashMap<String, Arc<crate::embedded_runtime::EmbeddedRuntime>>>>,
+    pub model_library: Arc<Mutex<ModelLibrary>>,
     pub admission: Arc<Semaphore>,
     pub client: reqwest::Client,
     pub management_credentials: Arc<RwLock<CredentialRegistry>>,
@@ -215,6 +217,13 @@ struct CreateCredentialRequest {
     role: ManagementRole,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AddModelRequest {
+    model_id: String,
+    source: ModelSource,
+    node_pubkey: Option<Vec<u8>>,
+}
+
 pub fn router(state: ApiState) -> Router {
     let mut viewer = Router::new()
         .route("/v1/status", get(status))
@@ -250,6 +259,14 @@ pub fn router(state: ApiState) -> Router {
             "/v1/management/credentials/{credential_id}",
             axum::routing::delete(revoke_credential),
         )
+        .route(
+            "/v1/management/models",
+            get(list_managed_models).post(add_model),
+        )
+        .route(
+            "/v1/management/models/{model_id}",
+            get(get_managed_model).delete(remove_model),
+        )
         .route("/v1/moderation/bans", post(ban_node).delete(unban_node))
         .route("/v1/onboarding/start", post(start_onboarding))
         .route(
@@ -277,6 +294,7 @@ pub fn router(state: ApiState) -> Router {
     }
     let mut inference = Router::new()
         .route("/v1/models", get(proxy_models))
+        .route("/v1/embeddings", post(proxy_embeddings))
         .route("/v1/chat/completions", post(proxy_chat));
     inference = inference.route_layer(middleware::from_fn_with_state(
         state.inference_credentials.clone(),
@@ -285,6 +303,8 @@ pub fn router(state: ApiState) -> Router {
     let mut peer = Router::new()
         .route("/v1/peer/health", get(|| async { StatusCode::OK }))
         .route("/v1/peer/health/runtime", get(runtime_health))
+        .route("/v1/peer/models", post(add_peer_model))
+        .route("/v1/peer/embeddings", post(proxy_peer_embeddings))
         .route("/v1/peer/chat/completions", post(proxy_peer_chat));
     if state.peer_api_key.is_some() {
         peer = peer.route_layer(middleware::from_fn_with_state(
@@ -675,7 +695,7 @@ async fn peer_network_status(
 }
 
 async fn runtime_is_ready(state: &ApiState) -> bool {
-    if state.embedded.read().await.is_some() {
+    if !state.embedded.read().await.is_empty() {
         return true;
     }
     match state.runtime_url.read().await.clone() {
@@ -687,6 +707,242 @@ async fn runtime_is_ready(state: &ApiState) -> bool {
             .await
             .is_ok_and(|response| response.status().is_success()),
         None => false,
+    }
+}
+
+async fn list_managed_models(State(state): State<ApiState>) -> Json<Vec<ModelRecord>> {
+    Json(state.model_library.lock().await.list())
+}
+
+async fn get_managed_model(
+    State(state): State<ApiState>,
+    Path(model_id): Path<String>,
+) -> Result<Json<ModelRecord>, ApiError> {
+    state
+        .model_library
+        .lock()
+        .await
+        .get(&model_id)
+        .cloned()
+        .map(Json)
+        .ok_or(ApiError::ModelUnavailable)
+}
+
+async fn add_model(
+    State(state): State<ApiState>,
+    Json(request): Json<AddModelRequest>,
+) -> Result<(StatusCode, Json<ModelRecord>), ApiError> {
+    if request.model_id.trim().is_empty() {
+        return Err(ApiError::BadRequest("model_id must not be empty"));
+    }
+    let owner = state.store.lock().await.state.state.owner_pubkey;
+    let target = request
+        .node_pubkey
+        .clone()
+        .map(key_bytes)
+        .transpose()?
+        .unwrap_or(owner);
+    let member = {
+        let store = state.store.lock().await;
+        store
+            .state
+            .state
+            .members
+            .iter()
+            .find(|member| member.node_pubkey == target)
+            .cloned()
+    };
+    if target != owner {
+        if state.peer_api_key.is_none() {
+            return Err(ApiError::BadRequest(
+                "remote model acquisition requires DLLMD_PEER_API_KEY",
+            ));
+        }
+        let member = member.ok_or(ApiError::BadRequest("target node is not a network member"))?;
+        let path = "/v1/peer/models";
+        let mut forwarded = state
+            .client
+            .post(format!("{}{path}", member.endpoint.trim_end_matches('/')))
+            .json(&request);
+        if let Some(key) = &state.peer_api_key {
+            let network_id = state.store.lock().await.state.state.network_id.to_string();
+            forwarded =
+                add_peer_identity(forwarded, key, &network_id, &hex_key(&owner), "POST", path);
+        }
+        let response = forwarded.send().await.map_err(ApiError::Runtime)?;
+        if !response.status().is_success() {
+            return Err(ApiError::RemoteModel(
+                response.status(),
+                response.text().await.unwrap_or_default(),
+            ));
+        }
+        let record = response
+            .json::<ModelRecord>()
+            .await
+            .map_err(ApiError::Runtime)?;
+        let mut store = state.store.lock().await;
+        if store.assign_model(request.model_id, target)? {
+            store.save(&state.state_path)?;
+        }
+        return Ok((StatusCode::CREATED, Json(record)));
+    }
+    install_local_model(&state, request, Some(owner)).await
+}
+
+async fn add_peer_model(
+    State(state): State<ApiState>,
+    Json(request): Json<AddModelRequest>,
+) -> Result<(StatusCode, Json<ModelRecord>), ApiError> {
+    if state.peer_api_key.is_none() {
+        return Err(ApiError::Forbidden(
+            "peer model acquisition requires peer authentication",
+        ));
+    }
+    let target = request
+        .node_pubkey
+        .clone()
+        .ok_or(ApiError::BadRequest(
+            "peer model request requires node_pubkey",
+        ))
+        .and_then(key_bytes)?;
+    let local = NetworkStore::load_owner_key(&state.node_key_path)?
+        .verifying_key()
+        .to_bytes();
+    if target != local {
+        return Err(ApiError::BadRequest("model request targets another node"));
+    }
+    install_local_model(&state, request, None).await
+}
+
+async fn install_local_model(
+    state: &ApiState,
+    request: AddModelRequest,
+    assignment_target: Option<[u8; 32]>,
+) -> Result<(StatusCode, Json<ModelRecord>), ApiError> {
+    {
+        let library = state.model_library.lock().await;
+        if let Some(existing) = library.get(&request.model_id) {
+            if existing.source != request.source {
+                return Err(ApiError::BadRequest(
+                    "model_id is already registered with a different source",
+                ));
+            }
+            if matches!(
+                existing.status,
+                ModelStatus::Downloading | ModelStatus::Loading
+            ) {
+                return Err(ApiError::BadRequest("model is already being added"));
+            }
+            if existing.status == ModelStatus::Ready {
+                let existing = existing.clone();
+                drop(library);
+                if let Some(target) = assignment_target {
+                    let mut store = state.store.lock().await;
+                    if store.assign_model(request.model_id, target)? {
+                        store.save(&state.state_path)?;
+                    }
+                }
+                return Ok((StatusCode::OK, Json(existing)));
+            }
+        }
+    }
+    let mut record = ModelRecord {
+        id: request.model_id.clone(),
+        source: request.source.clone(),
+        artifact_path: None,
+        status: ModelStatus::Downloading,
+        size_bytes: None,
+        added_at_unix: now_unix(),
+        last_error: None,
+    };
+    state
+        .model_library
+        .lock()
+        .await
+        .put(record.clone())
+        .map_err(ApiError::Internal)?;
+
+    record.status = ModelStatus::Loading;
+    state
+        .model_library
+        .lock()
+        .await
+        .put(record.clone())
+        .map_err(ApiError::Internal)?;
+    let loaded = model_library::load_model(request.source, request.model_id.clone()).await;
+    let (runtime, artifact_path, fit, gpu_layers, context_size) = match loaded {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            record.status = ModelStatus::Failed;
+            record.last_error = Some(error.to_string());
+            state
+                .model_library
+                .lock()
+                .await
+                .put(record)
+                .map_err(ApiError::Internal)?;
+            return Err(ApiError::Internal(error));
+        }
+    };
+    record.artifact_path = Some(artifact_path.clone());
+    record.size_bytes = std::fs::metadata(&artifact_path)
+        .ok()
+        .map(|value| value.len());
+    state
+        .embedded
+        .write()
+        .await
+        .insert(request.model_id.clone(), runtime.clone());
+    if let Some(target) = assignment_target {
+        let mut store = state.store.lock().await;
+        let changed = store.assign_model(request.model_id.clone(), target)?;
+        if changed {
+            store.save(&state.state_path)?;
+        }
+    }
+    record.status = ModelStatus::Ready;
+    state
+        .model_library
+        .lock()
+        .await
+        .put(record.clone())
+        .map_err(ApiError::Internal)?;
+    if let (Some(target), Some(fit)) = (assignment_target, fit) {
+        tokio::spawn(crate::hardware_benchmark::benchmark_and_publish(
+            state.clone(),
+            target,
+            runtime,
+            request.model_id,
+            fit,
+            gpu_layers,
+            context_size,
+        ));
+    }
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+async fn remove_model(
+    State(state): State<ApiState>,
+    Path(model_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let owner = state.store.lock().await.state.state.owner_pubkey;
+    {
+        let mut store = state.store.lock().await;
+        if store.unassign_model(&model_id, owner)? {
+            store.save(&state.state_path)?;
+        }
+    }
+    state.embedded.write().await.remove(&model_id);
+    let removed = state
+        .model_library
+        .lock()
+        .await
+        .remove(&model_id)
+        .map_err(ApiError::Internal)?;
+    if removed.is_some() {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::ModelUnavailable)
     }
 }
 
@@ -1611,6 +1867,25 @@ async fn proxy_chat(
     .await
 }
 
+async fn proxy_embeddings(
+    State(state): State<ApiState>,
+    Extension(identity): Extension<InferenceIdentity>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let replica = resolve_runtime(&state, &body).await?;
+    proxy(
+        state,
+        replica,
+        reqwest::Method::POST,
+        "/v1/embeddings",
+        headers,
+        body,
+        identity,
+    )
+    .await
+}
+
 async fn proxy_peer_chat(
     State(state): State<ApiState>,
     headers: HeaderMap,
@@ -1626,6 +1901,28 @@ async fn proxy_peer_chat(
         replica,
         reqwest::Method::POST,
         "/v1/chat/completions",
+        headers,
+        body,
+        identity,
+    )
+    .await
+}
+
+async fn proxy_peer_embeddings(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let identity = InferenceIdentity {
+        label: "peer".into(),
+        quota: state.peer_quota.clone(),
+    };
+    let replica = resolve_runtime(&state, &body).await?;
+    proxy(
+        state,
+        replica,
+        reqwest::Method::POST,
+        "/v1/embeddings",
         headers,
         body,
         identity,
@@ -1666,8 +1963,19 @@ async fn proxy(
     })?;
 
     // Local owner served by the in-process embedded runtime: dispatch by direct
-    // call instead of an HTTP hop. Only chat completions are routed here.
+    // call instead of an HTTP hop.
     if let Some(engine) = replica.embedded.clone() {
+        if path == "/v1/embeddings" {
+            return embedded_embeddings_dispatch(
+                state,
+                engine,
+                body,
+                permit,
+                quota_permit,
+                replica.in_flight,
+            )
+            .await;
+        }
         return embedded_dispatch(state, engine, body, permit, quota_permit, replica.in_flight)
             .await;
     }
@@ -1749,6 +2057,34 @@ async fn proxy(
     response
         .body(Body::from_stream(stream))
         .map_err(|_| ApiError::BadRequest("invalid upstream response"))
+}
+
+async fn embedded_embeddings_dispatch(
+    state: ApiState,
+    engine: Arc<crate::embedded_runtime::EmbeddedRuntime>,
+    body: Bytes,
+    permit: tokio::sync::OwnedSemaphorePermit,
+    quota_permit: tokio::sync::OwnedSemaphorePermit,
+    in_flight: Arc<AtomicU64>,
+) -> Result<Response, ApiError> {
+    let request =
+        serde_json::from_slice(&body).map_err(|_| ApiError::BadRequest("invalid JSON request"))?;
+    let lease = ReplicaLease::new(in_flight);
+    let value = engine
+        .embeddings(request)
+        .await
+        .map_err(ApiError::Inference)?;
+    let rendered = value.to_string();
+    state
+        .metrics
+        .response_bytes
+        .fetch_add(rendered.len() as u64, Ordering::Relaxed);
+    drop((permit, quota_permit, lease));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(rendered))
+        .map_err(|_| ApiError::BadRequest("invalid embedded response"))
 }
 
 /// Serve a chat completion from the in-process embedded runtime, producing the
@@ -1968,7 +2304,7 @@ async fn resolve_runtime(state: &ApiState, body: &Bytes) -> Result<ResolvedRepli
         let (runtime_url, peer, ready, embedded) = if placement.node_pubkey == owner {
             // Prefer the in-process embedded runtime; fall back to an external
             // runtime_url (DLLMD_RUNTIME_URL) when present.
-            if let Some(engine) = state.embedded.read().await.clone() {
+            if let Some(engine) = state.embedded.read().await.get(model).cloned() {
                 (String::new(), false, true, Some(engine))
             } else if let Some(runtime_url) = state.runtime_url.read().await.clone() {
                 (runtime_url, false, runtime_is_ready(state).await, None)
@@ -2206,6 +2542,7 @@ fn key_bytes(bytes: Vec<u8>) -> Result<[u8; 32], ApiError> {
 #[derive(Debug)]
 enum ApiError {
     BadRequest(&'static str),
+    Forbidden(&'static str),
     Store(StoreError),
     RuntimeUnavailable,
     Saturated,
@@ -2215,6 +2552,8 @@ enum ApiError {
     ModelUnavailable,
     QuotaExceeded(String),
     Credential(CredentialError),
+    Internal(anyhow::Error),
+    RemoteModel(StatusCode, String),
 }
 
 impl From<StoreError> for ApiError {
@@ -2233,6 +2572,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::BadRequest(message) => (StatusCode::BAD_REQUEST, message).into_response(),
+            Self::Forbidden(message) => (StatusCode::FORBIDDEN, message).into_response(),
             Self::Inference(error) => {
                 let status = if error.is_invalid() {
                     StatusCode::BAD_REQUEST
@@ -2241,6 +2581,10 @@ impl IntoResponse for ApiError {
                 };
                 (status, error.to_string()).into_response()
             }
+            Self::Internal(error) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response()
+            }
+            Self::RemoteModel(status, message) => (status, message).into_response(),
             Self::Store(
                 StoreError::WrongNetwork | StoreError::TokenUsed | StoreError::Token(_),
             ) => (StatusCode::CONFLICT, "join token rejected").into_response(),
@@ -2345,7 +2689,14 @@ mod tests {
             store: Arc::new(Mutex::new(NetworkStore::create("test"))),
             state_path: std::env::temp_dir().join("dllmd-api-test-state.json"),
             runtime_url: Arc::new(RwLock::new(runtime_url)),
-            embedded: Arc::new(RwLock::new(None)),
+            embedded: Arc::new(RwLock::new(HashMap::new())),
+            model_library: Arc::new(Mutex::new(
+                crate::model_library::ModelLibrary::load(
+                    std::env::temp_dir()
+                        .join(format!("dllmd-api-models-{}.json", uuid::Uuid::new_v4())),
+                )
+                .unwrap(),
+            )),
             admission: Arc::new(Semaphore::new(1)),
             client: reqwest::Client::new(),
             management_credentials: Arc::new(RwLock::new(
@@ -2411,6 +2762,134 @@ mod tests {
                 peak_memory_bytes: 2_000_000_000,
             }],
         }
+    }
+
+    #[tokio::test]
+    async fn management_model_list_reads_local_library() {
+        let api_state = state(None, None);
+        api_state
+            .model_library
+            .lock()
+            .await
+            .put(ModelRecord {
+                id: "qwen".into(),
+                source: ModelSource::Local {
+                    path: "qwen.gguf".into(),
+                },
+                artifact_path: Some("qwen.gguf".into()),
+                status: ModelStatus::Ready,
+                size_bytes: Some(42),
+                added_at_unix: 1,
+                last_error: None,
+            })
+            .unwrap();
+        let response = router(api_state)
+            .oneshot(
+                Request::get("/v1/management/models")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let models: Vec<ModelRecord> = serde_json::from_slice(&body).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "qwen");
+    }
+
+    #[tokio::test]
+    async fn embeddings_route_is_registered() {
+        let api_state = state(None, None);
+        let response = router(api_state)
+            .oneshot(
+                Request::post("/v1/embeddings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model": "missing",
+                            "input": "hello"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn remote_model_add_requires_peer_authentication() {
+        let api_state = state(None, None);
+        let member_key = NetworkStore::random_node_key();
+        {
+            let mut store = api_state.store.lock().await;
+            let token = store.issue_join_token("http://owner".into(), None);
+            store
+                .redeem_join_token(token, member_key, "http://member".into())
+                .unwrap();
+        }
+        let response = router(api_state)
+            .oneshot(
+                Request::post("/v1/management/models")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model_id": "qwen",
+                            "source": { "type": "local", "path": "qwen.gguf" },
+                            "node_pubkey": member_key,
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn failed_model_load_does_not_create_assignment() {
+        let api_state = state(None, None);
+        let response = router(api_state.clone())
+            .oneshot(
+                Request::post("/v1/management/models")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "model_id": "missing",
+                            "source": {
+                                "type": "local",
+                                "path": "/definitely/missing/model.gguf"
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(api_state
+            .store
+            .lock()
+            .await
+            .state
+            .state
+            .model_assignments
+            .is_empty());
+        assert_eq!(
+            api_state
+                .model_library
+                .lock()
+                .await
+                .get("missing")
+                .unwrap()
+                .status,
+            ModelStatus::Failed
+        );
     }
 
     #[tokio::test]

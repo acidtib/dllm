@@ -142,6 +142,86 @@ impl EmbeddedRuntime {
         Ok(rx)
     }
 
+    pub async fn embeddings(&self, req: Value) -> Result<Value, InferenceError> {
+        if req
+            .get("encoding_format")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value != "float")
+        {
+            return Err(InferenceError::invalid(
+                "only encoding_format 'float' is supported",
+            ));
+        }
+        if req.get("dimensions").is_some() {
+            return Err(InferenceError::invalid(
+                "custom embedding dimensions are not supported",
+            ));
+        }
+        let inputs = match req.get("input") {
+            Some(Value::String(input)) => vec![input.clone()],
+            Some(Value::Array(inputs)) => inputs
+                .iter()
+                .map(|input| {
+                    input
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| InferenceError::invalid("input must contain only strings"))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+            _ => {
+                return Err(InferenceError::invalid(
+                    "input must be a string or an array of strings",
+                ));
+            }
+        };
+        if inputs.is_empty() {
+            return Err(InferenceError::invalid("input must not be empty"));
+        }
+        let model = req
+            .get("model")
+            .and_then(Value::as_str)
+            .ok_or_else(|| InferenceError::invalid("model is required"))?
+            .to_owned();
+        let permit = self
+            .gen_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("generation semaphore is never closed");
+        let engine = self.engine.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let prompt_tokens = inputs.iter().try_fold(0_u32, |total, input| {
+                engine
+                    .token_count(input)
+                    .map(|count| total.saturating_add(count))
+            })?;
+            let embeddings = engine.embed(&inputs)?;
+            let data = embeddings
+                .into_iter()
+                .enumerate()
+                .map(|(index, embedding)| {
+                    json!({
+                        "object": "embedding",
+                        "index": index,
+                        "embedding": embedding,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "object": "list",
+                "data": data,
+                "model": model,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "total_tokens": prompt_tokens,
+                }
+            }))
+        })
+        .await
+        .map_err(|error| InferenceError::internal(format!("embedding task panicked: {error}")))?
+    }
+
     /// Measure prefill and decode throughput (milli-tokens per second) for the
     /// hardware benchmark, driving the model directly instead of over HTTP.
     pub async fn measure_throughput(&self) -> Result<MeasuredThroughput, InferenceError> {

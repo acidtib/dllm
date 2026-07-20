@@ -3,6 +3,7 @@ use dllm_daemon::{backup, NetworkStore};
 use dllm_protocol::{now_unix, AccessRequest, SignedAccessRequest, SignedJoinToken};
 use reqwest::blocking::Client;
 use serde_json::{json, Value};
+use std::time::Duration;
 use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
@@ -46,6 +47,10 @@ enum Command {
     Status {
         #[arg(long)]
         json: bool,
+    },
+    Model {
+        #[command(subcommand)]
+        command: ModelCommand,
     },
     Invite {
         #[arg(long)]
@@ -217,6 +222,24 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum ModelCommand {
+    Add {
+        source: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        node_key: Option<PathBuf>,
+    },
+    List,
+    Status {
+        model: String,
+    },
+    Remove {
+        model: String,
+    },
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     let state = resolve_path(cli.state, dllm_daemon::default_state_path)?;
@@ -293,6 +316,58 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
         }
+        Command::Model { command } => match command {
+            ModelCommand::Add {
+                source,
+                name,
+                node_key,
+            } => {
+                let (model_id, source) = model_add_source(&source, name)?;
+                if node_key.is_some() && source["type"] == "local" {
+                    return Err(
+                        "a local GGUF path cannot be installed on a remote node; use a Hugging Face repo"
+                            .into(),
+                    );
+                }
+                let node_pubkey = node_key.map(read_key).transpose()?;
+                eprintln!("Adding {model_id}. This may take several minutes.");
+                let response = request_json(auth(
+                    client
+                        .post(format!("{}/v1/management/models", cli.daemon))
+                        .timeout(Duration::from_secs(24 * 60 * 60))
+                        .json(&json!({
+                            "model_id": model_id,
+                            "source": source,
+                            "node_pubkey": node_pubkey,
+                        })),
+                    &management_token,
+                ))?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            ModelCommand::List => {
+                let response = request_json(auth(
+                    client.get(format!("{}/v1/management/models", cli.daemon)),
+                    &management_token,
+                ))?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            ModelCommand::Status { model } => {
+                let response = request_json(auth(
+                    client.get(format!("{}/v1/management/models/{model}", cli.daemon)),
+                    &management_token,
+                ))?;
+                println!("{}", serde_json::to_string_pretty(&response)?);
+            }
+            ModelCommand::Remove { model } => {
+                auth(
+                    client.delete(format!("{}/v1/management/models/{model}", cli.daemon)),
+                    &management_token,
+                )
+                .send()?
+                .error_for_status()?;
+                println!("removed {model}");
+            }
+        },
         Command::Invite {
             expires_at_unix,
             output,
@@ -992,6 +1067,42 @@ fn assignment_key(
     }
 }
 
+fn model_add_source(
+    source: &str,
+    name: Option<String>,
+) -> Result<(String, Value), Box<dyn std::error::Error>> {
+    let path = PathBuf::from(source);
+    if path.exists() {
+        let id = name
+            .or_else(|| {
+                path.file_stem()
+                    .map(|value| value.to_string_lossy().into_owned())
+            })
+            .ok_or("local model path has no file name; pass --name")?;
+        return Ok((id, json!({ "type": "local", "path": path })));
+    }
+    if !source.contains('/') {
+        return Err("model source must be a Hugging Face model ID like Qwen/Qwen2.5-0.5B-Instruct or a local GGUF path".into());
+    }
+    let repo = if source.to_ascii_uppercase().ends_with("-GGUF") {
+        source.to_owned()
+    } else {
+        format!("{source}-GGUF")
+    };
+    let id = name.unwrap_or_else(|| {
+        source
+            .rsplit('/')
+            .next()
+            .unwrap_or(source)
+            .trim_end_matches("-GGUF")
+            .to_ascii_lowercase()
+    });
+    Ok((
+        id,
+        json!({ "type": "hugging_face", "repo": repo, "file": null }),
+    ))
+}
+
 fn read_key(path: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(NetworkStore::load_owner_key(path)?
         .verifying_key()
@@ -1022,7 +1133,12 @@ fn read_public_key_arg(value: PathBuf) -> Result<Vec<u8>, Box<dyn std::error::Er
 fn request_json(
     builder: reqwest::blocking::RequestBuilder,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let response = builder.send()?.error_for_status()?;
+    let response = builder.send()?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let message = response.text()?;
+        return Err(format!("daemon returned {status}: {message}").into());
+    }
     Ok(response.json()?)
 }
 
@@ -1067,7 +1183,7 @@ fn format_age(seconds: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_path;
+    use super::{model_add_source, resolve_path};
     use std::path::PathBuf;
 
     #[test]
@@ -1083,5 +1199,31 @@ mod tests {
     fn falls_back_to_default_when_unset() {
         let resolved = resolve_path(None, || Ok(PathBuf::from("default"))).unwrap();
         assert_eq!(resolved, PathBuf::from("default"));
+    }
+
+    #[test]
+    fn hugging_face_model_id_resolves_to_gguf_repo() {
+        let (id, source) = model_add_source("Qwen/Qwen2.5-0.5B-Instruct", None).unwrap();
+        assert_eq!(id, "qwen2.5-0.5b-instruct");
+        assert_eq!(
+            source["repo"],
+            serde_json::json!("Qwen/Qwen2.5-0.5B-Instruct-GGUF")
+        );
+    }
+
+    #[test]
+    fn explicit_repo_derives_model_name() {
+        let (id, _) = model_add_source("Qwen/Qwen2.5-0.5B-Instruct-GGUF", None).unwrap();
+        assert_eq!(id, "qwen2.5-0.5b-instruct");
+    }
+
+    #[test]
+    fn embedding_model_uses_same_hugging_face_format() {
+        let (id, source) = model_add_source("Qwen/Qwen3-Embedding-0.6B", None).unwrap();
+        assert_eq!(id, "qwen3-embedding-0.6b");
+        assert_eq!(
+            source["repo"],
+            serde_json::json!("Qwen/Qwen3-Embedding-0.6B-GGUF")
+        );
     }
 }

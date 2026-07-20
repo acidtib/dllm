@@ -23,7 +23,14 @@ fn api_state() -> api::ApiState {
         store: Arc::new(Mutex::new(NetworkStore::create("test"))),
         state_path: std::env::temp_dir().join("dllmd-lifecycle-test-state.json"),
         runtime_url: Arc::new(RwLock::new(None)),
-        embedded: Arc::new(RwLock::new(None)),
+        embedded: Arc::new(RwLock::new(HashMap::new())),
+        model_library: Arc::new(Mutex::new(
+            dllm_daemon::model_library::ModelLibrary::load(std::env::temp_dir().join(format!(
+                "dllmd-lifecycle-models-{}.json",
+                uuid::Uuid::new_v4()
+            )))
+            .unwrap(),
+        )),
         admission: Arc::new(Semaphore::new(2)),
         client: reqwest::Client::new(),
         management_credentials: Arc::new(RwLock::new(
