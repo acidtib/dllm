@@ -1,3 +1,6 @@
+# Publishes the cpu, vulkan, and cuda-sm61 app images for app-only changes that
+# do not touch the CUDA base. The cuda-sm61 tag is also produced by
+# "Rebuild CUDA runtime bases" after a base rebuild; both workflows own it.
 name: Publish DLLM images
 
 on:
@@ -6,6 +9,10 @@ on:
 permissions:
   contents: read
   packages: write
+
+# Serialize image publishing so concurrent runs cannot race on the same tags.
+concurrency:
+  group: publish-images
 
 env:
   REGISTRY: ghcr.io
