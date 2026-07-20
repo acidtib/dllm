@@ -155,6 +155,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.save(&state_path)?;
         store
     };
+    // The owner's own physical node is represented in network state by
+    // owner_pubkey (not node_key) everywhere: transport self-binding above,
+    // state-fetch peer auth, and transfer_owner all treat owner_pubkey as
+    // this node's identity. node_key only identifies this daemon once it is
+    // a joined member of someone else's network (a loaded replica).
+    let hardware_node_pubkey = if store.owner_key.is_some() {
+        store.state.state.owner_pubkey
+    } else {
+        node_key.verifying_key().to_bytes()
+    };
     let provisional_marker_path = state_path.with_extension("provisional.json");
     if !state_preexisted {
         write_provisional_marker(&provisional_marker_path, &store)?;
@@ -173,13 +183,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_benchmark = None;
     let mut embedded_runtime = None;
     if !joining_at_start {
-        let node_pubkey = node_key.verifying_key().to_bytes();
         let existing_benchmarks: Vec<HardwareBenchmark> = store
             .state
             .state
             .hardware_profiles
             .iter()
-            .find(|profile| profile.node_pubkey == node_pubkey)
+            .find(|profile| profile.node_pubkey == hardware_node_pubkey)
             .map(|profile| profile.benchmarks.clone())
             .unwrap_or_default();
         let activation = start_configured_runtime(&existing_benchmarks).await?;
@@ -237,11 +246,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if let Some((fit, model_label, gpu_layers, context_size)) = pending_benchmark {
         if let Some(engine) = embedded.read().await.clone() {
-            let node_pubkey = node_key.verifying_key().to_bytes();
             let benchmark_state = primary_state.clone();
             tokio::spawn(hardware_benchmark::benchmark_and_publish(
                 benchmark_state,
-                node_pubkey,
+                hardware_node_pubkey,
                 engine,
                 model_label,
                 fit,
