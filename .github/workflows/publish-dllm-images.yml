@@ -1,6 +1,8 @@
-# Publishes the cpu, vulkan, and cuda-sm61 app images for app-only changes that
-# do not touch the CUDA base. The cuda-sm61 tag is also produced by
-# "Rebuild CUDA runtime bases" after a base rebuild; both workflows own it.
+# Builds and publishes every DLLM image (cpu, vulkan, and cuda for each
+# supported architecture) from source in one pass. cargo-chef caches the
+# dependency build, including the expensive CUDA llama.cpp compile, in a durable
+# registry build cache, so app-only changes rebuild in minutes and only the
+# dependency change (or a cold cache) pays the full compile.
 name: Publish DLLM images
 
 on:
@@ -20,21 +22,43 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.variant }} image
+    name: Build ${{ matrix.tag }} image
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - variant: cpu
+          - tag: cpu
             target: runtime-cpu
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
-          - variant: cuda-sm61
-            target: runtime-cuda
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
-          - variant: vulkan
+          - tag: vulkan
             target: runtime-vulkan
-            cuda_runtime_image: ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
+          - tag: cuda-sm61
+            target: runtime-cuda
+            cuda_arch: "61"
+          - tag: cuda-sm70
+            target: runtime-cuda
+            cuda_arch: "70"
+          - tag: cuda-sm75
+            target: runtime-cuda
+            cuda_arch: "75"
+          - tag: cuda-sm80
+            target: runtime-cuda
+            cuda_arch: "80"
+          - tag: cuda-sm86
+            target: runtime-cuda
+            cuda_arch: "86"
+          - tag: cuda-sm89
+            target: runtime-cuda
+            cuda_arch: "89"
+          - tag: cuda-sm90
+            target: runtime-cuda
+            cuda_arch: "90"
+          - tag: cuda-sm100
+            target: runtime-cuda
+            cuda_arch: "100"
+          - tag: cuda-sm120
+            target: runtime-cuda
+            cuda_arch: "120"
     steps:
       - uses: actions/checkout@v7
 
@@ -54,12 +78,15 @@ jobs:
           file: docker/Dockerfile.dllmd
           target: ${{ matrix.target }}
           build-args: |
-            CUDA_RUNTIME_IMAGE=${{ matrix.cuda_runtime_image }}
+            CUDA_ARCHITECTURES=${{ matrix.cuda_arch }}
           push: true
+          # The unqualified cuda tag tracks the highest supported architecture.
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.variant }}-${{ github.sha }}
-          cache-from: type=gha,scope=dllm-${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=dllm-${{ matrix.variant }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.tag }}-${{ github.sha }}
+            ${{ matrix.tag == 'cuda-sm120' && format('{0}/{1}:cuda', env.REGISTRY, env.IMAGE_NAME) || '' }}
+            ${{ matrix.tag == 'cuda-sm120' && format('{0}/{1}:cuda-{2}', env.REGISTRY, env.IMAGE_NAME, github.sha) || '' }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.tag }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache-${{ matrix.tag }},mode=max
           provenance: mode=max
           sbom: true

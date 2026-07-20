@@ -1,7 +1,17 @@
+# One image build for every backend (cpu, vulkan, cuda). Each variant compiles
+# from source, but cargo-chef caches the dependency build (including the
+# expensive llama.cpp compile, CUDA in particular) as a layer keyed on
+# recipe.json, the lockfile-derived dependency graph. App-only changes leave
+# recipe.json unchanged, so the dependency layer is a cache hit and only the
+# workspace crates recompile. The dependency layer rebuilds only when
+# dependencies change. Pair this with a durable buildx cache (registry) so the
+# cached CUDA compile survives across runs.
 ARG RUST_VERSION=1.96
 ARG UBUNTU_VERSION=24.04
-ARG CUDA_RUNTIME_IMAGE=ghcr.io/acidtib/dllm:cuda-runtime-sm61-v2
+ARG CUDA_VERSION=12.9.1
+ARG CUDA_ARCHITECTURES=61
 
+# Web assets, shared by every variant.
 FROM oven/bun:1 AS web-builder
 WORKDIR /src
 COPY package.json bun.lock ./
@@ -10,41 +20,35 @@ RUN bun install --frozen-lockfile
 COPY apps/web apps/web
 RUN bun run --cwd apps/web build
 
-FROM rust:${RUST_VERSION}-bookworm AS app-builder
-ARG RUST_VERSION
-ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+# Dependency recipe: just the dep graph, independent of the build base.
+FROM rust:${RUST_VERSION}-bookworm AS recipe
+RUN cargo install cargo-chef --locked
 WORKDIR /src
+COPY . .
+RUN cargo chef prepare --recipe-path /recipe.json
+
+# ---------------------------------------------------------------------------
+# CPU
+# ---------------------------------------------------------------------------
+FROM rust:${RUST_VERSION}-bookworm AS cpu-builder
+RUN cargo install cargo-chef --locked
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake build-essential libclang-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY . .
-COPY --from=web-builder /src/apps/web/dist apps/web/dist
-RUN cargo build --release --locked --bin dllmd --bin dllm \
-    && strip target/release/dllmd target/release/dllm
-
-FROM ubuntu:${UBUNTU_VERSION} AS app-vulkan-builder
-ARG RUST_VERSION
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
-    libvulkan-dev glslc spirv-headers spirv-tools \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
-ENV PATH=/root/.cargo/bin:${PATH}
-ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+COPY --from=recipe /recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json --bin dllmd --bin dllm
 COPY . .
 COPY --from=web-builder /src/apps/web/dist apps/web/dist
 RUN cargo build --release --locked --bin dllmd --bin dllm \
-    --features dllm-daemon/vulkan \
     && strip target/release/dllmd target/release/dllm
 
 FROM debian:bookworm-slim AS runtime-cpu
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=app-builder /src/target/release/dllmd /usr/local/bin/dllmd
-COPY --from=app-builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=cpu-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=cpu-builder /src/target/release/dllm /usr/local/bin/dllm
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
@@ -56,7 +60,36 @@ VOLUME /var/lib/dllm
 EXPOSE 7337 7444
 ENTRYPOINT ["dllmd"]
 
-FROM ${CUDA_RUNTIME_IMAGE} AS runtime-cuda
+# ---------------------------------------------------------------------------
+# Vulkan (also runs on CPU when no Vulkan device is present)
+# ---------------------------------------------------------------------------
+FROM ubuntu:${UBUNTU_VERSION} AS vulkan-builder
+ARG RUST_VERSION
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
+    libvulkan-dev glslc spirv-headers spirv-tools \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH=/root/.cargo/bin:${PATH}
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+RUN cargo install cargo-chef --locked
+WORKDIR /src
+COPY --from=recipe /recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json \
+    --features dllm-daemon/vulkan --bin dllmd --bin dllm
+COPY . .
+COPY --from=web-builder /src/apps/web/dist apps/web/dist
+RUN cargo build --release --locked --features dllm-daemon/vulkan --bin dllmd --bin dllm \
+    && strip target/release/dllmd target/release/dllm
+
+FROM ubuntu:${UBUNTU_VERSION} AS runtime-vulkan
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
+    libvulkan1 mesa-vulkan-drivers \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=vulkan-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=vulkan-builder /src/target/release/dllm /usr/local/bin/dllm
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
@@ -67,13 +100,36 @@ VOLUME /var/lib/dllm
 EXPOSE 7337 7444
 ENTRYPOINT ["dllmd"]
 
-FROM ubuntu:${UBUNTU_VERSION} AS runtime-vulkan
+# ---------------------------------------------------------------------------
+# CUDA (arch selected by CUDA_ARCHITECTURES; also runs on CPU without a GPU)
+# ---------------------------------------------------------------------------
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS cuda-builder
+ARG RUST_VERSION
+ARG CUDA_ARCHITECTURES
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake build-essential libclang-dev curl ca-certificates pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal --default-toolchain "${RUST_VERSION}"
+ENV PATH=/root/.cargo/bin:${PATH}
+ENV RUSTUP_TOOLCHAIN=${RUST_VERSION}
+ENV CMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHITECTURES}
+RUN cargo install cargo-chef --locked
+WORKDIR /src
+COPY --from=recipe /recipe.json recipe.json
+RUN cargo chef cook --release --locked --recipe-path recipe.json \
+    --features dllm-daemon/cuda --bin dllmd --bin dllm
+COPY . .
+COPY --from=web-builder /src/apps/web/dist apps/web/dist
+RUN cargo build --release --locked --features dllm-daemon/cuda --bin dllmd --bin dllm \
+    && strip target/release/dllmd target/release/dllm
+
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION} AS runtime-cuda
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates libgcc-s1 libgomp1 libstdc++6 libssl3 zlib1g libbrotli1 libzstd1 \
-    libvulkan1 mesa-vulkan-drivers \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=app-vulkan-builder /src/target/release/dllmd /usr/local/bin/dllmd
-COPY --from=app-vulkan-builder /src/target/release/dllm /usr/local/bin/dllm
+COPY --from=cuda-builder /src/target/release/dllmd /usr/local/bin/dllmd
+COPY --from=cuda-builder /src/target/release/dllm /usr/local/bin/dllm
 ENV DLLMD_STATE=/var/lib/dllm/state.json
 ENV DLLMD_AUTHORITY_KEY=/var/lib/dllm/authority.key
 ENV DLLMD_NODE_KEY=/var/lib/dllm/node.key
